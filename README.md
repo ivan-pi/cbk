@@ -179,7 +179,7 @@ The headers under `include/` are the project's API, the only files users need:
 
 The C++ is formatted with clang-format and linted with clang-tidy, both driven
 by [pre-commit](https://pre-commit.com/) (`pip install pre-commit && pre-commit
-install`); CI checks the same hooks. [AGENTS.md](AGENTS.md) has the details,
+install`); CI checks the same hooks. [CLAUDE.md](.claude/CLAUDE.md) has the details,
 including the clang-configured tree clang-tidy needs.
 
 ## Related work
