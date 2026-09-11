@@ -16,18 +16,20 @@ measured on both of:
     (Intel apt repository, package intel-oneapi-mkl-devel 2026.1.0-236,
      installed under /opt/intel/oneapi/mkl/latest)
 
-LP64 interface, on a 4-core AVX-512 Xeon with gcc 13, in September 2026. Every
-finding below -- the null-pointer crashes, the `info` values, the workspace
-formula and its thread scaling, the unchecked `lwork`, the leftover `work[0]`,
-zero internal allocation, internal threading, and the exit-time crash -- came
-out identical on the two versions, so this behavior has been stable across the
-MKL-to-oneMKL transition. It is still measured behavior, not a documented
-contract: re-run the probes of section 6 on any other version before relying
-on it, and `mkl_get_version_string()` reports the version actually linked.
+LP64 interface, on a 4-core AVX-512 Xeon (1 MiB L2 per core, 33 MiB L3) with
+gcc 13, in September 2026. Every finding below -- the null-pointer crashes, the
+`info` values, the workspace formula and its thread scaling, the unchecked
+`lwork`, the leftover `work[0]`, zero internal allocation, internal threading,
+and the exit-time crash -- came out identical on the two versions, so this
+behavior has been stable across the MKL-to-oneMKL transition. It is still
+measured behavior, not a documented contract: re-run the probes of section 5
+on any other version before relying on it, and `mkl_get_version_string()`
+reports the version actually linked.
 
 Routines probed: `mkl_?potrf_compact`, `mkl_?getrfnp_compact`,
 `mkl_?geqrf_compact`, `mkl_?getrinp_compact`, plus `mkl_?trsm_compact` for
-threading only.
+threading only. Which compact routines MKL ships at all is answered by
+`mkl_compact.h`, not by this note.
 
 ## 1. Every pointer argument is mandatory
 
@@ -38,52 +40,57 @@ threading only.
 | geqrf | segfault | segfault | segfault | segfault |
 | getrinp | segfault | segfault | segfault | n/a |
 
-`info` is written unconditionally, and the value written is always 0. A
-sentinel (777, or -5) came back as 0 from every routine on every path: success,
-the `lwork = -1` query, `nm = 0`, `n = 0`, and inputs LAPACK would reject. A
-non-positive-definite lane for `potrf` (LAPACK: `info = j`), a zero pivot for
-`getrfnp`, and `getrinp` on that singular factor all left `info = 0` and
-poisoned the offending lane with NaN/Inf while the other lanes came out
-correct. So "reserved" means exactly that: `info` carries no information on
-2020.0.4, and per-lane failure is detectable only by inspecting the output. (cqr
-follows the same convention -- 0 on success, a poisoned lane on a numerical
-failure -- and adds -1 for an unrecognized `format`, the one failure its
-dispatch can see.) `taup` always receives the reflector scalars; a
-null `taup` is not "skip the copy". Consequence for cqr: the MKL-style wrappers
-write `*info` and `work[0]` without null checks, matching MKL. A null pointer
-fails loudly at the first write, which is the benign failure mode.
+- **`info` is written unconditionally, and the value written is always 0.** A
+  sentinel (777, or -5) came back as 0 from every routine on every path:
+  success, the `lwork = -1` query, `nm = 0`, `n = 0`, and inputs LAPACK would
+  reject.
+- **Numerical failure never reaches `info`.** A non-positive-definite lane for
+  `potrf` (LAPACK: `info = j`), a zero pivot for `getrfnp`, and `getrinp` on
+  that singular factor all left `info = 0` and poisoned the offending lane with
+  NaN/Inf; the other lanes of the group came out correct. "Reserved" means
+  exactly that: `info` carries no information, and per-lane failure is
+  detectable only by inspecting the output.
+- **`taup` always receives the reflector scalars**; a null `taup` is not "skip
+  the copy".
+- **Consequence for cqr**: the MKL-style wrappers write `*info` and `work[0]`
+  without null checks, matching MKL; a null pointer fails loudly at the first
+  write, which is the benign failure mode. cqr keeps `info = 0` on success and
+  a poisoned lane on numerical failure, and adds `info = -1` for an
+  unrecognized `format`, the one failure its dispatch can see.
 
-## 2. Workspace: size, use, and the missing `lwork` check
+## 2. Workspace: size, use, and the unchecked `lwork`
 
 Only `geqrf` and `getrinp` take `work`/`lwork`. For both:
 
 - **Query formula**: `lwork = n * V * mkl_get_max_threads()`. Independent of `m`
-  and of the number of groups. `n * V` is the reference `dlarf`/`dgetri`
-  per-reflector row vector, one lane per interleaved slot; one slice per thread
-  (section 3). Under the sequential layer the multiplier is always 1.
+  and of the number of groups; one `n * V` slice per thread (section 3). Under
+  the sequential layer the multiplier is always 1.
 - **`work` is the scratch, not a hint**: a real call writes `(n-1)*V` entries per
   thread (`geqrf`) or `(n-1)*V + 1` (`getrinp`). `mkl_peak_mem_usage` reports 0
   bytes allocated internally, so nothing is allocated behind the caller's back.
-- **`lwork` is never checked**: with a one-element buffer and `lwork = 1`, both
-  routines wrote their full `n*V` scratch and hit a guard page (see section 6).
-  A too-small buffer is a silent overrun into whatever is adjacent: a
+- **`lwork` is examined only for the value -1** (the query). Any other value is
+  ignored: with a one-element buffer and `lwork = 1`, both routines wrote their
+  full `n * V` scratch and hit a guard page (section 5). An undersized buffer is
+  therefore an **out-of-bounds write (CWE-787)** into whatever is adjacent: a
   neighbouring allocation, malloc metadata ("malloc(): unaligned tcache chunk"
-  at a later `free`), or a stack frame. A generously oversized buffer is safe
-  by accident; only the query makes the size a contract.
+  at a later `free`), or a stack frame. It is silent unless the adjacent memory
+  happens to matter. A generously oversized buffer is safe by accident; only the
+  query makes the size a contract.
 - **`work[0]` after a real call** holds leftover scratch, not the optimal
-  `lwork` the documentation promises.
-
-The same hazard exists in cqr's own `?gels_compact`: its `work` is the tau
-buffer for the whole batch, `min(m,n) * V * ceil(nm/V)` scalars, and like every
-compact routine it validates nothing. Size it from its own query. cqr's
-`?geqrf`/`?ormqr` are the exception only because they need no scratch (their
-`larf` keeps four columns' dot products in registers instead of forming the
-full row vector), so their query honestly returns 1 and a real call never
-touches `work`.
+  `lwork` the documentation promises. The query is the only way to obtain the
+  size.
 
 Rule that follows: **query each routine, size its buffer from that routine's
 own answer, never reuse one routine's buffer for another.** Under a threaded MKL
 layer add: **query and call under the same thread count** (section 3).
+
+*cqr's own policy here is not settled and may change.* As of PR #38:
+`?gels_compact`'s `work` is the tau buffer for the whole batch,
+`min(m,n) * V * ceil(nm/V)` scalars, and like every compact routine it does not
+check `lwork`, so it carries the same CWE-787 hazard and must be sized from its
+own query. `?geqrf`/`?ormqr` need no scratch (their `larf` keeps four columns'
+dot products in registers instead of forming a full row vector), so their query
+returns 1 and a real call never touches `work`.
 
 ## 3. Threading
 
@@ -99,101 +106,92 @@ AVX-512 format, best of five:
 | potrf, 32, 8192 | 9.9 ms | 3.6 ms | 2.0 ms |
 | trsm, 32, 8192 | 13.3 ms | 6.3 ms | 3.3 ms |
 
-Consequences:
-
 - **The workspace query scales with the *effective* thread count.** After
   `mkl_set_num_threads(t)`, `geqrf`/`getrinp` report `n * V * mkl_get_max_threads()`;
   asking for 8 or 16 threads on a 4-core machine clamps both to 4. A buffer
-  queried at one thread and used at four overruns by three `n*V` slices (this
+  queried at one thread and used at four overruns by three `n * V` slices (this
   crashed the first threaded probe). Under `mkl_sequential`,
   `mkl_set_num_threads` is accepted and ignored, `mkl_get_max_threads()` stays
   1, and the query stays `n * V`.
-- **This repo links the sequential layer everywhere** (`BLA_VENDOR=Intel10_64lp_seq`
-  in CMake and CI), deliberately: the benchmarks thread over groups with their
-  own OpenMP loop so every path (cqr, MKL compact, per-matrix LAPACK) runs on
-  the same caller-controlled thread count. That loop is a fair proxy: MKL's
-  internally threaded whole-batch throughput at 4 threads matches the per-group
-  loop's (143k vs 147k matrices/s at n=64, 1.12M vs 1.06M at n=32). It only
-  costs MKL at n~8, where per-call overhead is comparable to the work.
-- **Exit-time crash when the program itself uses OpenMP.** A main program
-  compiled with `-fopenmp` (libgomp) and linked against `mkl_gnu_thread`
-  segfaults in `_dl_fini` after `main` returns, on both 2020.0.4 and 2026.1,
-  with results already correct (stdout must be unbuffered to see them). The
-  same program *without* `-fopenmp` exits cleanly on both versions, as does
-  `mkl_intel_thread` + `libiomp5` without `-fopenmp`. Mixing the two runtimes
-  (`-fopenmp` main with `mkl_intel_thread` + `libiomp5`) crashed mid-run at
-  four threads. cqr's launcher is OpenMP, so under ctest a threaded-MKL build
-  would be either the exit crash (GNU layer) or the two-runtime conflict
-  (Intel layer) unless the whole build moves to one runtime.
+- **The repo currently links the sequential layer** (`BLA_VENDOR=Intel10_64lp_seq`
+  in CMake and CI) and the benchmarks thread over groups with their own OpenMP
+  loop, so every path (cqr, MKL compact, per-matrix LAPACK) runs on the same
+  caller-controlled thread count. Measured against MKL's internal threading
+  that loop is a fair proxy at n >= 16 (whole-batch at 4 threads: 143k vs 147k
+  matrices/s at n=64, 1.12M vs 1.06M at n=32). *This choice may change*: using
+  MKL's internal parallelism is an option. Its downside is for fused pipelines
+  (`bench_qr_compact`'s factor -> apply -> solve per group): whole-batch calls
+  stream the batch through each step separately and lose the per-group
+  temporal locality that the per-group loop keeps.
+- **Exit-time crash with `mkl_gnu_thread`.** A main program compiled with
+  `-fopenmp` (libgomp) and linked against `mkl_gnu_thread` segfaults in
+  `_dl_fini` after `main` returns, on both 2020.0.4 and 2026.1, with results
+  already correct (stdout must be unbuffered to see them). The same program
+  without `-fopenmp` exits cleanly. Under ctest that crash is a failed test.
+  (Loading two OpenMP runtimes in one process -- libgomp for cqr's launcher
+  and libiomp5 for `mkl_intel_thread` -- is never valid; a probe that did so
+  during this investigation is disregarded.)
 
 ### 3a. Calls from inside an OpenMP parallel region
 
 Whether MKL nests its own team inside the caller's region follows the
 documented MKL rule, and the compact routines obey it. Probe: two batches of
 2048 64x64 matrices, one per thread of a 2-thread `omp parallel` region, on 4
-cores, `mkl_set_num_threads(4)` set outside the region. References outside any
-region: 69 ms per batch on 1 thread, 18 ms on 4. Identical on 2020.0.4 and
-2026.1 (`mkl_gnu_thread`):
+cores; CPU time / wall time counts the threads actually working. References
+outside any region: 69 ms per batch on 1 thread, 18 ms on 4. Identical on
+2020.0.4 and 2026.1 (`mkl_gnu_thread`):
 
-| `omp_set_max_active_levels` | `mkl_set_dynamic` | query inside region | `mkl_get_max_threads()` inside | wall for both batches | CPU/wall | what ran |
+| `max_active_levels` | `MKL_DYNAMIC` | query inside region | `mkl_get_max_threads()` inside | wall for both batches | CPU/wall | what ran |
 |---|---|---|---|---|---|---|
-| 1 | 1 (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
-| 1 | 0 | 4 x n*V | 4 | 69 ms | 1.9 | same: nesting is off, MKL's inner region is inactive |
-| 2 | 1 (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
-| 2 | 0 | 4 x n*V | 4 | 40 ms | 3.2-3.6 | nested: each outer thread's call got a 4-thread team |
+| 1 | true (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
+| 1 | false | 4 x n*V | 4 | 69 ms | 1.9 | same: nesting is off, MKL's inner region is inactive |
+| 2 | true (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
+| 2 | false | 4 x n*V | 4 | 40 ms | 3.2-3.6 | nested: each outer thread's call got a 4-thread team |
 
-- **Default behavior is serial inside a region.** With `MKL_DYNAMIC` on (the
+- **Default behavior is serial inside a region.** With `MKL_DYNAMIC` true (the
   default), MKL detects `omp_in_parallel()` and runs the call on one thread
   regardless of `max_active_levels`; the query drops to `1 x n*V` accordingly.
-  That is exactly what the sequential layer gives, so for cqr's benchmarks
-  (an OpenMP loop over groups, one MKL call per group) linking the threaded
-  layer would change nothing.
-- **Nesting needs both switches**: `mkl_set_dynamic(0)` *and*
-  `omp_set_max_active_levels(>= 2)`. Then every outer thread's call spawns a
-  full team (8 threads on 4 cores here); oversubscribed, but the two batches
-  still finished in 40 ms against 2 x 18 ms for back-to-back 4-thread calls.
+  That is what the sequential layer gives, so for a per-group OpenMP loop
+  (one MKL call per group) linking the threaded layer changes nothing.
+- **Nesting needs both switches, and the environment alone suffices.** No
+  runtime API calls are required: `OMP_NUM_THREADS=2,4` with
+  `OMP_MAX_ACTIVE_LEVELS=2` (or `OMP_NESTED=true`) *and* `MKL_DYNAMIC=false`
+  produced the nested result above (CPU/wall 3.5-3.8). The OpenMP variables
+  alone did not: with `MKL_DYNAMIC` at its default MKL stayed serial inside
+  even with `max_active_levels` 2 or 255. `mkl_set_dynamic(0)` and
+  `omp_set_max_active_levels()` are the API equivalents.
 - **The query follows `mkl_get_max_threads()`, not what will actually run.**
-  With `MKL_DYNAMIC` off and nesting disabled MKL reports 4 threads and a
+  With `MKL_DYNAMIC` false and nesting disabled MKL reports 4 threads and a
   `4 x n*V` query but runs serially: oversized, harmless. The dangerous
   direction is the default one: a buffer queried *inside* a region
   (`1 x n*V`) and reused *outside* it at 4 threads overruns by three slices.
   Query where you call.
 
-### 3b. Selecting the threaded layer with CMake
+### 3b. Selecting the threaded layer
 
-`-DBLA_VENDOR=Intel10_64lp` (instead of `Intel10_64lp_seq`) asks CMake's
-FindBLAS for the threaded layer, but on this C/C++-only project it does not
-produce a working binary by itself. FindBLAS 3.28 picks `mkl_gnu_thread` +
-`gomp` only when a GNU *Fortran* compiler is enabled; otherwise it pairs
-`mkl_intel_thread` with `iomp5`. `libiomp5` is not on the default library path
-(it lives under `/opt/intel/oneapi/compiler/<ver>/lib`), the link succeeds
-anyway because a shared library's unresolved `__kmpc_*` symbols are allowed at
-link time, and the test binary segfaults at startup. With
-`LD_PRELOAD=.../libiomp5.so` the same binary ran `test_cqr_geqrf_mkl` to
-"all checks passed", libgomp (cqr's launcher) and libiomp5 coexisting in one
-process. That coexistence is not reliable, though: the timing probe with the
-same pairing crashed mid-run at four threads. A threaded-MKL build of this
-repo would need the OpenMP runtime settled deliberately (Intel compiler +
-`iomp5` throughout, or `mkl_gnu_thread` + `gomp` via `BLA_VENDOR` plus an
-explicit choice), and per section 3 it would gain nothing for the per-group
-benchmark loop.
+With CMake, `-DBLA_VENDOR=Intel10_64lp` asks FindBLAS for the threaded layer.
+On a C/C++-only project FindBLAS 3.28 pairs `mkl_intel_thread` with `iomp5`
+(it picks `mkl_gnu_thread` + `gomp` only when a GNU Fortran compiler is
+enabled); if `libiomp5` is not on the library path the link still succeeds
+and the binary segfaults at startup. Any threaded build of this repo must
+settle on one OpenMP runtime for cqr's launcher and MKL alike. With Intel's
+compilers that is the `-qmkl=parallel` / `-qmkl=sequential` flag (per Intel's
+compiler documentation; not verified here, no Intel compiler is installed).
 
-## 4. What MKL does not ship
+## 4. `geqrf` compared with cqr's
 
-There is no `mkl_?ormqr_compact`; cqr's is the only compact `ormqr`, so its
-workspace contract (query returns 1) is cqr's alone to define.
-
-## 5. Algorithm comparison, `geqrf`
-
-MKL's compact `geqrf` is the unblocked `geqr2` shape with an explicit `w = v^T C`
-row vector (hence the `n * V` scratch): two passes over the trailing block per
-reflector. cqr's `larf` fuses the dot products and the rank-one update over four
-columns at a time, one pass, no scratch. Measured with `bench_geqrf_compact`
-(square, pre-packed, sequential MKL driven per group), cqr/MKL throughput:
+What is observable: MKL's query is `n * V` per thread and a real call writes
+`(n-1) * V` of it, which is the size of a `w = v^T C` row vector over the
+trailing columns, one lane per slot -- consistent with a `dlarf`-style update
+that forms `w` explicitly before the rank-one update. The algorithm inside MKL
+is not visible; that is an inference from the scratch size. cqr's `larf`
+fuses the dot products and the rank-one update over four columns at a time,
+one pass, no scratch. Measured with `bench_geqrf_compact` (square, pre-packed,
+sequential MKL driven one group per call), cqr/MKL throughput:
 
 | n | 1 thread, 512 matrices | 4 threads, 128 matrices |
 |---|---|---|
-| 8 | 1.09x | 0.80x (per-call overhead, see section 3) |
+| 8 | 1.09x | 0.80x |
 | 16 | 1.41x | 1.30x |
 | 32 | 1.60x | 1.56x |
 | 64 | 1.24x | 1.30x |
@@ -201,12 +199,23 @@ columns at a time, one pass, no scratch. Measured with `bench_geqrf_compact`
 | 256 | 1.49x | 1.46x |
 | 500 | 1.45x | 1.48x |
 
-Relative error against per-matrix LAPACK is identical for both (the arithmetic
-per element is the same; only loop order differs). Both are bandwidth-bound past
-n~120 and fall below blocked LAPACK there; blocking (compact-WY) is the next
-lever for either.
+- **The n=8 row is biased against MKL by the harness, not by MKL.** Driving
+  MKL one group per call costs 13% at n=8 single-threaded against one
+  whole-batch call (57 us vs 51 us for 512 matrices), 2-4% at n=16-32, and
+  nothing at n=64. At four threads the harness additionally forks a team over
+  groups of ~2700 flops each, which cqr's launcher would refuse to do (its
+  `parallel_min_flops` gate); MKL's loop in the benchmark has no such gate.
+  Whole-batch MKL calls would remove both effects.
+- Relative error against per-matrix LAPACK is identical for both.
+- **Where both fall below blocked LAPACK depends on the machine and on V.** On
+  this box (1 MiB L2 per core) with V=8 doubles the crossover is near
+  n~120-170, where one group (`n*n*V*8` bytes: 0.25 MiB at n=64, 0.88 MiB at
+  n=120, 1.85 MiB at n=170) outgrows L2 and the unblocked sweep becomes
+  bandwidth-bound; a smaller L2 or a wider V moves the crossover down, a
+  narrower V or a larger cache moves it up. Blocking (compact-WY) is the next
+  lever for either kernel.
 
-## 6. How these were measured (for re-checking on another MKL)
+## 5. How these were measured (for re-checking on another MKL)
 
 - **Null-pointer and overrun tests**: one process per test, since the outcome is
   a segfault. Compile with `-lmkl_intel_lp64 -lmkl_sequential -lmkl_core`
@@ -214,8 +223,7 @@ lever for either.
   layer). For a oneMKL from Intel's apt repository (`intel-oneapi-mkl-devel`,
   key and source line at apt.repos.intel.com/oneapi), use
   `-I/opt/intel/oneapi/mkl/latest/include -L/opt/intel/oneapi/mkl/latest/lib`
-  and put that `lib` on `LD_LIBRARY_PATH` at run time (`libiomp5` lives under
-  `/opt/intel/oneapi/compiler/<ver>/lib`).
+  and put that `lib` on `LD_LIBRARY_PATH` at run time.
 - **Overrun detection**: `mmap` two pages, `mprotect` the second `PROT_NONE`,
   and place the `work` buffer so it ends exactly at the page boundary. Any write
   past `lwork` elements faults immediately instead of corrupting the heap.
@@ -225,5 +233,8 @@ lever for either.
   `MKL_PEAK_MEM_RESET` before and `MKL_PEAK_MEM` after the call.
 - **Thread dependence**: `mkl_set_num_threads(t)` immediately before each
   `lwork = -1` query; print `mkl_get_max_threads()` alongside.
+- **Nesting**: call from inside a 2-thread region and compare
+  `CLOCK_PROCESS_CPUTIME_ID` to wall time across the region; ~2 means the outer
+  threads alone worked, ~4 means MKL spawned teams underneath.
 - Use `setvbuf(stdout, NULL, _IONBF, 0)` in any threaded-layer probe, or the
   exit-time crash swallows the buffered output.
