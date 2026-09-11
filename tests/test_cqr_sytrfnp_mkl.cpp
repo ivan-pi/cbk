@@ -57,7 +57,6 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     const bool row = (layout == MKL_ROW_MAJOR);
     const bool up = (uplo == MKL_UPPER);
     const char ul = up ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
     MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
@@ -84,29 +83,26 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     }
 
     double worst_res = 0, worst_untouched = 0;
-    std::vector<T> R(sA);
+    std::vector<T> R(A.stride());
     for (int v = 0; v < nm; ++v) {
-        const T *Av = A[v];
-        const T *Hv = H[v];
-
         /* the factor is stored in `layout`; the input and the residual are the
          * column-major dense side */
-        const auto H = mat_view(Hv, n, n, n, row);
-        const auto A = mat_view(Av, n, n);
+        const auto Hm = H.view(v, row);
+        const auto Am = A.view(v);
         const auto Res = mat_view(R.data(), n, n);
 
         /* reconstruction residual: unit factor off the diagonal, D on it */
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j)
-                Res(i, j) = (T)(ldlt_reconstruct(H, i, j, up) - (double)A(i, j));
-        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), norm_floor));
+                Res(i, j) = (T)(ldlt_reconstruct(Hm, i, j, up) - (double)Am(i, j));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(Am), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
                 if (!named)
                     worst_untouched =
-                        std::max<double>(worst_untouched, std::abs(H(i, j) - A(i, j)));
+                        std::max<double>(worst_untouched, std::abs(Hm(i, j) - Am(i, j)));
             }
     }
 
@@ -196,13 +192,8 @@ template <class T> int suite3(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
      * non-square B with ld = nrhs. The symmetric square A needs no staging: its
      * row-major image is itself. */
     MatrixBatch<T> Bsrc(row ? nm : 0, n, nrhs);
-    for (int v = 0; v < Bsrc.count(); ++v) {
-        const auto src = B.view(v);
-        const auto dst = mat_view(Bsrc[v], n, nrhs, nrhs, /*rowmajor=*/true);
-        for (int j = 0; j < nrhs; ++j)
-            for (int i = 0; i < n; ++i)
-                dst(i, j) = src(i, j); /* same matrix, the other layout */
-    }
+    for (int v = 0; v < Bsrc.count(); ++v) /* same matrices, the other layout */
+        copy_matrix(B.view(v), Bsrc.view(v, /*rowmajor=*/true));
     auto Bp = row ? Bsrc.base_ptrs() : B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
@@ -232,13 +223,8 @@ template <class T> int suite3(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
     auto Op = Xout.base_ptrs();
     mkl<T>::geunpack(layout, n, nrhs, Op.data(), ldb, bp, ldb, fmt, nm);
     if (row) { /* stage back to column-major for the checks */
-        for (int v = 0; v < nm; ++v) {
-            const auto src = mat_view(Xout[v], n, nrhs, nrhs, /*rowmajor=*/true);
-            const auto dst = Xhat.view(v);
-            for (int j = 0; j < nrhs; ++j)
-                for (int i = 0; i < n; ++i)
-                    dst(i, j) = src(i, j);
-        }
+        for (int v = 0; v < nm; ++v)
+            copy_matrix(Xout.view(v, /*rowmajor=*/true), Xhat.view(v));
     }
     else {
         Xhat = Xout;

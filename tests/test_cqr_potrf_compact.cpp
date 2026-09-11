@@ -206,12 +206,12 @@ static int test_validation()
 {
     const int n = 8, V = 4, nm = 4, ld = 8;
     std::vector<double> ap((size_t)ld * n * V, 0);
-    // Seed a valid identity-ish diagonal so factoring is sane. The offset is
-    // the compact (interleaved) one, which is not a dense 2-D layout.
-    for (int g = 0; g < 1; ++g)
-        for (int v = 0; v < V; ++v)
-            for (int i = 0; i < n; ++i)
-                ap[((size_t)i * ld + i) * V + v] = 1.0;
+    // Seed a valid identity-ish diagonal so factoring is sane (one group's
+    // worth). The offset is the compact (interleaved) one, not a dense 2-D
+    // layout.
+    for (int v = 0; v < V; ++v)
+        for (int i = 0; i < n; ++i)
+            ap[((size_t)i * ld + i) * V + v] = 1.0;
     auto call = [&](char lay, char up, int n_, int ldap_, int V_, int nm_) {
         return dpotrf_compact(lay, up, n_, ap.data(), ldap_, V_, nm_);
     };

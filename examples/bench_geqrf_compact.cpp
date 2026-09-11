@@ -119,18 +119,17 @@ void factor_unbatched(double *a, int m, int n, int nmat)
 /* Relative factor error of the compact path vs per-matrix LAPACK: unpack the
  * compact (H, tau) and compare elementwise to a fresh LAPACKE_dgeqrf, scaled by
  * the matrix L1 norm. Untimed correctness gate. */
-double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
+double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT_PACK fmt,
+                    int V)
 {
     const int m = P.rows(), n = P.cols(), nmat = P.count(), k = std::min(m, n);
     const size_t sA = P.stride();
 
-    MKL_INT sz_a = mkl_dget_size_compact(m, n, fmt, nmat);
+    /* factor a fresh working copy of the pristine pack */
+    auto ap = pristine.work();
+    pristine.restore_into(ap.get());
     MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-    auto ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
     auto tp = cqr::detail::mkl_alloc_bytes<double>(sz_t);
-
-    auto Ap = P.base_ptrs();
-    mkl_dgepack_compact(MKL_COL_MAJOR, m, n, Ap.data(), m, ap.get(), m, fmt, nmat);
 
     MKL_INT lwork = -1, info;
     double wq;
@@ -139,28 +138,24 @@ double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
     lwork = (MKL_INT)wq;
     factor_compact(true, ap.get(), tp.get(), m, n, nmat, V, fmt, lwork);
 
-    std::vector<double> H(nmat * sA), tau(nmat * (size_t)k);
-    std::vector<double *> Hp(nmat), Tp(nmat);
-    for (int v = 0; v < nmat; ++v) {
-        Hp[v] = H.data() + v * sA;
-        Tp[v] = tau.data() + v * (size_t)k;
-    }
+    MatrixPool H(nmat, m, n), tau(nmat, k, 1);
+    auto Hp = H.base_ptrs();
+    auto Tp = tau.base_ptrs();
     mkl_dgeunpack_compact(MKL_COL_MAJOR, m, n, Hp.data(), m, ap.get(), m, fmt, nmat);
     mkl_dgeunpack_compact(MKL_COL_MAJOR, k, 1, Tp.data(), k, tp.get(), k, fmt, nmat);
 
     double worst = 0;
     std::vector<double> Href(sA), tref(k);
     for (int v = 0; v < nmat; ++v) {
-        const double *Av = P.view(v).data;
-        std::copy(Av, Av + sA, Href.begin());
+        std::copy(P[v], P[v] + sA, Href.begin());
         LAPACKE_dgeqrf(LAPACK_COL_MAJOR, m, n, Href.data(), m, tref.data());
         double num = 0, den = 0;
         for (size_t i = 0; i < sA; ++i) {
-            num = std::max(num, std::abs(H[v * sA + i] - Href[i]));
+            num = std::max(num, std::abs(H[v][i] - Href[i]));
             den = std::max(den, std::abs(Href[i]));
         }
         for (int i = 0; i < k; ++i)
-            num = std::max(num, std::abs(tau[v * (size_t)k + i] - tref[i]));
+            num = std::max(num, std::abs(tau[v][i] - tref[i]));
         worst = std::max(worst, num / std::max(den, norm_floor));
     }
     return worst;
@@ -291,7 +286,7 @@ int main(int argc, char **argv)
             reps, [&] { pool_work = P.storage(); },
             [&] { factor_unbatched(pool_work.data(), m, n, nmat); });
 
-        const double rel = factor_error(P, fmt, V);
+        const double rel = factor_error(P, pristine, fmt, V);
         check(rel <= 1e-9, "compact factorization matches LAPACK");
 
         const double sp_lap = t_lap / t_cqr;     /* cqr speedup over LAPACK */

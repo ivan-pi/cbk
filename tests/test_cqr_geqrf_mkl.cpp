@@ -85,7 +85,6 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
     const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
     const int V = mkl<T>::vlen(fmt);
     const int k = std::min(m, n);
-    const size_t sA = (size_t)m * n, sT = (size_t)k;
 
     MatrixBatch<T> A(nm, m, n);
     for (int v = 0; v < nm; ++v)
@@ -119,14 +118,14 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
 
     double worst_res = 0, worst_orth = 0, worst_el = 0;
     std::vector<T> Q((size_t)m * k), QtA((size_t)k * n), QtQ((size_t)k * k);
-    std::vector<T> Href(sA), tauref(sT);
+    std::vector<T> Href(A.stride()), tauref(tau.stride());
     const auto QtAm = mat_view(QtA.data(), k, n);
     const auto QtQm = mat_view(QtQ.data(), k, k);
     for (int v = 0; v < nm; ++v) {
         const T *Av = A[v];
         const T *Hv = H[v], *tv = tau[v];
-        const auto Am = mat_view(Av, m, n); /* the input, column-major */
-        const auto Hm = mat_view(Hv, m, n); /* the factor (H, tau) it produced */
+        const auto Am = A.view(v); /* the input, column-major */
+        const auto Hm = H.view(v); /* the factor (H, tau) it produced */
 
         /* Q = householder_product(H, tau): first k columns of Q (m x k). The
          * reflectors occupy the first k columns of the m x n H, i.e. the first
@@ -153,10 +152,10 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
         worst_orth = std::max(worst_orth, norm1(QtQm));
 
         /* diagnostic: elementwise vs LAPACKE_dgeqrf */
-        std::copy(Av, Av + sA, Href.begin());
+        std::copy(Av, Av + A.stride(), Href.begin());
         lapack<T>::geqrf(LAPACK_COL_MAJOR, m, n, Href.data(), m, tauref.data());
-        double el = std::max(max_abs_diff(Hv, Href.data(), sA),
-                             max_abs_diff(tv, tauref.data(), sT));
+        double el = std::max(max_abs_diff(Hv, Href.data(), A.stride()),
+                             max_abs_diff(tv, tauref.data(), tau.stride()));
         worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
     }
 

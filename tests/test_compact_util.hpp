@@ -109,6 +109,16 @@ template <class Av, class Bv, class Cv> void matmul(Av A, Bv B, Cv C)
         }
 }
 
+// Elementwise copy dst <- src, same shape, each side in its own layout -- the
+// staging step between a column-major batch and a row-major API surface.
+template <class Sv, class T> void copy_matrix(Sv src, MatrixView<T> dst)
+{
+    assert(src.rows == dst.rows && src.cols == dst.cols);
+    for (int j = 0; j < dst.cols; ++j)
+        for (int i = 0; i < dst.rows; ++i)
+            dst(i, j) = src(i, j);
+}
+
 // The known solution the solve checks recover: X(:,j) = j+1 (ones, twos, ...),
 // column-major n x nrhs.
 template <class T> std::vector<T> known_solution(int n, int nrhs)
@@ -414,12 +424,12 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 // so one body serves column-major and row-major, and the group offset is the
 // library's group_stride. BatchView is templated on the interleave width, so
 // for_vlen turns the runtime V into the compile-time one (2, 4, 8 or 16 --
-// the widths the C API accepts).
+// the widths the C API accepts). Sharing the kernels' views here is
+// deliberate; see "Two views, one idea" in AGENTS.md.
 //
-// The library and its tests are one internal codebase and share these views on
-// purpose; what makes the suites independent of the kernels is that they
-// compute the *answers* independently (scalar LAPACK references, dense
-// LAPACK/MKL cross-checks), not that they re-derive the addressing.
+// A padded slot carries pad_diag on its diagonal, zero elsewhere: the identity
+// for matrix batches (so kernels run the padding unmasked), zero for tau
+// batches (the identity's reflectors).
 
 // A zeroed compact buffer sized for nm rows x cols matrices at leading
 // dimension ldp -- the one place the ng * gstride sizing is written. For a
@@ -434,7 +444,8 @@ std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
 }
 
 template <class T>
-void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false)
+void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false,
+                  T pad_diag = T(1))
 {
     const int m = Mk.rows(), n = Mk.cols(), nm = Mk.count();
     const int ng = (nm + V - 1) / V;
@@ -445,9 +456,17 @@ void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor 
             const auto P = make_view<T, VV>(p + (std::size_t)g * gstride, rowmajor, ldp);
             for (int v = 0; v < VV; ++v) {
                 const int idx = g * VV + v;
-                for (int j = 0; j < n; ++j)
-                    for (int i = 0; i < m; ++i)
-                        P(i, j)[v] = (idx < nm) ? Mk(idx, i, j) : (i == j ? T(1) : T(0));
+                if (idx < nm) {
+                    const auto M = Mk.view(idx);
+                    for (int j = 0; j < n; ++j)
+                        for (int i = 0; i < m; ++i)
+                            P(i, j)[v] = M(i, j);
+                }
+                else { /* padded slot */
+                    for (int j = 0; j < n; ++j)
+                        for (int i = 0; i < m; ++i)
+                            P(i, j)[v] = (i == j) ? pad_diag : T(0);
+                }
             }
         }
     });
@@ -469,9 +488,10 @@ void unpack_compact(MatrixBatch<T> &Mk, const T *p, int ldp, int V, bool rowmajo
             for (int v = 0; v < VV; ++v) {
                 const int idx = g * VV + v;
                 if (idx >= nm) continue;
+                const auto M = Mk.view(idx);
                 for (int j = 0; j < n; ++j)
                     for (int i = 0; i < m; ++i)
-                        Mk(idx, i, j) = P(i, j)[v];
+                        M(i, j) = P(i, j)[v];
             }
         }
     });
@@ -489,26 +509,12 @@ std::vector<T> pack_compact(const MatrixBatch<T> &Mk, int ldp, int V,
     return p;
 }
 
-// A tau batch (k scalars per matrix) is packed as k x 1 matrices; padded slots
-// get tau = 0 (the identity's reflectors).
+// A tau batch (k scalars per matrix) is packed as k x 1 matrices whose padded
+// slots are all zero -- pack_compact with a zero pad diagonal.
 template <class T> void pack_tau(const MatrixBatch<T> &tau, T *tp, int V)
 {
     assert(tau.cols() == 1);
-    const int k = tau.rows(), nm = tau.count(), ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(false, k, k, 1, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P = make_view<T, VV>(tp + (std::size_t)g * gstride, false, k);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                for (int kk = 0; kk < k; ++kk)
-                    P(kk, 0)[v] = (idx < nm) ? tau[idx][kk] : T(0);
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
+    pack_compact(tau, tp, tau.rows(), V, false, T(0));
 }
 
 template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
@@ -521,23 +527,7 @@ template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
 template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
 {
     assert(tau.cols() == 1);
-    const int k = tau.rows(), nm = tau.count(), ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(false, k, k, 1, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P =
-                make_const_view<T, VV>(tp + (std::size_t)g * gstride, false, k);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                if (idx >= nm) continue;
-                for (int kk = 0; kk < k; ++kk)
-                    tau[idx][kk] = P(kk, 0)[v];
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
+    unpack_compact(tau, tp, tau.rows(), V);
 }
 
 // ----------------------- shared checks and epilogues -----------------

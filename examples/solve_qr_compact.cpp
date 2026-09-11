@@ -117,14 +117,17 @@ double norm1(const Matrix &A)
     return LAPACKE_dlange(LAPACK_COL_MAJOR, '1', A.rows(), A.cols(), A.data(), A.ld());
 }
 
-/* Relative 1-norm difference ||A - B||_1 / ||B||_1 (A, B same shape). The
- * 1e-300 only guards a zero ||B|| against 0/0 = NaN; it is not a tolerance. */
+/* Denominator floor for relative differences: only guards a zero ||B|| against
+ * 0/0 = NaN (the suites' norm_floor convention); it is not a tolerance. */
+constexpr double norm_floor = 1e-300;
+
+/* Relative 1-norm difference ||A - B||_1 / ||B||_1 (A, B same shape). */
 double rel_diff(const Matrix &A, const Matrix &B)
 {
     assert(A.rows() == B.rows() && A.cols() == B.cols());
     Matrix D = A;                                                     /* D <- A */
     cblas_daxpy(D.rows() * D.cols(), -1.0, B.data(), 1, D.data(), 1); /* D <- A - B */
-    return norm1(D) / std::max(norm1(B), 1e-300);
+    return norm1(D) / std::max(norm1(B), norm_floor);
 }
 
 /* Per-matrix base pointers the compact pack/unpack routines expect, one per

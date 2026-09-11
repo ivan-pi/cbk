@@ -54,8 +54,7 @@ int suite1(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa
 
     MatrixBatch<T> A(nm, s, s), B(nm, m, n);
     for (int v = 0; v < nm; ++v) {
-        /* A is square, so its leading dimension is s in either layout */
-        gen_tri(mat_view(A[v], s, s, s, rowmajor), uplo == MKL_UPPER);
+        gen_tri(A.view(v, rowmajor), uplo == MKL_UPPER);
         T *Bv = B[v];
         for (size_t e = 0; e < B.stride(); ++e)
             Bv[e] = frand<T>();

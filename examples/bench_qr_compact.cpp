@@ -155,8 +155,8 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             const MKL_INT cnt = std::min(V, nmat - base); /* last group may be short */
 
             for (int s = 0; s < cnt; ++s) {
-                Aptr[s] = P.a.view(base + s).data;
-                Bptr[s] = P.b.view(base + s).data;
+                Aptr[s] = P.a[base + s];
+                Bptr[s] = P.b[base + s];
                 Xptr[s] = xout.data() + (size_t)s * n;
             }
 

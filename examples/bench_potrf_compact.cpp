@@ -129,39 +129,34 @@ void factor_unbatched(double *a, int n, int nmat)
  * LAPACKE_dpotrf, scaled by the factor's L1 norm. The SPD Cholesky factor is
  * unique (positive diagonal), so this elementwise difference is a sharp signal.
  * Untimed correctness gate. */
-double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
+double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT_PACK fmt,
+                    int V)
 {
     const int n = P.rows(), nmat = P.count();
-    const size_t sA = P.stride();
 
-    MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-    auto ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-
-    auto Ap = P.base_ptrs();
-    mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, ap.get(), n, fmt, nmat);
-
+    /* factor a fresh working copy of the pristine pack */
+    auto ap = pristine.work();
+    pristine.restore_into(ap.get());
     factor_compact(true, ap.get(), n, nmat, V, fmt);
 
-    std::vector<double> H(nmat * sA);
-    std::vector<double *> Hp(nmat);
-    for (int v = 0; v < nmat; ++v)
-        Hp[v] = H.data() + v * sA;
+    MatrixPool H(nmat, n, n);
+    auto Hp = H.base_ptrs();
     mkl_dgeunpack_compact(MKL_COL_MAJOR, n, n, Hp.data(), n, ap.get(), n, fmt, nmat);
 
     double worst = 0;
-    std::vector<double> Href(sA);
+    std::vector<double> Hrefs(P.stride());
+    const auto Href = mat_view(Hrefs.data(), n, n);
     for (int v = 0; v < nmat; ++v) {
-        const double *Av = P.view(v).data;
-        std::copy(Av, Av + sA, Href.begin());
-        LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, Href.data(), n);
+        std::copy(P[v], P[v] + P.stride(), Hrefs.begin());
+        LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, Hrefs.data(), n);
         /* compare only the lower triangle (i >= j): the factor L, uniquely
          * defined, vs LAPACK's; the strict upper triangle is untouched by both. */
+        const auto Hm = H.view(v);
         double num = 0, den = 0;
         for (int j = 0; j < n; ++j)
             for (int i = j; i < n; ++i) {
-                const size_t off = i + (size_t)j * n;
-                num = std::max(num, std::abs(H[v * sA + off] - Href[off]));
-                den = std::max(den, std::abs(Href[off]));
+                num = std::max(num, std::abs(Hm(i, j) - Href(i, j)));
+                den = std::max(den, std::abs(Href(i, j)));
             }
         worst = std::max(worst, num / std::max(den, norm_floor));
     }
@@ -266,7 +261,7 @@ int main(int argc, char **argv)
             reps, [&] { pool_work = P.storage(); },
             [&] { factor_unbatched(pool_work.data(), n, nmat); });
 
-        const double rel = factor_error(P, fmt, V);
+        const double rel = factor_error(P, pristine, fmt, V);
         check(rel <= 1e-9, "compact factorization matches LAPACK");
 
         const double sp_lap = t_lap / t_cqr;     /* cqr speedup over LAPACK */

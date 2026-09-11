@@ -55,7 +55,6 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
     const int ldH = rowmajor ? k : s; /* dense leading dims */
     const int ldC = rowmajor ? n : m;
 
-    const size_t sB = (size_t)m * n;
     MatrixBatch<T> H(nm, s, k), tau(nm, k, 1), B(nm, m, n), Bref(nm, m, n),
         Bout(nm, m, n);
 
@@ -65,14 +64,14 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
         for (size_t i = 0; i < H.stride(); ++i)
             Hv[i] = frand<T>();
         /* boost the diagonal; H is dense in `layout`, which its view carries */
-        const auto Hm = mat_view(Hv, s, k, ldH, rowmajor);
+        const auto Hm = H.view(v, rowmajor);
         for (int d = 0; d < std::min(s, k); ++d)
             Hm(d, d) += T(2);
         /* turn H into a real Householder representation via dense QR */
         lapack<T>::geqrf(lap, s, k, Hv, ldH, tv);
-        for (size_t i = 0; i < sB; ++i)
+        for (size_t i = 0; i < B.stride(); ++i)
             Bv[i] = frand<T>();
-        std::copy(Bv, Bv + sB, Rv);
+        std::copy(Bv, Bv + B.stride(), Rv);
         /* dense reference: op(Q) C */
         lapack<T>::ormqr(lap, side, trans, m, n, k, Hv, ldH, tv, Rv, ldC);
     }
@@ -117,10 +116,9 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
     double worst = 0;
     for (int v = 0; v < nm; ++v) {
         const T *Bo = Bout[v], *Rv = Bref[v];
-        double resid = max_abs_diff(Bo, Rv, sB);
+        double resid = max_abs_diff(Bo, Rv, B.stride());
         /* the reference is stored in `layout`, which its view carries */
-        double rel =
-            resid / std::max(norm1(mat_view(Rv, m, n, ldC, rowmajor)), norm_floor);
+        double rel = resid / std::max(norm1(Bref.view(v, rowmajor)), norm_floor);
         worst = std::max(worst, rel);
     }
     const double rtol = 20.0 * s * eps;

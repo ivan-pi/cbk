@@ -51,7 +51,6 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
     const bool row = (layout == MKL_ROW_MAJOR);
     const bool up = (uplo == MKL_UPPER);
     const char ul = up ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
     MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
@@ -78,18 +77,15 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
     }
 
     double worst_res = 0, worst_el = 0, worst_untouched = 0;
-    std::vector<T> Lref(sA);
+    std::vector<T> Lref(A.stride());
     for (int v = 0; v < nm; ++v) {
-        const T *Av = A[v];
-        const T *Hv = H[v];
-
         /* the factor is stored in `layout`; the input and the residual are the
          * column-major dense side */
-        const auto H = mat_view(Hv, n, n, n, row);
-        const auto A = mat_view(Av, n, n);
+        const auto Hm = H.view(v, row);
+        const auto Am = A.view(v);
 
         /* reconstruction residual and untouched-triangle check */
-        std::vector<T> R(sA, 0.0);
+        std::vector<T> R(A.stride(), 0.0);
         const auto Res = mat_view(R.data(), n, n);
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
@@ -97,31 +93,31 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
                 int lmax = std::min(i, j);
                 if (!up) /* A = L L^T */
                     for (int l = 0; l <= lmax; ++l)
-                        s += H(i, l) * H(j, l);
+                        s += Hm(i, l) * Hm(j, l);
                 else /* A = U^T U */
                     for (int l = 0; l <= lmax; ++l)
-                        s += H(l, i) * H(l, j);
-                Res(i, j) = (T)s - A(i, j);
+                        s += Hm(l, i) * Hm(l, j);
+                Res(i, j) = (T)s - Am(i, j);
             }
-        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), norm_floor));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(Am), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
                 if (!named)
                     worst_untouched =
-                        std::max<double>(worst_untouched, std::abs(H(i, j) - A(i, j)));
+                        std::max<double>(worst_untouched, std::abs(Hm(i, j) - Am(i, j)));
             }
 
         /* elementwise vs LAPACKE_dpotrf (unique SPD factor -> a sharp signal) */
-        std::copy(Av, Av + sA, Lref.begin());
+        std::copy(A[v], A[v] + A.stride(), Lref.begin());
         lapack<T>::potrf(LAPACK_COL_MAJOR, ul, n, Lref.data(), n);
         const auto Lr = mat_view(Lref.data(), n, n);
         double el = 0, lref_norm = 0;
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
-                if (named) el = std::max<double>(el, std::abs(H(i, j) - Lr(i, j)));
+                if (named) el = std::max<double>(el, std::abs(Hm(i, j) - Lr(i, j)));
             }
         lref_norm = norm1(Lr); /* triangular factor L1 norm */
         worst_el = std::max(worst_el, el / std::max(lref_norm, norm_floor));

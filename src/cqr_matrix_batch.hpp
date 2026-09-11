@@ -49,9 +49,22 @@ template <typename T, typename Alloc = std::allocator<T>> class MatrixBatch {
     const T *operator[](int idx) const { return a_.data() + checked(idx) * stride(); }
     MatrixView<T>       view(int idx)       { return mat_view((*this)[idx], rows_, cols_); }
     ConstMatrixView<T>  view(int idx) const { return mat_view((*this)[idx], rows_, cols_); }
-    T       &operator()(int idx, int i, int j)       { return view(idx)(i, j); }
-    const T &operator()(int idx, int i, int j) const { return view(idx)(i, j); }
+    T       &operator()(int idx, int i, int j)       { return a_[at(idx, i, j)]; }
+    const T &operator()(int idx, int i, int j) const { return a_[at(idx, i, j)]; }
     // clang-format on
+
+    /* Matrix idx read in the given layout, with its natural leading dimension
+     * (rows for column-major, cols for row-major) -- for batches whose dense
+     * matrices are stored in a runtime layout, so call sites stop deriving
+     * the ld by hand. */
+    MatrixView<T> view(int idx, bool rowmajor)
+    {
+        return mat_view((*this)[idx], rows_, cols_, rowmajor ? cols_ : rows_, rowmajor);
+    }
+    ConstMatrixView<T> view(int idx, bool rowmajor) const
+    {
+        return mat_view((*this)[idx], rows_, cols_, rowmajor ? cols_ : rows_, rowmajor);
+    }
 
     /* The whole buffer, for wholesale copies into a destroyable working pool. */
     const vector_type &storage() const { return a_; }
@@ -80,6 +93,14 @@ template <typename T, typename Alloc = std::allocator<T>> class MatrixBatch {
     {
         assert(idx >= 0 && idx < count_);
         return (std::size_t)idx;
+    }
+
+    /* Element (idx, i, j), fully bounds-checked: the same address view(idx)(i, j)
+     * yields, without constructing a view per element access. */
+    std::size_t at(int idx, int i, int j) const
+    {
+        assert(i >= 0 && i < rows_ && j >= 0 && j < cols_);
+        return checked(idx) * stride() + (std::size_t)i + (std::size_t)j * rows_;
     }
 
     int count_, rows_, cols_;
