@@ -49,9 +49,9 @@ cqr_link_openmp(cqr_compact)
 add_library(cqr::compact ALIAS cqr_compact)
 
 # ---------------------------------------------------------------------------
-# Intel MKL compact extension: cqr_mkl_?{geqrf,ormqr,potrf,sytrfnp,sytrsnp,
-# sysvnp,trsm,gels}_compact, the MKL-style API of include/cqr_mkl_ext.h (see
-# docs/*_design.md)
+# Intel MKL compact extension: cqr_mkl_?{geqrf,ormqr,potrf,potrs,posv,sytrfnp,
+# sytrsnp,sysvnp,trsm,gels}_compact, the MKL-style API of include/cqr_mkl_ext.h
+# (see docs/*_design.md)
 # ---------------------------------------------------------------------------
 if(CQR_WITH_MKL)
   find_package(MKLCompact REQUIRED)

@@ -340,9 +340,10 @@ template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T
 }
 
 // ----------------------- portable C API, by scalar type ------------
-// compact<T>::geqrf / ormqr / orgqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm / gels forward
-// to the d/s entry points of cqr_compact.h, so the templated suites call one name for both precisions;
-// compact<T>::name labels their output.
+// compact<T>::geqrf / ormqr / orgqr / potrf / potrs / posv / sytrfnp / sytrsnp
+// / sysvnp / trsm / gels forward to the d/s entry points of cqr_compact.h, so
+// the templated suites call one name for both precisions; compact<T>::name
+// labels their output.
 
 template <class T> struct compact;
 
@@ -361,6 +362,12 @@ template <> struct compact<T> {                                                 
     { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \
     static int potrf(char lay, char up, int n, T *a, int ld, int V, int nm)                \
     { return p##potrf_compact(lay, up, n, a, ld, V, nm); }                                 \
+    static int potrs(char lay, char up, int n, int nrhs, const T *a, int lda, T *b,        \
+                     int ldb, int V, int nm)                                               \
+    { return p##potrs_compact(lay, up, n, nrhs, a, lda, b, ldb, V, nm); }                  \
+    static int posv(char lay, char up, int n, int nrhs, T *a, int lda, T *b, int ldb,      \
+                    int V, int nm)                                                         \
+    { return p##posv_compact(lay, up, n, nrhs, a, lda, b, ldb, V, nm); }                   \
     static int sytrfnp(char lay, char up, int n, T *a, int ld, int V, int nm)              \
     { return p##sytrfnp_compact(lay, up, n, a, ld, V, nm); }                               \
     static int sytrsnp(char lay, char up, int n, int nrhs, const T *a, int lda, T *b,      \

@@ -1,27 +1,38 @@
-# API Design Document: `cqr_mkl_dpotrf_compact`
+# API Design Document: `cqr_mkl_dpotrf_compact` / `cqr_mkl_dpotrs_compact` / `cqr_mkl_dposv_compact`
 
-> Assisted-by: Claude:claude-opus-4.8
+> Assisted-by: Claude:claude-opus-4.8 Claude
 
 ## 1. Overview
 
 This extension provides a fast batched **Cholesky factorization** of a set of
 symmetric positive-definite `n x n` matrices stored in Intel MKL's Compact
-(interleaved-batch) format. It mirrors `mkl_?potrf_compact` in signature and
+(interleaved-batch) format, the **solve** that completes a batched SPD linear
+system from that factor, and the **fused driver** that does both in one pass
+over the batch. The factorization mirrors `mkl_?potrf_compact` in signature and
 semantics but is a fully portable, open implementation built on GNU vector types
 -- specialized for SSE, AVX, and AVX-512 registers -- so it can be used,
-studied, and tuned without depending on MKL's closed compact kernels.
+studied, and tuned without depending on MKL's closed compact kernels. MKL ships
+no compact `potrs` or `posv`, so -- like `cqr_mkl_?ormqr_compact` -- the solve
+and the fused driver fill a gap in the compact ecosystem rather than shadowing
+an MKL routine.
 
-It joins the QR routines already in this project (`cqr_mkl_?geqrf_compact`,
+They join the QR routines already in this project (`cqr_mkl_?geqrf_compact`,
 `cqr_mkl_?ormqr_compact`), sharing the same `pack<T,V>` GNU-vector machinery and
-the same MKL-style API surface (`MKL_LAYOUT` + `MKL_COMPACT_PACK`). Paired with
-MKL's own `mkl_?trsm_compact`, the factorization solves batched
-symmetric-positive-definite systems in the compact format:
+the same MKL-style API surface (`MKL_LAYOUT` + `MKL_COMPACT_PACK`). The
+factorization pairs with either the solve companion or MKL's own
+`mkl_?trsm_compact` to solve batched symmetric-positive-definite systems in the
+compact format:
 
 ```
 cqr_mkl_dpotrf_compact('L', A -> L);          // A = L L^T
-mkl_dtrsm_compact('L','L','N', L, B);        // B := L^{-1} B
-mkl_dtrsm_compact('L','L','T', L, B);        // B := L^{-T} (L^{-1} B) = A^{-1} B = X
+cqr_mkl_dpotrs_compact('L', L, B);           // B := A^{-1} B = X
+                                             //   (L z = B; L^T X = z)
+
+cqr_mkl_dposv_compact ('L', A -> L, B);      // both, fused per group
 ```
+
+(`cqr_mkl_dpotrs_compact` packages the two `mkl_dtrsm_compact('L','L','N')` /
+`('L','L','T')` sweeps of the manual pipeline; section 6.7.)
 
 The primary target is many small-to-medium matrices, with order in `3..500` and
 the emphasis on sizes below 170. The tuned path is column-major, lower triangle
@@ -35,18 +46,34 @@ void cqr_mkl_dpotrf_compact (
     double * ap, MKL_INT ldap, MKL_INT * info,
     MKL_COMPACT_PACK format, MKL_INT nm
 );
+
+void cqr_mkl_dpotrs_compact (
+    MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+    const double * ap, MKL_INT ldap, double * bp, MKL_INT ldbp,
+    MKL_INT * info, MKL_COMPACT_PACK format, MKL_INT nm
+);
+
+void cqr_mkl_dposv_compact (
+    MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+    double * ap, MKL_INT ldap, double * bp, MKL_INT ldbp,
+    MKL_INT * info, MKL_COMPACT_PACK format, MKL_INT nm
+);
 ```
 
-The signature is identical to
+The factorization signature is identical to
 [`mkl_dpotrf_compact`](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/mkl-potrf-compact.html),
-so the routine is a drop-in alternative within the MKL Compact ecosystem. Both
-real precisions are provided: `cqr_mkl_dpotrf_compact` (double) and
-`cqr_mkl_spotrf_compact` (single). Unlike `?geqrf`, `?potrf` needs no workspace,
-so -- like MKL's compact `potrf` -- there are no `work`/`lwork` arguments.
+so the routine is a drop-in alternative within the MKL Compact ecosystem. The
+solve is LAPACK `?potrs` plus the three arguments MKL's compact routines add
+(`layout`, `format`, `nm`), with `info` as a scalar status; the fused driver is
+LAPACK `?posv`, i.e. the solve's signature with a non-const `ap` -- the same
+relation `cqr_mkl_?sytrsnp_compact` / `cqr_mkl_?sysvnp_compact` bear to their
+factorization. Both real precisions are provided (`d`/`s`). Unlike `?geqrf`,
+none of the routines needs workspace, so -- like MKL's compact `potrf` -- there
+are no `work`/`lwork` arguments.
 
 ## 3. Description
 
-The routine forms the Cholesky factorization of each symmetric positive-definite
+`cqr_mkl_?potrf_compact` forms the Cholesky factorization of each symmetric positive-definite
 `n x n` matrix `A` in the batch,
 
 ```
@@ -65,7 +92,24 @@ exactly as `mkl_?potrf_compact` (and LAPACK `?potrf`) leave it:
 `A` must be symmetric; only the triangle named by `uplo` is read, so the caller
 need only populate that triangle. Before calling this routine, pack the matrices
 with `mkl_?gepack_compact`; after it, call `mkl_?geunpack_compact` unless another
-compact routine (e.g. `mkl_?trsm_compact`) will consume the factors first.
+compact routine (e.g. `cqr_mkl_?potrs_compact` or `mkl_?trsm_compact`) will
+consume the factors first.
+
+`cqr_mkl_?potrs_compact` then solves `A X = B` for each matrix from that
+factor, overwriting the `n x nrhs` RHS block `B` with `X` via two in-place
+substitution sweeps:
+
+```
+L z = B;    L^T X = z      (MKL_LOWER)
+U^T z = B;  U   X = z      (MKL_UPPER)
+```
+
+Both sweeps are the compact `trsm` with a non-unit diagonal (section 6.7).
+
+`cqr_mkl_?posv_compact` performs the factorization and the solve for each group
+of `V` matrices before moving to the next group (section 6.8). On exit `ap`
+holds the factor exactly as `cqr_mkl_?potrf_compact` leaves it and `bp` holds
+`X`; the result is bit-identical to the two separate calls.
 
 **Constraint note.** As with all Compact routines, every matrix in the call
 shares the same order `n`, leading dimension `ldap`, storage `layout`, and
@@ -84,6 +128,8 @@ the factor feeds a solve, so no unpack is needed until the final result is read)
 
 ## 4. Input Parameters
 
+Factorization (`cqr_mkl_?potrf_compact`):
+
 * **`layout`** (`MKL_LAYOUT`): the in-memory storage order of each matrix --
   `MKL_COL_MAJOR` (tuned path) or `MKL_ROW_MAJOR`.
 * **`uplo`** (`MKL_UPLO`): `MKL_LOWER` (factor and store the lower triangle `L`;
@@ -99,21 +145,40 @@ the factor feeds a solve, so no unpack is needed until the final result is read)
   (SSE/AVX/AVX-512 -> 2/4/8 for FP64, 4/8/16 for FP32).
 * **`nm`** (`MKL_INT`): total number of matrices in the batch (`nm >= 0`).
 
-**Buffer alignment.** Any base alignment of `ap` is correct. For full speed,
-align the base to the pack width (64 B covers every format) so each SIMD access
-stays on one cache line instead of splitting across two -- worth up to ~40% on
-small, cache-resident sizes. `mkl_malloc(bytes, 64)` (the default of this
-project's `mkl_alloc_bytes`) already does this.
+Solve (`cqr_mkl_?potrs_compact`), in addition:
+
+* **`nrhs`** (`MKL_INT`): number of right-hand sides (columns of `B`,
+  `nrhs >= 0`).
+* **`ap`** (`const double *`): the factored compact batch from
+  `cqr_mkl_?potrf_compact` (not modified); `uplo` must match the factorization
+  call.
+* **`bp`** (`double *`): the compact RHS batch `B` (`n x nrhs` per matrix),
+  overwritten with `X`.
+* **`ldbp`** (`MKL_INT`): leading dimension of each `B` (`>= n` column-major,
+  `>= nrhs` row-major).
+
+Fused solve (`cqr_mkl_?posv_compact`): the solve's arguments, with **`ap`**
+(`double *`) the symmetric positive-definite input batch, as for the
+factorization.
+
+**Buffer alignment.** Any base alignment is correct. For full speed, align the
+bases to the pack width (64 B covers every format) so each SIMD access stays on
+one cache line instead of splitting across two -- worth up to ~40% on small,
+cache-resident sizes. `mkl_malloc(bytes, 64)` (the default of this project's
+`mkl_alloc_bytes`) already does this.
 
 ## 5. Output Parameters
 
-* **`ap`**: the named triangle is overwritten with its Cholesky factor `L` or
-  `U`, in Compact format; the other triangle is left untouched.
+* **`ap`** (factorization, fused solve): the named triangle is overwritten with
+  its Cholesky factor `L` or `U`, in Compact format; the other triangle is left
+  untouched.
+* **`bp`** (solve, fused solve): overwritten with the solution `X`, in Compact
+  format.
 * **`info`** (`MKL_INT *`): a single scalar status, `0` on success. MKL leaves
   the compact `info` reserved rather than reporting a non-SPD leading minor the
-  way LAPACK `?potrf` does, and this routine does the same (section 6.2). The one
-  value it can set is dispatch-level: an unrecognized `format` selects no kernel
-  and sets `info = -1`.
+  way LAPACK `?potrf` does, and these routines do the same (section 6.2). The one
+  value any of them can set is dispatch-level: an unrecognized `format` selects
+  no kernel and sets `info = -1`.
 
 ## 6. Design Considerations & Compatibility
 
@@ -194,7 +259,10 @@ the identity (`L = I`, all pivots `1`, no off-diagonal fill), so the padded lane
 compute a mathematical no-op and the kernel runs the whole final pack unmasked at
 full width without corrupting real data. Because the pivot path is
 unconditional, the identity flows through it with no lane mask -- unlike `geqrf`,
-whose `larfg` needs a mask to neutralize padded columns.
+whose `larfg` needs a mask to neutralize padded columns. The same holds through
+the solve: padded factor slots are identities (unit diagonal, so the non-unit
+diagonal divide never hits zero), and the padded columns of `B` pass through the
+sweeps unchanged (and are never read back).
 
 ### 6.5 No argument checking (Compact convention)
 
@@ -226,6 +294,40 @@ deliberate scope of this routine:
   for the QR routines. The factorization is unpivoted -- LAPACK `?potrf` is
   unpivoted too, and symmetric (diagonal) pivoting (`?pstrf`) needs comparisons
   that do not vectorize across a pack.
+
+### 6.7 The solve: two non-unit `trsm` sweeps
+
+`cqr_mkl_?potrs_compact` completes the batched solve from the factor. Its two
+triangular sweeps are the existing compact `trsm` *group* kernels invoked with a
+*non-unit* diagonal -- `L z = B; L^T X = z` for the lower factor, `U^T z = B;
+U X = z` for the upper -- so column-major runs on `trsm`'s tuned side-left
+row-dot path and row-major on its strided kernel, exactly as for
+`cqr_mkl_?sytrsnp_compact` (whose diagonal-solve middle step Cholesky does not
+need: the factor's diagonal is the divisor of the sweeps themselves). No
+workspace is needed and `B` is overwritten in place.
+
+A caller who prefers to compose the solve manually can equally run
+`cqr_mkl_?trsm_compact` (or `mkl_?trsm_compact`) twice, as in section 1 --
+`potrs` packages exactly that composition behind the LAPACK `?potrs` argument
+list. Consistent with the factorization's no-check contract, a factor lane
+poisoned by non-SPD input (NaN/Inf on the diagonal) propagates into that lane's
+solution rather than reporting an error.
+
+### 6.8 The fused solve: factor and solve per group
+
+`cqr_mkl_?posv_compact` is the `?posv` of the pair, and it exists for
+throughput, not for arithmetic: called separately, `potrf` streams the whole
+batch once and `potrs` streams it again, so for batches that exceed the cache
+every factor is written out and read back -- the 15-55% whole-pool penalty the
+project's solve benchmark measured (`PLANS.md`). The fused driver runs, for
+each group of `V` matrices, the factorization group kernel immediately followed
+by the solve group kernel, while the group's factor is still in cache, and
+threads the whole solve as one `for_each_group` loop with the combined flop
+estimate. Because it calls the *same* group kernels in the *same* order on the
+*same* data, its factor and its `X` are bit-identical to the two separate calls
+-- a property the test suites gate (section 7.5). The design (and its
+rationale) is `cqr_mkl_?sysvnp_compact`'s, applied to the Cholesky pair; see
+`docs/cqr_mkl_dsytrfnp_compact_design.md` section 6.8.
 
 ## 7. Testing and Validation Methodology
 
@@ -272,13 +374,26 @@ with the rest of the compact toolkit.
 
 ### 7.4 Portable self-test
 
-A self-contained test validates the templated kernel directly against a scalar
+A self-contained test validates the templated kernels directly against a scalar
 reference (`ref_potf2`) across `(T, V)` combinations, both `uplo`, and partial
-(padded) final packs, plus the LAPACK-style argument validation of the portable C
-API. It needs no external libraries at all; only the suites above require an MKL
-installation (for the Compact API). BLAS and LAPACK themselves are assumed
-available, as they are on most platforms -- it is the MKL Compact extension that
-must be installed separately.
+(padded) final packs, plus the end-to-end portable solve (`?potrf_compact` +
+`?potrs_compact` recovering a known `X`), the fused `?posv_compact`
+bit-identical to it, and the LAPACK-style argument validation of the three
+portable C APIs. It needs no external libraries at all; only the suites above
+require an MKL installation (for the Compact API). BLAS and LAPACK themselves
+are assumed available, as they are on most platforms -- it is the MKL Compact
+extension that must be installed separately.
+
+### 7.5 Suite 4 -- The packaged solve: `?potrs` and the fused `?posv`
+
+The end-to-end contract of section 7.3, run through the packaged routines over
+both `uplo` and both layouts: `B = A X` for known `X`, then
+`cqr_mkl_?potrf_compact -> cqr_mkl_?potrs_compact` must recover `X` (forward
+error and system residual gated at `100 * n * eps`, as in suite 3), including
+padded partial groups and RHS counts that exercise `trsm`'s 4/2/1 column
+blocks. On the same packed input `cqr_mkl_?posv_compact` must reproduce the
+two-step factor and `X` **bit-for-bit** over the whole compact buffers, padded
+lanes included (section 6.8).
 
 ## 8. Implementation Strategy
 
@@ -289,25 +404,28 @@ through `extern "C"` for the FFI-stable surfaces, built on the project's
 ### 8.1 API boundary
 
 * **MKL-style API** (`cqr_mkl_ext.h`, the primary surface):
-  `cqr_mkl_dpotrf_compact` / `cqr_mkl_spotrf_compact`, unwrapping
-  `MKL_COMPACT_PACK -> V` and `MKL_UPLO`/`MKL_LAYOUT`, instantiated on `MKL_INT`
-  so ILP64 dimensions are not narrowed.
-* **Portable C API** (`cqr_compact.h`): `dpotrf_compact` / `spotrf_compact`,
-  taking `char layout` (`'C'`/`'R'`), `char uplo` (`'L'`/`'U'`), an explicit
-  interleave width `V`, and no MKL dependency, with LAPACK-style `info = -j`
-  argument validation.
-* **Templated kernel** (`src/cqr_potrf_compact.hpp`): the per-group kernel
-  `potrf_compact_group<T,V>` factors the lower triangle of a `BatchView`; the
-  driver `potrf_compact<T,V>` (any `layout`/`uplo`; the entry point both C
-  adapters call) builds the view so that the named triangle's storage appears
-  as that lower triangle (section 6.3).
+  `cqr_mkl_?potrf_compact` / `cqr_mkl_?potrs_compact` / `cqr_mkl_?posv_compact`,
+  unwrapping `MKL_COMPACT_PACK -> V` and `MKL_UPLO`/`MKL_LAYOUT`, instantiated
+  on `MKL_INT` so ILP64 dimensions are not narrowed.
+* **Portable C API** (`cqr_compact.h`): `?potrf_compact` / `?potrs_compact` /
+  `?posv_compact`, taking `char layout` (`'C'`/`'R'`), `char uplo`
+  (`'L'`/`'U'`), an explicit interleave width `V`, and no MKL dependency, with
+  LAPACK-style `info = -j` argument validation.
+* **Templated kernels**: the per-group kernel `potrf_compact_group<T,V>`
+  factors the lower triangle of a `BatchView` (the driver builds the view so
+  that the named triangle's storage appears as that lower triangle, section
+  6.3); `potrs_compact_group<T,V>` runs the two sweeps on one group; the
+  all-groups drivers `potrf_compact` / `potrs_compact` / `posv_compact` (the
+  entry points both C adapters call) loop over groups with `for_each_group`.
 
 ### 8.2 Source layout
 
 | File | Role |
 |------|------|
 | `src/cqr_potrf_compact.hpp` | Templated SIMD Cholesky kernel (vectorized `potf2`; scalar `T`, width `V`). |
-| `src/cqr_compact.cpp` | Portable `?potrf_compact` C entry points (runtime `V` -> compile-time dispatch, `info = -j`). |
-| `src/cqr_mkl_ext.cpp` | Unwraps `MKL_COMPACT_PACK` -> `V` and `MKL_UPLO`/`MKL_LAYOUT`, calls the kernel. |
-| `tests/test_cqr_potrf_compact.cpp` | Self-contained correctness test vs a scalar `potf2` reference (no BLAS). |
-| `tests/test_cqr_potrf_mkl.cpp` | MKL + dense-LAPACK validation (residual, uniqueness, cross-check, solve). |
+| `src/cqr_potrs_compact.hpp` | Templated solve: two non-unit `trsm` group sweeps, and its driver. |
+| `src/cqr_posv_compact.hpp` | The fused factor-and-solve driver over both group kernels. |
+| `src/cqr_compact.cpp` | Portable `?potrf_compact` / `?potrs_compact` / `?posv_compact` C entry points (runtime `V` -> compile-time dispatch, `info = -j`). |
+| `src/cqr_mkl_ext.cpp` | Unwraps `MKL_COMPACT_PACK` -> `V` and `MKL_UPLO`/`MKL_LAYOUT`, calls the kernels. |
+| `tests/test_cqr_potrf_compact.cpp` | Self-contained correctness test vs a scalar `potf2` reference (no BLAS), incl. the potrs/posv solve. |
+| `tests/test_cqr_potrf_mkl.cpp` | MKL + dense-LAPACK validation (residual, uniqueness, cross-check, solves, fused bit-identity). |

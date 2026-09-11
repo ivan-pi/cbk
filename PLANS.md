@@ -57,19 +57,33 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
 - **Scoped out (design 6.5):** complex (`?ungqr`); `?orglq` (this kernel over
   the transposed view) until a use case asks; blocked accumulation.
 
-## potrf
+## potrf / potrs / posv
+
+The Cholesky factorization, its solve, and the fused `?posv`-style driver
+(`docs/cqr_mkl_dpotrf_compact_design.md`); MKL has a compact `potrf` but no
+compact `potrs` or `posv`.
 
 - **Implemented (design 6-8):** vectorized unblocked `potf2`, unconditional
   `sqrt` pivot, `JB = 4` register-blocked rank-1 update. The four
   `(layout, uplo)` cases are one kernel over transposed views (design 6.3).
+  The solve as two non-unit `trsm` group sweeps (`?sytrsnp` minus the diagonal
+  step); `posv` factoring and solving each group while its factor is
+  cache-resident, bit-identical to the two calls.
 - **Validated (design 7):** BLAS-free test vs a scalar `potf2` (both `uplo`,
-  both layouts, padding, non-SPD lane isolation); MKL/LAPACK test gating the
+  both layouts, padding, non-SPD lane isolation), the end-to-end SPD solve
+  (two-step and fused) and C-API validation of all three entry points;
+  MKL/LAPACK test gating the
   reconstruction residual (`20 n eps`), the untouched triangle (bit-for-bit),
   the factor vs `LAPACKE_dpotrf` (`20 n eps`), the cross-check vs
-  `mkl_dpotrf_compact` (bit-exact), and the SPD solve.
-- **Benchmarked:** `bench_potrf_compact`.
+  `mkl_dpotrf_compact` (bit-exact), the SPD solve through `mkl_?trsm_compact`
+  and through `potrs` (`100 n eps`), and the fused driver's bit-identity.
+- **Benchmarked:** `bench_potrf_compact` (factorization only).
 - **Scoped out (design 6.6):** positive-definiteness is assumed (a non-SPD lane
-  poisons itself with `NaN`/`Inf`); no blocked factorization.
+  poisons itself with `NaN`/`Inf`, and propagates through a `potrs` solve with
+  that factor); no blocked factorization.
+- **Open:** no solve benchmark (the `bench_sysvnp_compact` harness would port),
+  so the `posv` vs `potrf + potrs` fusion gain on out-of-cache pools is
+  unmeasured, as for `sysvnp` (design 6.8).
 
 ## sytrfnp / sytrsnp / sysvnp
 
