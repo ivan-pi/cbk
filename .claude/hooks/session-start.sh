@@ -67,6 +67,6 @@ else
   echo "session-start: pip install pre-commit failed; format.sh will fall back to clang-format"
 fi
 
-echo "session-start: build with 'cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq && cmake --build build && ctest --test-dir build'"
+echo "session-start: build with 'cmake -S . -B build && cmake --build build && ctest --test-dir build'"
 echo "session-start: 'pre-commit run --all-files' checks the style; see .claude/CLAUDE.md"
-echo "session-start: for clang-tidy, 'CXX=clang++ cmake -S . -B build-tidy -DBLA_VENDOR=Intel10_64lp_seq' then 'pre-commit run --hook-stage manual clang-tidy --all-files'"
+echo "session-start: for clang-tidy, 'CXX=clang++ cmake -S . -B build-tidy' then 'pre-commit run --hook-stage manual clang-tidy --all-files'"

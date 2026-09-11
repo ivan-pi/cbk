@@ -7,7 +7,7 @@ versions and paths below are what they installed then.
 
 ```sh
 sudo apt-get install libmkl-dev          # MKL 2020.0.4 (Debian 2020.4.304-4)
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 ```
 
 Headers land in `/usr/include/mkl`, libraries in `/usr/lib/x86_64-linux-gnu`,
@@ -30,8 +30,10 @@ sudo apt-get update
 sudo apt-get install intel-oneapi-mkl-devel   # 2026.1.0-236 in Sept 2026; ~4 GB on disk
 ```
 
-`apt-cache madison intel-oneapi-mkl-devel` lists the available versions (2025.2
-through 2026.1 at the time); `intel-oneapi-mkl-devel-<ver>` pins one. The
+`apt-cache madison intel-oneapi-mkl-devel` lists every version the configured
+repositories offer, with its source (the subcommand imitates the output of
+Debian's `madison` archive tool, hence the name); 2025.2 through 2026.1 were
+listed at the time, and `intel-oneapi-mkl-devel-<ver>` pins one. The
 install pulls in the compiler runtime (`libiomp5` under
 `/opt/intel/oneapi/compiler/<ver>/lib`) but not the compilers themselves.
 
@@ -42,23 +44,20 @@ still no `mkl_?ormqr_compact`.
 
 ### Building the repo against it
 
-Coexistence with `libmkl-dev` is the trap: pointing `MKLROOT` at oneAPI makes
-`cmake/FindMKLCompact.cmake` pick up the oneAPI *headers* (it hints
-`$ENV{MKLROOT}/include`), but CMake 3.28's FindBLAS still resolved the
-*libraries* from `/usr/lib/x86_64-linux-gnu` -- a mixed build that happens to
-run (the ABI is compatible) but tests the wrong library. Add a library-path
-hint so both come from oneAPI:
+`cmake/FindMKLCompact.cmake` locates MKL directly and takes headers and
+libraries from one installation (the library dir is derived from where
+`mkl_compact.h` was found), so with `libmkl-dev` also installed there is no
+mixed build. Point it at oneAPI with either form:
 
 ```sh
-MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi \
-  -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib
+MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-oneapi -DMKLCompact_ROOT=/opt/intel/oneapi/mkl/latest -DCMAKE_BUILD_TYPE=Release
 cmake --build build-oneapi -j
 ctest --test-dir build-oneapi          # 17/17 on 2026.1
 ```
 
-Check the cache: `BLAS_mkl_core_LIBRARY` must point under `/opt/intel`. CMake
-embeds a RUNPATH, so the test binaries run without `LD_LIBRARY_PATH`; a
+Check the cache: `MKLCompact_mkl_core_LIBRARY` must point under `/opt/intel`.
+CMake embeds a RUNPATH, so the test binaries run without `LD_LIBRARY_PATH`; a
 program linked by hand needs `LD_LIBRARY_PATH=/opt/intel/oneapi/mkl/latest/lib`
 (or `source /opt/intel/oneapi/mkl/latest/env/vars.sh`). Verify what is loaded
 with `ldd <binary> | grep mkl_core` or, at run time, `mkl_get_version_string()`.
@@ -75,9 +74,16 @@ libraries; the sequential-layer probes here also linked fine without it.
 
 ### Threading layer
 
-`-DBLA_VENDOR=Intel10_64lp` asks for the threaded layer, but on this C/C++-only
-project FindBLAS pairs `mkl_intel_thread` with `iomp5`, which is not on the
-default library path: the link succeeds and the binary segfaults at startup.
-Do not use it without settling the OpenMP runtime for the whole build (see
-`.claude/mkl-compact-behavior.md`, section 3b). The sequential layer is the
-repo's choice.
+`-DMKLCompact_THREADING=sequential` (default) links `mkl_sequential`; `gnu`
+links `mkl_gnu_thread` with the compiler's own OpenMP runtime (libgomp under
+g++, libomp under clang, which exports the GOMP entry points; the same recipe
+as Intel's `MKLConfig.cmake`) and the full test suite passes either way;
+`intel` links `mkl_intel_thread` + `libiomp5`, which is only right with an
+Intel compiler -- under g++/clang it puts two OpenMP runtimes in one process,
+the configure step warns, and tests fail. Under a threaded layer remember
+that MKL's workspace query scales with its thread count (see
+`.claude/mkl-compact-behavior.md`).
+`-DMKLCompact_INTERFACE=ilp64` selects the ILP64 interface (and defines
+`MKL_ILP64`). The old `-DBLA_VENDOR=Intel10_64lp[_seq]` spellings still map
+onto these; any other `BLA_VENDOR` is rejected, since no other BLAS has the
+compact API.

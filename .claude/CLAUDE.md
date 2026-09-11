@@ -9,14 +9,16 @@ Intel MKL supplies the Compact API and the LAPACK/LAPACKE used for validation:
 
 ```sh
 # Debian/Ubuntu: sudo apt-get install libmkl-dev
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
 `-DCQR_WITH_MKL=OFF` builds only the portable kernels (no MKL, no MKL tests).
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
-Intel's oneAPI apt repository, and how to point the build at a oneAPI install.
+Intel's oneAPI apt repository, and how to point the build at a oneAPI install
+(`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=gnu` for MKL's
+threaded layer).
 
 ## Performance builds
 
@@ -25,8 +27,7 @@ choose. For a fast build, pass them through `CMAKE_CXX_FLAGS` so the SIMD kernel
 target the host's widest vectors:
 
 ```sh
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
 Correctness is independent of these flags; only throughput changes.
@@ -71,7 +72,7 @@ parses with clang's front end, which cannot read g++'s `omp.h`; `libomp-dev`
 supplies clang's) and is a manual stage:
 
 ```sh
-CXX=clang++ cmake -S . -B build-tidy -DBLA_VENDOR=Intel10_64lp_seq
+CXX=clang++ cmake -S . -B build-tidy
 pre-commit run --hook-stage manual clang-tidy --all-files
 ```
 

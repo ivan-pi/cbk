@@ -40,8 +40,7 @@ compact kernels dispatch to the host's widest vectors (AVX-512) at runtime -- an
 unfair matchup. Pass host-tuned flags so the open kernels emit the full width:
 
 ```sh
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
 Correctness (the gate each benchmark carries) is independent of these flags; only
