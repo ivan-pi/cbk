@@ -11,7 +11,7 @@
  * allocator parameter is what separates the two uses: the tests default it,
  * the benchmarks substitute a 64-byte-aligned one so a dense pool and its
  * LAPACK working copies start pack-aligned like the compact buffers (see
- * "Buffer alignment" in AGENTS.md).
+ * "Buffer alignment" in .claude/CLAUDE.md).
  *
  * Assisted-by: Claude
  */

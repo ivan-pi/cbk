@@ -24,7 +24,7 @@ the same folder; see the top-level [README](../README.md).
 ## Running them
 
 The benchmarks are built by the standard MKL build (see the
-[README](../README.md) / [AGENTS.md](../AGENTS.md)). From a configured tree:
+[README](../README.md) / [CLAUDE.md](../.claude/CLAUDE.md)). From a configured tree:
 
 ```sh
 cmake --build build -j

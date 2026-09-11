@@ -6,7 +6,7 @@ name: clang-tidy
 # has to configure a build tree first, and installing MKL plus a matching
 # clang / clang-tidy / libomp on the runner costs minutes each time. The
 # same check runs locally in seconds against an existing build-tidy tree
-# (AGENTS.md).
+# (.claude/CLAUDE.md).
 on:
   workflow_dispatch:
 

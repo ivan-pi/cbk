@@ -539,7 +539,7 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 // library's group_stride. BatchView is templated on the interleave width, so
 // for_vlen turns the runtime V into the compile-time one (2, 4, 8 or 16 --
 // the widths the C API accepts). Sharing the kernels' views here is
-// deliberate; see "Two views, one idea" in AGENTS.md.
+// deliberate; see "Two views, one idea" in .claude/CLAUDE.md.
 //
 // A padded slot carries pad_diag on its diagonal, zero elsewhere: the identity
 // for matrix batches (so kernels run the padding unmasked), zero for tau

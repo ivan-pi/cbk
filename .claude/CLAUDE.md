@@ -1,4 +1,4 @@
-# AGENTS.md
+# CLAUDE.md
 
 Working notes for contributors (human or agent) to **cqr**, a batched QR library
 for many small matrices in Intel MKL's Compact (interleaved) format.
