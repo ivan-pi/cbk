@@ -195,7 +195,7 @@ unpivoted `mkl_?getrfnp_compact`. Status vs. the design document:
 - **Threading.** Each routine's group loop is an OpenMP `parallel for`
   (static schedule, at most one thread per group) gated on two or more groups
   and a per-call work estimate above the measured fork/join break-even
-  (`2e5` flops), so it stays serial for small calls and inside a caller's own
+  (`5e4` flops), so it stays serial for small calls and inside a caller's own
   parallel region unless nested parallelism is enabled (`OMP_NUM_THREADS=8,2`).
   The factorization benchmarks' cqr paths hand the whole pool to one call; the
   MKL and LAPACK reference paths keep an outer OpenMP loop (sequential MKL is

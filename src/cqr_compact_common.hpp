@@ -225,11 +225,15 @@ template <typename F> bool for_vlen(int V, F &&f)
 /* whenever it has two groups and two threads.                         */
 /*                                                                     */
 /* parallel_min_flops was measured, not guessed: a fork/join costs     */
-/* 2-3 us on the 4-core AVX-512 box this was tuned on (gcc, libgomp);  */
-/* dgeqrf calls below ~1e5 flops ran slower in parallel and everything */
-/* above 2e5 gained 1.4-3.6x. The constant scales with fork cost times */
-/* single-core flop rate, so override -DCQR_OMP_MIN_FLOPS for a        */
-/* different runtime or machine.                                       */
+/* 2-3 us (gcc, libgomp). On the 4-core AVX-512 box it was first tuned */
+/* on, dgeqrf calls below ~1e5 flops ran slower in parallel and        */
+/* everything above 2e5 gained 1.4-3.6x; on a second 4-core AVX-512    */
+/* box parallel broke even near 3e4 and won from 6e4 up, and the 2e5   */
+/* gate left up to 1.8x on the table (8x8 batches of 128). 5e4 is the  */
+/* compromise: within 10% of serial at 3e4 on the faster-forking box,  */
+/* near break-even on the slower one. The constant scales with fork    */
+/* cost times single-core flop rate, so override -DCQR_OMP_MIN_FLOPS   */
+/* for a different runtime or machine.                                 */
 /*                                                                     */
 /* Composition: the gate first asks whether one more nesting level may */
 /* be active at all, then uses omp_get_max_threads(), the team size at */
@@ -242,7 +246,7 @@ template <typename F> bool for_vlen(int V, F &&f)
 /* ------------------------------------------------------------------ */
 
 #ifndef CQR_OMP_MIN_FLOPS
-#define CQR_OMP_MIN_FLOPS 2e5
+#define CQR_OMP_MIN_FLOPS 5e4
 #endif
 constexpr double parallel_min_flops = CQR_OMP_MIN_FLOPS;
 
