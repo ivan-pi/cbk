@@ -69,8 +69,24 @@ gcc probe.c -I/opt/intel/oneapi/mkl/latest/include -L/opt/intel/oneapi/mkl/lates
     -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl
 ```
 
-`-Wl,--no-as-needed` is what Intel's link advisor prescribes for the dynamic
-libraries; the sequential-layer probes here also linked fine without it.
+That is the line Intel's link advisor gives for a GNU C compiler; the oneAPI
+package ships the advisor as `/opt/intel/oneapi/mkl/latest/bin/mkl_link_tool`
+(the web version at intel.com is unreachable from the remote session), and its
+output for the cases that matter here:
+
+```sh
+mkl_link_tool -libs -c gnu_c -l dynamic -i lp64 -p no           # sequential
+#  -m64 -L${MKLROOT}/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_sequential -lmkl_core -lpthread -lm -ldl
+mkl_link_tool -libs -c gnu_c -l dynamic -i lp64 -p yes -o gomp  # GNU-threaded
+#  -m64 -L${MKLROOT}/lib -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl
+mkl_link_tool -libs -c gnu_c -l static  -i lp64 -p no           # static
+#  -m64 -Wl,--start-group ${MKLROOT}/lib/libmkl_intel_lp64.a ${MKLROOT}/lib/libmkl_sequential.a ${MKLROOT}/lib/libmkl_core.a -Wl,--end-group -lpthread -lm -ldl
+```
+
+(`-p yes|no` selects threading, `-o gomp|iomp5` the OpenMP runtime.) The
+sequential-layer probes here also linked and ran fine without
+`-Wl,--no-as-needed`; `cmake/FindMKLCompact.cmake` links the same libraries by
+full path, which needs neither the flag nor the group.
 
 ### Threading layer
 
