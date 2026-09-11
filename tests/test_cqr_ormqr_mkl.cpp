@@ -119,7 +119,8 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
         const T *Bo = Bout[v], *Rv = Bref[v];
         double resid = max_abs_diff(Bo, Rv, sB);
         /* the reference is stored in `layout`, which its view carries */
-        double rel = resid / std::max(norm1(mat_view(Rv, m, n, ldC, rowmajor)), 1e-300);
+        double rel =
+            resid / std::max(norm1(mat_view(Rv, m, n, ldC, rowmajor)), norm_floor);
         worst = std::max(worst, rel);
     }
     const double rtol = 20.0 * s * eps;

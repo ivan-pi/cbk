@@ -33,6 +33,7 @@ using namespace cqr::test;
 
 template <class T> static void ref_potf2(char uplo, MatrixView<T> A)
 {
+    assert(A.rows == A.cols);
     const bool upper = (uplo == 'U' || uplo == 'u');
     const int n = A.rows;
     if (!upper) {

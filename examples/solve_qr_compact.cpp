@@ -116,7 +116,8 @@ double norm1(const Matrix &A)
     return LAPACKE_dlange(LAPACK_COL_MAJOR, '1', A.rows(), A.cols(), A.data(), A.ld());
 }
 
-/* Relative 1-norm difference ||A - B||_1 / ||B||_1 (A, B same shape). */
+/* Relative 1-norm difference ||A - B||_1 / ||B||_1 (A, B same shape). The
+ * 1e-300 only guards a zero ||B|| against 0/0 = NaN; it is not a tolerance. */
 double rel_diff(const Matrix &A, const Matrix &B)
 {
     Matrix D = A;                                                     /* D <- A */

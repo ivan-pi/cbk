@@ -163,7 +163,7 @@ double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
                 num = std::max(num, std::abs(H[v * sA + off] - Href[off]));
                 den = std::max(den, std::abs(Href[off]));
             }
-        worst = std::max(worst, num / std::max(den, 1e-300));
+        worst = std::max(worst, num / std::max(den, norm_floor));
     }
     return worst;
 }

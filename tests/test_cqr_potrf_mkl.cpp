@@ -103,7 +103,7 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
                         s += H(l, i) * H(l, j);
                 Res(i, j) = (T)s - A(i, j);
             }
-        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), 1e-300));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
@@ -124,7 +124,7 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
                 if (named) el = std::max<double>(el, std::abs(H(i, j) - Lr(i, j)));
             }
         lref_norm = norm1(Lr); /* triangular factor L1 norm */
-        worst_el = std::max(worst_el, el / std::max(lref_norm, 1e-300));
+        worst_el = std::max(worst_el, el / std::max(lref_norm, norm_floor));
     }
 
     const double rtol = 20.0 * n * eps;

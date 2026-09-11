@@ -143,7 +143,7 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
                 double R = (i <= j) ? Hm(i, j) : 0.0; /* triu */
                 resid = std::max(resid, std::abs(R - QtAm(i, j)));
             }
-        worst_res = std::max(worst_res, resid / std::max(norm1(Am), 1e-300));
+        worst_res = std::max(worst_res, resid / std::max(norm1(Am), norm_floor));
 
         /* orthogonality Q^T Q - I (k x k) */
         lapack<T>::gemm(CblasColMajor, CblasTrans, CblasNoTrans, k, k, m, T(1), Q.data(),
@@ -157,7 +157,7 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
         lapack<T>::geqrf(LAPACK_COL_MAJOR, m, n, Href.data(), m, tauref.data());
         double el = std::max(max_abs_diff(Hv, Href.data(), sA),
                              max_abs_diff(tv, tauref.data(), sT));
-        worst_el = std::max(worst_el, el / std::max(norm1(Am), 1e-300));
+        worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
     }
 
     // TODO: review: worst_el is printed as a diagnostic only (design doc 7.1). A

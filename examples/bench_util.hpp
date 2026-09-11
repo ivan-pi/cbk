@@ -43,6 +43,11 @@ using cqr::detail::mat_view;            /* dense strided view (cqr_matrix_view.h
 using cqr::detail::MatrixView;
 using cqr::detail::vlen_for_format; /* pack format -> interleave width */
 
+/* Denominator floor for relative errors, err / max(norm, norm_floor): a
+ * divide-by-zero guard against an exactly zero reference norm (a normal double
+ * near DBL_MIN), not a tolerance -- any real norm dwarfs it. */
+constexpr double norm_floor = 1e-300;
+
 /* Report and abort on the spot if cond is false. */
 inline void check(bool cond, const char *what)
 {

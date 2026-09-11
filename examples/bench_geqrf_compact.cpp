@@ -161,7 +161,7 @@ double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
         }
         for (int i = 0; i < k; ++i)
             num = std::max(num, std::abs(tau[v * (size_t)k + i] - tref[i]));
-        worst = std::max(worst, num / std::max(den, 1e-300));
+        worst = std::max(worst, num / std::max(den, norm_floor));
     }
     return worst;
 }

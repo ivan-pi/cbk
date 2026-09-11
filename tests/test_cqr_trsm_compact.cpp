@@ -17,6 +17,7 @@
 //
 // Assisted-by: Claude:claude-opus-4.8
 
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -44,12 +45,11 @@ static void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A
     const bool tran = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
     const bool unit = (diag == 'U' || diag == 'u');
     const int m = B.rows, n = B.cols;
-    auto Ae = [&](int i, int j) -> T { return A(i, j); };
-    auto Be = [&](int i, int j) -> T & { return B(i, j); };
+    assert(A.rows == A.cols && A.rows == (left ? m : n));
 
     for (int j = 0; j < n; ++j)
         for (int i = 0; i < m; ++i)
-            Be(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
+            B(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
 
     if (left) {
         // solve op(A) X = B column by column; A is m x m
@@ -57,14 +57,14 @@ static void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A
         for (int j = 0; j < n; ++j)
             for (int t = 0; t < m; ++t) {
                 int i = back ? m - 1 - t : t;
-                T s = Be(i, j);
+                T s = B(i, j);
                 if (back)
                     for (int l = i + 1; l < m; ++l)
-                        s -= (tran ? Ae(l, i) : Ae(i, l)) * Be(l, j);
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
                 else
                     for (int l = 0; l < i; ++l)
-                        s -= (tran ? Ae(l, i) : Ae(i, l)) * Be(l, j);
-                Be(i, j) = unit ? s : s / Ae(i, i);
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
+                B(i, j) = unit ? s : s / A(i, i);
             }
     }
     else {
@@ -74,20 +74,20 @@ static void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A
             int j = fwd ? t : n - 1 - t;
             if (fwd)
                 for (int l = 0; l < j; ++l) {
-                    T a = tran ? Ae(j, l) : Ae(l, j);
+                    T a = tran ? A(j, l) : A(l, j);
                     for (int i = 0; i < m; ++i)
-                        Be(i, j) -= a * Be(i, l);
+                        B(i, j) -= a * B(i, l);
                 }
             else
                 for (int l = j + 1; l < n; ++l) {
-                    T a = tran ? Ae(j, l) : Ae(l, j);
+                    T a = tran ? A(j, l) : A(l, j);
                     for (int i = 0; i < m; ++i)
-                        Be(i, j) -= a * Be(i, l);
+                        B(i, j) -= a * B(i, l);
                 }
             if (!unit) {
-                T d = Ae(j, j);
+                T d = A(j, j);
                 for (int i = 0; i < m; ++i)
-                    Be(i, j) /= d;
+                    B(i, j) /= d;
             }
         }
     }
@@ -144,13 +144,13 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     for (int idx = 0; idx < nm; ++idx) {
         worst_fwd =
             std::max(worst_fwd, max_abs_diff(Bout[idx], Xref[idx], (size_t)m * n) /
-                                    std::max(norm1(Xref.view(idx)), 1e-300));
+                                    std::max(norm1(Xref.view(idx)), norm_floor));
         tri_apply(side, uplo, transa, diag, A.view(idx), Bout.view(idx), R);
         for (size_t e = 0; e < (size_t)m * n; ++e)
             aBs[e] = alpha * B[idx][e];
         worst_res =
             std::max(worst_res, max_abs_diff(Rs.data(), aBs.data(), (size_t)m * n) /
-                                    std::max(norm1(aB), 1e-300));
+                                    std::max(norm1(aB), norm_floor));
     }
     const double worst = std::max(worst_fwd, worst_res);
 

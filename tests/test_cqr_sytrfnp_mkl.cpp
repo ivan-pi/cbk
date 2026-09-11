@@ -99,7 +99,7 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j)
                 Res(i, j) = (T)(ldlt_reconstruct(H, i, j, up) - (double)A(i, j));
-        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), 1e-300));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(A), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
@@ -126,7 +126,6 @@ template <class T> int suite2(int nm, int n)
 {
     const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
     const int V = mkl<T>::vlen(fmt);
-    const size_t sA = (size_t)n * n;
 
     MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)

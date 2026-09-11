@@ -45,6 +45,7 @@ using namespace cqr::test;
 
 template <class T> static void ref_sytf2np(char uplo, MatrixView<T> As)
 {
+    assert(As.rows == As.cols);
     const bool upper = (uplo == 'U' || uplo == 'u');
     const int n = As.rows;
     // One sweep serves both triangles, as in the kernel: factor the lower

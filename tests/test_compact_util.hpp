@@ -43,8 +43,11 @@ using cqr::detail::make_const_view;
 using cqr::detail::make_view;
 
 // The scalar a view addresses. Helpers that only read take the view type
-// itself, so one signature serves MatrixView<T> and ConstMatrixView<T> (which
-// are unrelated types -- the view is an aggregate, with no const conversion).
+// itself, so one signature serves MatrixView<T> and ConstMatrixView<T>. The
+// latter is just MatrixView<const T>, but distinct template instantiations do
+// not convert into each other (the view is an aggregate, with no converting
+// constructor), so a MatrixView<T> argument cannot bind a MatrixView<const T>
+// parameter.
 template <class Mv>
 using elem_t = std::remove_const_t<
     std::remove_reference_t<decltype(std::declval<const Mv &>()(0, 0))>>;
@@ -62,6 +65,12 @@ template <class T> T frand()
     static std::uniform_real_distribution<T> dist(T(-1), T(1));
     return dist(rng());
 }
+
+// Denominator floor for relative errors, err / max(norm, norm_floor): a
+// nonzero norm in these suites is O(1) or larger, so the floor never shifts a
+// ratio -- it only keeps a zero reference norm from producing 0/0 = NaN. It is
+// a divide-by-zero guard (a normal double near DBL_MIN), not a tolerance.
+constexpr double norm_floor = 1e-300;
 
 // max |a - b| over n elements.
 template <class T> double max_abs_diff(const T *a, const T *b, size_t n)
@@ -164,6 +173,7 @@ template <class T, class Av>
 void ref_orm2r(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
     const int m = B.rows, nrhs = B.cols;
+    assert(A.rows == m && k <= std::min(A.rows, A.cols));
     bool fwd = (trans == 'T');
     for (int s = 0; s < k; ++s) {
         int kk = fwd ? s : k - 1 - s;
@@ -182,6 +192,7 @@ void ref_orm2r(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 template <class T, class Rv> void ref_trsm_upper(Rv R, MatrixView<T> B)
 {
     const int n = B.rows, nrhs = B.cols;
+    assert(R.rows == n && R.cols == n);
     for (int j = 0; j < nrhs; ++j)
         for (int i = n - 1; i >= 0; --i) {
             T s = B(i, j);
@@ -538,16 +549,18 @@ template <class T>
 SolveErrors solve_errors(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
                          const MatrixBatch<T> &Xhat, ConstMatrixView<T> X)
 {
+    assert(B.rows() == Xhat.rows() && B.cols() == Xhat.cols() && X.rows == Xhat.rows() &&
+           X.cols == Xhat.cols());
     const size_t sB = Xhat.stride();
     std::vector<T> AXs(sB);
     const auto AX = mat_view(AXs.data(), Xhat.rows(), Xhat.cols());
-    const double nX = std::max(norm1(X), 1e-300);
+    const double nX = std::max(norm1(X), norm_floor);
     SolveErrors e{0, 0};
     for (int v = 0; v < Xhat.count(); ++v) {
         e.fwd = std::max(e.fwd, max_abs_diff(Xhat[v], X.data, sB) / nX);
         matmul(A.view(v), Xhat.view(v), AX);
         e.res = std::max(e.res, max_abs_diff(AXs.data(), B[v], sB) /
-                                    std::max(norm1(B.view(v)), 1e-300));
+                                    std::max(norm1(B.view(v)), norm_floor));
     }
     return e;
 }

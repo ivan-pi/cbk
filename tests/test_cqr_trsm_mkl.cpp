@@ -88,7 +88,7 @@ int suite1(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa
     /* compare the two compact result buffers elementwise */
     const size_t nB = (size_t)sz_b / sizeof(double);
     double da = max_abs_diff(bp_cqr.get(), bp_mkl.get(), nB);
-    double rel = da / std::max(maxabs(bp_mkl.get(), nB), 1e-300);
+    double rel = da / std::max(maxabs(bp_mkl.get(), nB), norm_floor);
 
     const double rtol = 50.0 * s * eps;
     bool ok = (rel <= rtol);
