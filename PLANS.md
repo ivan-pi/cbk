@@ -77,13 +77,15 @@ compact `potrs` or `posv`.
   the factor vs `LAPACKE_dpotrf` (`20 n eps`), the cross-check vs
   `mkl_dpotrf_compact` (bit-exact), the SPD solve through `mkl_?trsm_compact`
   and through `potrs` (`100 n eps`), and the fused driver's bit-identity.
-- **Benchmarked:** `bench_potrf_compact` (factorization only).
+- **Benchmarked:** `bench_potrf_compact` (the factorization) and
+  `bench_posv_compact` (the end-to-end solve: fused vs its own two-step calls
+  vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv`).
+  The fusion measurement design 6.8 called for: `~1.0x` on cache-resident
+  pools (512 matrices, one RHS), `1.1-1.3x` on out-of-cache pools (orders
+  32-96, 134-300 MB) -- see `examples/BENCHMARKS.md` for the indicative run.
 - **Scoped out (design 6.6):** positive-definiteness is assumed (a non-SPD lane
   poisons itself with `NaN`/`Inf`, and propagates through a `potrs` solve with
   that factor); no blocked factorization.
-- **Open:** no solve benchmark (the `bench_sysvnp_compact` harness would port),
-  so the `posv` vs `potrf + potrs` fusion gain on out-of-cache pools is
-  unmeasured, as for `sysvnp` (design 6.8).
 
 ## sytrfnp / sytrsnp / sysvnp
 
@@ -112,7 +114,9 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
   Hermitian variants; the strided sweep is correctness-first.
 - **Open:** no factorization-only benchmark (the potrf harness would port);
   no `sysvnp` vs `sytrfnp + sytrsnp` measurement on out-of-cache pools, the
-  comparison that would quantify the fusion (design 6.8).
+  comparison that would quantify the fusion (design 6.8) -- the
+  `bench_posv_compact` harness, which carries exactly that column for the
+  Cholesky pair, would port directly.
 
 ## trsm
 
@@ -182,8 +186,8 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
   benchmarks hand the whole pool to one cqr call and drive the sequential MKL
   and LAPACK references from an equivalent outer loop; the solve benchmark
   keeps its pipeline per group (whole-pool passes measured 15-55% slower).
-  `gels` and `sysvnp` are the fused per-group drivers that give library-side
-  threading of a whole solve.
+  `gels`, `posv` and `sysvnp` are the fused per-group drivers that give
+  library-side threading of a whole solve.
 - **MKL Compact contract.** `.claude/mkl-compact-behavior.md` records what
   MKL's own compact routines were measured to do (`info` and `work` mandatory,
   `lwork` unchecked, `n*V` scratch per thread, internal threading only under

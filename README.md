@@ -140,6 +140,14 @@ Results are independent of the thread count.
   lower, `A = L L^T`), reporting GFLOP/s and a geometric-mean speedup, checked
   elementwise against LAPACK (the SPD factor is unique). Same `--size-sweep` /
   `--simdlen` flags and the same `-march=native` caveat as `bench_geqrf_compact`.
+* `bench_posv_compact [--nrhs=k] [nmat] [reps]` - the end-to-end SPD *solve*:
+  `cqr_mkl_dposv_compact` (the fused Cholesky factor + solve, one call on the
+  pool) vs the same kernels as two whole-pool calls (`potrf` + `potrs` -- what
+  the fusion buys) vs MKL's compact pipeline (`mkl_dpotrf_compact` +
+  `mkl_dtrsm_compact` twice; MKL has no compact `potrs`/`posv`) vs per-matrix
+  `LAPACKE_dposv`, over the same square-size range on SPD diagonally dominant
+  pools, every path checked against the known solution. Same `--size-sweep` /
+  `--simdlen` flags and `-march=native` caveat.
 * `bench_sysvnp_compact [--nrhs=k] [nmat] [reps]` - the end-to-end symmetric
   *solve*: `cqr_mkl_dsysvnp_compact` (the fused unpivoted LDL^T factor + solve,
   one call on the pool) vs per-matrix `LAPACKE_dsysv` (Bunch-Kaufman), over the
@@ -149,7 +157,8 @@ Results are independent of the thread count.
 
 All are registered with CTest (`example_solve_qr_compact`,
 `bench_qr_compact_integration`, `bench_geqrf_compact_integration`,
-`bench_potrf_compact_integration`, `bench_sysvnp_compact_integration`). The four
+`bench_potrf_compact_integration`, `bench_posv_compact_integration`,
+`bench_sysvnp_compact_integration`). The five
 benchmarks -- what they measure,
 how to run them, the flags, and the `-march=native` caveat -- are documented in
 detail in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).

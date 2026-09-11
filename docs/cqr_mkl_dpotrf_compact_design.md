@@ -327,7 +327,10 @@ estimate. Because it calls the *same* group kernels in the *same* order on the
 *same* data, its factor and its `X` are bit-identical to the two separate calls
 -- a property the test suites gate (section 7.5). The design (and its
 rationale) is `cqr_mkl_?sysvnp_compact`'s, applied to the Cholesky pair; see
-`docs/cqr_mkl_dsytrfnp_compact_design.md` section 6.8.
+`docs/cqr_mkl_dsytrfnp_compact_design.md` section 6.8. `bench_posv_compact`
+measures exactly this fused-vs-two-step column: `~1.0x` while the pool is
+cache-resident, `1.1-1.3x` once it is not (orders 32-96 on 134-300 MB pools;
+`examples/BENCHMARKS.md`).
 
 ## 7. Testing and Validation Methodology
 
