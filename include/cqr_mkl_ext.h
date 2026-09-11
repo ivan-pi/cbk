@@ -48,9 +48,10 @@
  *     with lwork = -1 the call is a query returning the optimal lwork in
  *     work[0] -- 1, these kernels need no scratch. Size each routine's work
  *     from ITS OWN query and give each its own buffer: MKL's mkl_?geqrf_compact
- *     needs ~n*V, and because compact routines skip checking, an undersized or
- *     shared work array is undefined behavior (silent heap corruption on some
- *     MKL builds).
+ *     needs n*V per thread (its query scales with mkl_get_max_threads() under a
+ *     threaded MKL layer), and because compact routines skip checking, an
+ *     undersized or shared work array is undefined behavior (a silent overrun;
+ *     see .claude/mkl-compact-behavior.md).
  *   - ?gels's work is the exception: it is the routine's tau scratch, one slot
  *     per group so the groups can run in parallel, so its query returns
  *     max(1, min(m,n) * V * ceil(nm/V)) -- the size in scalars of a compact tau

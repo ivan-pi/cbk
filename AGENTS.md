@@ -99,6 +99,17 @@ argument, which cannot be parenthesized, so they also sit between
   Claude to correct. Without pre-commit it falls back to the system
   clang-format.
 
+## Intel MKL Compact: measured behavior
+
+`.claude/mkl-compact-behavior.md` records what MKL's own compact routines were
+measured to do (MKL 2020.4): every pointer argument including `info` and `work`
+is dereferenced unconditionally; `?geqrf`/`?getrinp` use `work` as their
+scratch, sized `n*V` per thread (`n*V*mkl_get_max_threads()` under a threaded
+MKL layer) and never check `lwork`, so an undersized buffer is a silent overrun;
+the compact kernels thread internally only under the threaded layer, which this
+repo does not link. Read it before touching the MKL-style wrappers, the
+workspace contract, or the benchmarks' threading.
+
 ## Conventions worth knowing
 
 - **Compact layout.** Element `(i,j)` of the `V` interleaved matrices in a group
