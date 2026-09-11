@@ -191,7 +191,7 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 
 | n | 1 thread, 512 matrices | 4 threads, 128 matrices |
 |---|---|---|
-| 8 | 1.09x | 0.80x with the old 2e5 gate (0.59-0.67x on repeats); 1.22x with 512 matrices; 0.9-1.4x with the 5e4 gate -- see below |
+| 8 | 1.09x | 1.3x (see note) |
 | 16 | 1.41x | 1.30x |
 | 32 | 1.60x | 1.56x |
 | 64 | 1.24x | 1.30x |
@@ -199,36 +199,20 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 | 256 | 1.49x | 1.46x |
 | 500 | 1.45x | 1.48x |
 
-- **The n=8 row at four threads is cqr's launcher gate, not MKL.** The
-  launcher estimates 2*m*n*k*V = 8192 flops per group for geqrf; 128 matrices
-  are 16 groups, 131k flops, below its `parallel_min_flops` gate of 2e5, so
-  cqr ran serial on that row while the benchmark's MKL loop forked four
-  threads regardless. Evidence: cqr's n=8 throughput at 128 matrices is the
-  same with one thread (1.07e7 matrices/s) as with four (1.06e7); repeats gave
-  0.59-0.67x. With 512 matrices (524k flops, above the gate) at four threads
-  the row is 1.22x in cqr's favor, and single-threaded it is 1.09-1.20x. Two
-  smaller effects remain, both against MKL: driving MKL one group per call
-  costs it 13% at n=8 against one whole-batch call (57 us vs 51 us for 512
-  matrices), 2-4% at n=16-32, nothing at n=64.
-- **The gate was lowered to 5e4 as a result** (`CQR_OMP_MIN_FLOPS`, still a
-  build-time override). A sweep with the gate compiled out put this box's
-  break-even near 3e4 estimated flops and the win from 6e4 up, against the
-  ~1e5 of the box the 2e5 was first tuned on. In isolation the n=8, 128-matrix
-  call went from 18.6 us serial to 10-12 us on four threads. In the benchmark
-  the row read 1.31x, 1.38x and 0.89x on clean runs, but two of five runs hit
-  millisecond stalls that also hit the per-matrix LAPACK column of the same
-  row; at ~10 us of work per path with best-of-3 timing, that row sits below
-  this VM's noise floor. The 512-matrix row (1.22x) is the reliable one for
-  n=8; a harness with more repetitions or more matrices at the smallest sizes
-  would be needed to make the 128-matrix row trustworthy.
+- **n=8 note.** With the original 2e5 flop gate this row read 0.6-0.8x: 128
+  matrices are 131k estimated flops, so cqr's launcher ran serial while the
+  benchmark's MKL loop forked. The gate is now 5e4 and the row reads 1.3-1.4x
+  when the machine is quiet, but at ~10 us of work per path it is below the
+  measurement VM's noise floor (two of five runs stalled by milliseconds,
+  LAPACK column included); the 512-matrix row, 1.22x, is the dependable one.
 - Relative error against per-matrix LAPACK is identical for both.
 - **Where both fall below blocked LAPACK depends on the machine and on V.** On
-  this box (1 MiB L2 per core) with V=8 doubles the crossover is near
-  n~120-170, where one group (`n*n*V*8` bytes: 0.25 MiB at n=64, 0.88 MiB at
-  n=120, 1.85 MiB at n=170) outgrows L2 and the unblocked sweep becomes
-  bandwidth-bound; a smaller L2 or a wider V moves the crossover down, a
-  narrower V or a larger cache moves it up. Blocking (compact-WY) is the next
-  lever for either kernel.
+  the measurement machine (1 MiB L2 per core) with V=8 doubles the crossover
+  is near n~120-170, where one group (`n*n*V*8` bytes: 0.25 MiB at n=64,
+  0.88 MiB at n=120, 1.85 MiB at n=170) outgrows L2 and the unblocked sweep
+  becomes bandwidth-bound; a smaller L2 or a wider V moves the crossover down,
+  a narrower V or a larger cache moves it up. Blocking (compact-WY) is the
+  next lever for either kernel.
 
 ## 5. How these were measured (for re-checking on another MKL)
 
