@@ -92,8 +92,9 @@ full path, which needs neither the flag nor the group.
 
 `-DMKLCompact_THREADING=sequential` (default) links `mkl_sequential`; `gnu`
 links `mkl_gnu_thread` with the compiler's own OpenMP runtime (libgomp under
-g++, libomp under clang, which exports the GOMP entry points; the same recipe
-as Intel's `MKLConfig.cmake`) and the full test suite passes either way;
+g++; LLVM's libomp under clang, which exports the GOMP entry points, so no
+libgomp is loaded -- unlike Intel's `MKLConfig.cmake`, which links `-lgomp`
+for this layer) and the full test suite passes either way;
 `intel` links `mkl_intel_thread` + `libiomp5`, which is only right with an
 Intel compiler -- under g++/clang it puts two OpenMP runtimes in one process,
 the configure step warns, and tests fail. Under a threaded layer remember

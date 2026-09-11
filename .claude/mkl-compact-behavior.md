@@ -124,9 +124,17 @@ AVX-512 format, best of five:
   stream the batch through each step separately and lose the per-group
   temporal locality that the per-group loop keeps.
 - **The threaded layer works with GCC and clang.** Built with
-  `-DMKLCompact_THREADING=gnu` (`mkl_gnu_thread` + the compiler's OpenMP
-  runtime, which is also what Intel's own `MKLConfig.cmake` links), the full
-  test suite passes under g++ and clang++. A cautionary tale from this
+  `-DMKLCompact_THREADING=gnu` (`mkl_gnu_thread` plus the compiler's own OpenMP
+  library), the full test suite passes under g++ and clang++. "gnu" names the
+  GOMP ABI, not libgomp: `libmkl_gnu_thread.so` declares no libgomp dependency
+  and resolves its `GOMP_*`/`omp_*` calls from whatever the process provides.
+  Under g++ that is libgomp; under clang++ it is LLVM's libomp, which exports
+  the `GOMP_*` entry points -- verified with `LD_DEBUG=bindings` on the geqrf
+  test: `GOMP_parallel_start`, `GOMP_barrier` and `omp_get_max_threads` bind
+  to `libomp.so.5`, and libgomp is never mapped. One runtime either way. (Intel's
+  `MKLConfig.cmake` links `-lgomp` for this layer, which under clang would load
+  a second runtime; the find module links `OpenMP_CXX_LIBRARIES` instead.) A
+  cautionary tale from this
   investigation: the first threaded probes "crashed at exit" and were blamed on
   libgomp; the real cause was the probe's own `work` buffer, sized for one
   thread's `n*V` slice while MKL ran on four -- the out-of-bounds write of
