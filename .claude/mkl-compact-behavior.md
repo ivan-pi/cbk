@@ -6,18 +6,24 @@ MKL documentation leaves most of this unstated ("info is reserved", "no error
 checking"), so these were measured directly. Everything below is from small C
 probes against the installed library; nothing is inferred from documentation.
 
-**Checked against one MKL version only.** Everything here was measured on:
+**Checked against two MKL versions, six years apart.** Everything here was
+measured on both of:
 
     Intel(R) Math Kernel Library Version 2020.0.4 Product Build 20200917
-    (Debian/Ubuntu package libmkl-dev 2020.4.304-4, LP64 interface)
+    (Debian/Ubuntu package libmkl-dev 2020.4.304-4 -- what the repo builds against)
 
-on a 4-core AVX-512 Xeon with gcc 13, in September 2026. Newer oneMKL releases
-(2021 and later, which renamed and re-packaged the library) may change any of
-it: the workspace formula, whether `lwork` is checked, which arguments tolerate
-a null pointer, the threading behavior, and the exit-time crash with libgomp.
-Treat the findings as facts about 2020.0.4 and as *hypotheses* about any other
-version; section 6 describes how to re-run the probes, and
-`mkl_get_version_string()` reports the version actually linked.
+    Intel(R) oneAPI Math Kernel Library Version 2026.1-Product Build 20260612
+    (Intel apt repository, package intel-oneapi-mkl-devel 2026.1.0-236,
+     installed under /opt/intel/oneapi/mkl/latest)
+
+LP64 interface, on a 4-core AVX-512 Xeon with gcc 13, in September 2026. Every
+finding below -- the null-pointer crashes, the `info` values, the workspace
+formula and its thread scaling, the unchecked `lwork`, the leftover `work[0]`,
+zero internal allocation, internal threading, and the exit-time crash -- came
+out identical on the two versions, so this behavior has been stable across the
+MKL-to-oneMKL transition. It is still measured behavior, not a documented
+contract: re-run the probes of section 6 on any other version before relying
+on it, and `mkl_get_version_string()` reports the version actually linked.
 
 Routines probed: `mkl_?potrf_compact`, `mkl_?getrfnp_compact`,
 `mkl_?geqrf_compact`, `mkl_?getrinp_compact`, plus `mkl_?trsm_compact` for
@@ -109,12 +115,16 @@ Consequences:
   internally threaded whole-batch throughput at 4 threads matches the per-group
   loop's (143k vs 147k matrices/s at n=64, 1.12M vs 1.06M at n=32). It only
   costs MKL at n~8, where per-call overhead is comparable to the work.
-- **`mkl_gnu_thread` + libgomp crashes at exit** on MKL 2020.0.4: every
-  probe linked that way segfaulted in `_dl_fini` after `main` returned, with
-  results already correct (stdout must be unbuffered to see them). Under ctest
-  that is a failed test. Switching the build to the threaded layer would need
-  `libiomp5` (installed), which conflicts with the OpenMP runtime cqr's own
-  launcher uses.
+- **Exit-time crash when the program itself uses OpenMP.** A main program
+  compiled with `-fopenmp` (libgomp) and linked against `mkl_gnu_thread`
+  segfaults in `_dl_fini` after `main` returns, on both 2020.0.4 and 2026.1,
+  with results already correct (stdout must be unbuffered to see them). The
+  same program *without* `-fopenmp` exits cleanly on both versions, as does
+  `mkl_intel_thread` + `libiomp5` without `-fopenmp`. Mixing the two runtimes
+  (`-fopenmp` main with `mkl_intel_thread` + `libiomp5`) crashed mid-run at
+  four threads. cqr's launcher is OpenMP, so under ctest a threaded-MKL build
+  would be either the exit crash (GNU layer) or the two-runtime conflict
+  (Intel layer) unless the whole build moves to one runtime.
 
 ## 4. What MKL does not ship
 
@@ -149,7 +159,11 @@ lever for either.
 - **Null-pointer and overrun tests**: one process per test, since the outcome is
   a segfault. Compile with `-lmkl_intel_lp64 -lmkl_sequential -lmkl_core`
   (add `-Wl,--no-as-needed` and `-lmkl_gnu_thread -lgomp` for the threaded
-  layer).
+  layer). For a oneMKL from Intel's apt repository (`intel-oneapi-mkl-devel`,
+  key and source line at apt.repos.intel.com/oneapi), use
+  `-I/opt/intel/oneapi/mkl/latest/include -L/opt/intel/oneapi/mkl/latest/lib`
+  and put that `lib` on `LD_LIBRARY_PATH` at run time (`libiomp5` lives under
+  `/opt/intel/oneapi/compiler/<ver>/lib`).
 - **Overrun detection**: `mmap` two pages, `mprotect` the second `PROT_NONE`,
   and place the `work` buffer so it ends exactly at the page boundary. Any write
   past `lwork` elements faults immediately instead of corrupting the heap.

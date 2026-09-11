@@ -102,8 +102,8 @@ argument, which cannot be parenthesized, so they also sit between
 ## Intel MKL Compact: measured behavior
 
 `.claude/mkl-compact-behavior.md` records what MKL's own compact routines were
-measured to do on MKL 2020.0.4 (the Debian `libmkl-dev` package; newer oneMKL
-releases may differ): every pointer argument including `info` and `work`
+measured to do, identically on MKL 2020.0.4 (the Debian `libmkl-dev` package the
+repo builds against) and oneMKL 2026.1: every pointer argument including `info` and `work`
 is dereferenced unconditionally; `?geqrf`/`?getrinp` use `work` as their
 scratch, sized `n*V` per thread (`n*V*mkl_get_max_threads()` under a threaded
 MKL layer) and never check `lwork`, so an undersized buffer is a silent overrun;
