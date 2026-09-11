@@ -44,14 +44,11 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_alloc.h"
 #include "bench_util.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-#include <random>
 #include <vector>
 #include <algorithm>
 
@@ -59,57 +56,30 @@ namespace {
 
 using namespace cqr::bench;
 
-/* Flop count of the unpivoted LDL^T solve in GFLOP: the n^3/3 + n^2/2 + n/6
- * of the factorization (the same count as Cholesky, LAWN 41; the n reciprocals
- * uncounted, as LAPACK leaves the square roots uncounted) plus the 2 n^2 nrhs
- * of the two triangular sweeps and the n nrhs diagonal scaling. */
+/* Flop count of the unpivoted LDL^T solve in GFLOP: the factorization
+ * (chol_gflop -- the same count as Cholesky, the n reciprocals uncounted as
+ * LAPACK leaves the square roots uncounted) plus the 2 n^2 nrhs of the two
+ * triangular sweeps and the n nrhs diagonal scaling. */
 double sysv_gflop(int n, int nrhs)
 {
     const double dn = n, dr = nrhs;
-    return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0 + 2.0 * dn * dn * dr +
-            dn * dr) *
-           1e-9;
+    return chol_gflop(n) + (2.0 * dn * dn * dr + dn * dr) * 1e-9;
 }
 
-/* The batch of systems: `nmat` n x n symmetric *indefinite* matrices in `a`,
- * each with its right-hand sides B = A X (n x nrhs) in `b`, for the known
- * X(:,j) = j + 1.
- *
- * Each A is symmetric with random off-diagonals in [-1,1] and a diagonal of
- * magnitude 2n with alternating sign, so it is strictly diagonally dominant
- * (row off-diagonal magnitudes sum to at most n-1 < 2n), hence every leading
- * principal minor is nonsingular and the unpivoted LDL^T exists with bounded
- * element growth -- the class of input the unpivoted solver is for -- while the
- * mixed diagonal signs make it genuinely indefinite (Cholesky would fail; LAPACK
- * needs ?sysv, not ?posv). O(n^2) to build, no O(n^3) product. The full matrix
- * is stored (both triangles) so the per-matrix LAPACK path and the compact pack
- * see identical symmetric input; each routine reads only the lower triangle. */
+/* The batch of systems: `nmat` n x n symmetric *indefinite* matrices in `a`
+ * (bench_util's symmetric diagonally dominant fill with alternating diagonal
+ * sign: every leading principal minor nonsingular, so the unpivoted LDL^T
+ * exists with bounded element growth -- the class of input the unpivoted
+ * solver is for -- yet genuinely indefinite, so LAPACK needs ?sysv, not
+ * ?posv), each with its right-hand sides B = A X (n x nrhs) in `b` for the
+ * known X(:,j) = j + 1. */
 struct Systems {
     MatrixPool a, b;
 
     Systems(int n, int nmat, int nrhs) : a(nmat, n, n), b(nmat, n, nrhs)
     {
-        std::mt19937_64 rng(2025);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        std::vector<double> xs((size_t)n * nrhs);
-        const auto X = mat_view(xs.data(), n, nrhs);
-        for (int j = 0; j < nrhs; ++j)
-            for (int i = 0; i < n; ++i)
-                X(i, j) = j + 1;
-        for (int v = 0; v < nmat; ++v) {
-            const auto A = a.view(v), B = b.view(v);
-            for (int j = 0; j < n; ++j) {
-                for (int i = j + 1; i < n; ++i) {
-                    double x = dist(rng);
-                    A(i, j) = x; /* lower */
-                    A(j, i) = x; /* mirror to upper (symmetric) */
-                }
-                A(j, j) = (j % 2 ? -2.0 : 2.0) * n; /* dominant, mixed sign */
-            }
-            /* B = A X for this matrix */
-            cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, nrhs, n, 1.0,
-                        A.data, A.ld(), X.data, X.ld(), 0.0, B.data, B.ld());
-        }
+        fill_sym_dd(a, /*indefinite=*/true);
+        fill_known_rhs(a, b);
     }
 };
 
@@ -139,52 +109,6 @@ void solve_unbatched(double *a, double *b, int n, int nrhs, int nmat, MKL_INT *i
     }
 }
 
-/* Worst relative forward error max|X_v - X| / max|X| over the pool, X_v the
- * solution in a dense pool-layout buffer (nmat * n*nrhs). */
-double forward_error(const double *x, int n, int nrhs, int nmat)
-{
-    double worst = 0;
-    for (int v = 0; v < nmat; ++v) {
-        const auto X = mat_view(x + (size_t)v * n * nrhs, n, nrhs);
-        for (int j = 0; j < nrhs; ++j)
-            for (int i = 0; i < n; ++i)
-                worst = std::max(worst, std::abs(X(i, j) - (j + 1)));
-    }
-    return worst / nrhs; /* max|X| = nrhs */
-}
-
-/* The pristine compact images of the systems and their right-hand sides
- * (bench_util's PackedPool, once per pool), the state every solve starts from. */
-struct Packed {
-    PackedPool a, b;
-
-    Packed(const Systems &P, MKL_COMPACT_PACK fmt) : a(P.a, fmt), b(P.b, fmt) {}
-
-    void restore_into(double *ap, double *bp) const
-    {
-        a.restore_into(ap);
-        b.restore_into(bp);
-    }
-};
-
-/* Forward error of the compact path: solve fresh copies of the packed pool,
- * unpack X, compare to the known solution. Untimed correctness gate. */
-double compact_error(const Systems &P, const Packed &pk, MKL_COMPACT_PACK fmt)
-{
-    const int n = P.a.rows(), nmat = P.a.count(), nrhs = P.b.cols();
-    auto ap = pk.a.work();
-    auto bp = pk.b.work();
-    pk.restore_into(ap.get(), bp.get());
-    solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
-
-    std::vector<double> X((size_t)nmat * n * nrhs);
-    std::vector<double *> Xp(nmat);
-    for (int v = 0; v < nmat; ++v)
-        Xp[v] = X.data() + (size_t)v * n * nrhs;
-    mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xp.data(), n, bp.get(), n, fmt, nmat);
-    return forward_error(X.data(), n, nrhs, nmat);
-}
-
 /* Single-solver size sweep: the fused compact solve of a pre-packed pool at
  * each n in [nmin, nmax] (step stride), throughput only -- no LAPACK
  * comparison, so it stays cheap and isolates the kernel. The raw best-pass
@@ -204,7 +128,7 @@ void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
 
     for (int n = nmin; n <= nmax; n += stride) {
         const Systems P(n, nmat, nrhs);
-        Packed pk(P, fmt);
+        PackedSystems pk(P.a, P.b, fmt);
         auto ap = pk.a.work();
         auto bp = pk.b.work();
         auto restore = [&] { pk.restore_into(ap.get(), bp.get()); };
@@ -262,7 +186,7 @@ int main(int argc, char **argv)
     double log_speed = 0.0;
     for (int n : sizes) {
         const Systems P(n, nmat, nrhs);
-        Packed pk(P, fmt);
+        PackedSystems pk(P.a, P.b, fmt);
 
         /* working copies: compact (cqr) and standard layout (LAPACK) */
         auto ap = pk.a.work();
@@ -284,9 +208,9 @@ int main(int argc, char **argv)
             solve_unbatched(a_work.data(), b_work.data(), n, nrhs, nmat, ipiv.data());
         });
 
-        /* correctness gates: both paths vs the known solution (LAPACK's from the
-         * last timed pass; the compact one from a fresh untimed solve) */
-        const double err_cqr = compact_error(P, pk, fmt);
+        /* correctness gates: both paths vs the known solution, each read from
+         * the X its last timed pass left behind (t_lap does not touch bp) */
+        const double err_cqr = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
         const double err_lap = forward_error(b_work.data(), n, nrhs, nmat);
         check(err_cqr <= 1e-9, "compact solve recovers the known solution");
         check(err_lap <= 1e-9, "LAPACK solve recovers the known solution");

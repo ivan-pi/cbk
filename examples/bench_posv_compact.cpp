@@ -52,66 +52,35 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_alloc.h"
 #include "bench_util.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-#include <random>
-#include <vector>
-#include <algorithm>
 
 namespace {
 
 using namespace cqr::bench;
 
-/* Flop count of the Cholesky solve in GFLOP: the n^3/3 + n^2/2 + n/6 of the
- * factorization (LAWN 41; the n square roots uncounted, as in LAPACK's own
- * timing) plus the 2 n^2 nrhs of the two triangular sweeps. */
+/* Flop count of the Cholesky solve in GFLOP: the factorization (chol_gflop)
+ * plus the 2 n^2 nrhs of the two triangular sweeps. */
 double posv_gflop(int n, int nrhs)
 {
-    const double dn = n, dr = nrhs;
-    return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0 + 2.0 * dn * dn * dr) * 1e-9;
+    const double dn = n;
+    return chol_gflop(n) + 2.0 * dn * dn * nrhs * 1e-9;
 }
 
-/* The batch of systems: `nmat` n x n SPD matrices in `a`, each with its
- * right-hand sides B = A X (n x nrhs) in `b`, for the known X(:,j) = j + 1.
- *
- * Each A is symmetric with random off-diagonals in [-1,1] and a diagonal of
- * 2n, so it is strictly diagonally dominant with a positive diagonal
- * (row off-diagonal magnitudes sum to at most n-1 < 2n) and therefore SPD and
- * well conditioned -- bench_potrf_compact's pool, O(n^2) to build with no
- * O(n^3) M^T M product. The full matrix is stored (both triangles) so the
- * per-matrix LAPACK path and the compact pack see identical symmetric input;
- * each routine reads only the lower triangle. */
+/* The batch of systems: `nmat` n x n SPD matrices in `a` (bench_util's
+ * symmetric diagonally dominant fill with a positive diagonal, the pool of
+ * bench_potrf_compact), each with its right-hand sides B = A X (n x nrhs) in
+ * `b` for the known X(:,j) = j + 1. */
 struct Systems {
     MatrixPool a, b;
 
     Systems(int n, int nmat, int nrhs) : a(nmat, n, n), b(nmat, n, nrhs)
     {
-        std::mt19937_64 rng(2025);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        std::vector<double> xs((size_t)n * nrhs);
-        const auto X = mat_view(xs.data(), n, nrhs);
-        for (int j = 0; j < nrhs; ++j)
-            for (int i = 0; i < n; ++i)
-                X(i, j) = j + 1;
-        for (int v = 0; v < nmat; ++v) {
-            const auto A = a.view(v), B = b.view(v);
-            for (int j = 0; j < n; ++j) {
-                for (int i = j + 1; i < n; ++i) {
-                    double x = dist(rng);
-                    A(i, j) = x; /* lower */
-                    A(j, i) = x; /* mirror to upper (symmetric) */
-                }
-                A(j, j) = 2.0 * n; /* dominant, positive -> SPD */
-            }
-            /* B = A X for this matrix */
-            cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, nrhs, n, 1.0,
-                        A.data, A.ld(), X.data, X.ld(), 0.0, B.data, B.ld());
-        }
+        fill_sym_dd(a, /*indefinite=*/false);
+        fill_known_rhs(a, b);
     }
 };
 
@@ -170,56 +139,6 @@ void solve_unbatched(double *a, double *b, int n, int nrhs, int nmat)
                       b + (size_t)v * n * nrhs, n);
 }
 
-/* Worst relative forward error max|X_v - X| / max|X| over the pool, X_v the
- * solution in a dense pool-layout buffer (nmat * n*nrhs). */
-double forward_error(const double *x, int n, int nrhs, int nmat)
-{
-    double worst = 0;
-    for (int v = 0; v < nmat; ++v) {
-        const auto X = mat_view(x + (size_t)v * n * nrhs, n, nrhs);
-        for (int j = 0; j < nrhs; ++j)
-            for (int i = 0; i < n; ++i)
-                worst = std::max(worst, std::abs(X(i, j) - (j + 1)));
-    }
-    return worst / nrhs; /* max|X| = nrhs */
-}
-
-/* The pristine compact images of the systems and their right-hand sides
- * (bench_util's PackedPool, once per pool), the state every solve starts from. */
-struct Packed {
-    PackedPool a, b;
-
-    Packed(const Systems &P, MKL_COMPACT_PACK fmt) : a(P.a, fmt), b(P.b, fmt) {}
-
-    void restore_into(double *ap, double *bp) const
-    {
-        a.restore_into(ap);
-        b.restore_into(bp);
-    }
-};
-
-/* Forward error of a compact path: solve fresh copies of the packed pool with
- * the given solver, unpack X, compare to the known solution. Untimed
- * correctness gate, shared by the fused and MKL paths (the 2-step path is
- * bit-identical to the fused one by construction, gated in the test suites). */
-template <typename Solver>
-double compact_error(const Systems &P, const Packed &pk, MKL_COMPACT_PACK fmt,
-                     Solver &&solve)
-{
-    const int n = P.a.rows(), nmat = P.a.count(), nrhs = P.b.cols();
-    auto ap = pk.a.work();
-    auto bp = pk.b.work();
-    pk.restore_into(ap.get(), bp.get());
-    solve(ap.get(), bp.get());
-
-    std::vector<double> X((size_t)nmat * n * nrhs);
-    std::vector<double *> Xp(nmat);
-    for (int v = 0; v < nmat; ++v)
-        Xp[v] = X.data() + (size_t)v * n * nrhs;
-    mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xp.data(), n, bp.get(), n, fmt, nmat);
-    return forward_error(X.data(), n, nrhs, nmat);
-}
-
 /* Single-solver size sweep: the fused compact solve of a pre-packed pool at
  * each n in [nmin, nmax] (step stride), throughput only -- no comparison, so
  * it stays cheap and isolates the kernel. The raw best-pass time is printed
@@ -239,7 +158,7 @@ void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
 
     for (int n = nmin; n <= nmax; n += stride) {
         const Systems P(n, nmat, nrhs);
-        Packed pk(P, fmt);
+        PackedSystems pk(P.a, P.b, fmt);
         auto ap = pk.a.work();
         auto bp = pk.b.work();
         auto restore = [&] { pk.restore_into(ap.get(), bp.get()); };
@@ -287,7 +206,7 @@ int main(int argc, char **argv)
      * whole size range; three speedup ratios show where the wins come from
      * (fused vs the same kernels unfused, vs MKL's pipeline, vs LAPACK). The
      * error column is the fused path's forward error against the known
-     * solution; every other path is gated at the same tolerance untimed. */
+     * solution; the MKL and LAPACK paths are gated at the same tolerance. */
     std::printf("   n | cqr GFLOP/s |   cqr mat/s | 2step mat/s |   mkl mat/s | "
                 "lapack mat/s | fus/2st | cqr/mkl | cqr/lap | fwderr(cqr)\n");
     std::printf("-----+-------------+-------------+-------------+-------------+"
@@ -296,7 +215,7 @@ int main(int argc, char **argv)
     double log_speed_vs_lapack = 0.0, log_speed_vs_2step = 0.0, log_speed_vs_mkl = 0.0;
     for (int n : sizes) {
         const Systems P(n, nmat, nrhs);
-        Packed pk(P, fmt);
+        PackedSystems pk(P.a, P.b, fmt);
 
         /* working copies: compact (the three compact paths share one pair) and
          * standard layout (LAPACK) */
@@ -312,26 +231,24 @@ int main(int argc, char **argv)
             b_work = P.b.storage();
         };
 
+        /* Each path's correctness gate against the known solution reads the X
+         * its last timed pass left behind, so no path is solved twice: the
+         * fused error is taken before the next path's restore overwrites bp
+         * (the 2-step path needs no gate of its own -- it is bit-identical to
+         * the fused one by construction, which the test suites gate). */
         double t_cqr = best_time(reps, restore_compact, [&] {
             solve_fused(ap.get(), bp.get(), n, nrhs, nmat, fmt);
         });
+        const double err_cqr = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
         double t_2st = best_time(reps, restore_compact, [&] {
             solve_twostep(ap.get(), bp.get(), n, nrhs, nmat, fmt);
         });
         double t_mkl = best_time(reps, restore_compact, [&] {
             solve_mkl(ap.get(), bp.get(), n, nrhs, nmat, V, fmt);
         });
+        const double err_mkl = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
         double t_lap = best_time(reps, restore_dense, [&] {
             solve_unbatched(a_work.data(), b_work.data(), n, nrhs, nmat);
-        });
-
-        /* correctness gates vs the known solution: the compact paths from
-         * fresh untimed solves, LAPACK's from its last timed pass */
-        const double err_cqr = compact_error(P, pk, fmt, [&](double *a, double *b) {
-            solve_fused(a, b, n, nrhs, nmat, fmt);
-        });
-        const double err_mkl = compact_error(P, pk, fmt, [&](double *a, double *b) {
-            solve_mkl(a, b, n, nrhs, nmat, V, fmt);
         });
         const double err_lap = forward_error(b_work.data(), n, nrhs, nmat);
         check(err_cqr <= 1e-9, "fused compact solve recovers the known solution");

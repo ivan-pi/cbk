@@ -303,7 +303,8 @@ int strsm_compact(char layout, char side, char uplo, char transa, char diag, int
  *            matrix, ld = k): the reflector scalars of the factorization left in
  *            ap, so (ap, taup) is the (H, tau) that ?ormqr_compact accepts
  *   V, nm    interleave width; total number of matrices (padded last group)
- * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does.
+ * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does;
+ * ap and taup are then not referenced and may be null.
  * Rank deficiency is not detected (no info > 0): a zero diagonal of R divides
  * through to Inf/NaN in that lane, as in ?trsm.
  * Returns 0, or -j for an illegal j-th argument:

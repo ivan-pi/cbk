@@ -301,7 +301,8 @@ deliberate scope of this routine:
 triangular sweeps are the existing compact `trsm` *group* kernels invoked with a
 *non-unit* diagonal -- `L z = B; L^T X = z` for the lower factor, `U^T z = B;
 U X = z` for the upper -- so column-major runs on `trsm`'s tuned side-left
-row-dot path and row-major on its strided kernel, exactly as for
+row-dot path and row-major on its strided kernel (a single right-hand side,
+contiguous in either layout, reaches the tuned path in both), exactly as for
 `cqr_mkl_?sytrsnp_compact` (whose diagonal-solve middle step Cholesky does not
 need: the factor's diagonal is the divisor of the sweeps themselves). No
 workspace is needed and `B` is overwritten in place.
