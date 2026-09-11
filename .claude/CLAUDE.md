@@ -15,6 +15,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-DCQR_WITH_MKL=OFF` builds only the portable kernels (no MKL, no MKL tests).
+`.claude/mkl-install.md` covers installing MKL from the distro package or from
+Intel's oneAPI apt repository, and how to point the build at a oneAPI install.
 
 ## Performance builds
 
