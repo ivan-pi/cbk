@@ -9,7 +9,9 @@
  * compact routines skip error checking for vectorization and make the caller
  * responsible for consistent parameters. MKL leaves the compact `info` reserved;
  * here it is a single scalar status, 0 on success, or -1 for an unrecognized
- * format (the one failure dispatch can detect). ?geqrf and ?ormqr answer the
+ * format (the one failure dispatch can detect). Like LAPACK's INFO it is a
+ * required output, written unconditionally (as MKL's own compact routines do:
+ * they crash on a null info). ?geqrf and ?ormqr answer the
  * lwork = -1 workspace query with 1: the kernels need no scratch. ?trsm has no
  * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?sytrfnp,
  * ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
@@ -40,18 +42,12 @@ template <typename T, typename F> MKL_INT run_format(MKL_COMPACT_PACK format, F 
     return for_vlen(vlen_for_format<T>(format), f) ? 0 : -1;
 }
 
-inline void set_info(MKL_INT *info, MKL_INT status)
-{
-    if (info) *info = status;
-}
-
 /* Workspace query (lwork = -1): the kernels need no scratch, so the optimal and
  * minimum lwork is 1. Returns true when the call was a query. */
-template <typename T> bool workspace_query(T *work, MKL_INT lwork, MKL_INT *info)
+template <typename T> bool workspace_query(T *work, MKL_INT lwork)
 {
     if (lwork != -1) return false;
     if (work) work[0] = T(1);
-    set_info(info, 0);
     return true;
 }
 
@@ -59,14 +55,15 @@ template <typename T>
 void geqrf(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, T *ap, MKL_INT ldap, T *taup, T *work,
            MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
-    if (workspace_query(work, lwork, info)) return;
-    if (m == 0 || n == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (workspace_query(work, lwork)) return;
+    if (m == 0 || n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::geqrf_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, m, n, ap, ldap, taup, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::geqrf_compact<T, decltype(v)::value, MKL_INT>(rowmajor, m, n, ap,
+                                                                   ldap, taup, nm);
+    });
 }
 
 template <typename T>
@@ -74,43 +71,46 @@ void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n, MKL_I
            const T *ap, MKL_INT ldap, const T *taup, T *cp, MKL_INT ldcp, T *work,
            MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
-    if (workspace_query(work, lwork, info)) return;
-    if (m == 0 || n == 0 || k == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (workspace_query(work, lwork)) return;
+    if (m == 0 || n == 0 || k == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool left = (side == 'L' || side == 'l');
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::ormqr_compact<T, decltype(v)::value, MKL_INT>(
-                     left, rowmajor, trans, m, n, k, ap, ldap, taup, cp, ldcp, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::ormqr_compact<T, decltype(v)::value, MKL_INT>(
+            left, rowmajor, trans, m, n, k, ap, ldap, taup, cp, ldcp, nm);
+    });
 }
 
 template <typename T>
 void potrf(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,
            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
-    if (n == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::potrf_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, upper, n, ap, ldap, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::potrf_compact<T, decltype(v)::value, MKL_INT>(rowmajor, upper, n, ap,
+                                                                   ldap, nm);
+    });
 }
 
 template <typename T>
 void sytrfnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,
              MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
-    if (n == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::sytrfnp_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, upper, n, ap, ldap, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::sytrfnp_compact<T, decltype(v)::value, MKL_INT>(rowmajor, upper, n,
+                                                                     ap, ldap, nm);
+    });
 }
 
 template <typename T>
@@ -118,14 +118,15 @@ void sytrsnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, const T 
              MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
              MKL_INT nm)
 {
-    if (n == 0 || nrhs == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (n == 0 || nrhs == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::sytrsnp_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::sytrsnp_compact<T, decltype(v)::value, MKL_INT>(
+            rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
+    });
 }
 
 template <typename T>
@@ -133,14 +134,15 @@ void sysvnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,
             MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
             MKL_INT nm)
 {
-    if (n == 0 || nrhs == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (n == 0 || nrhs == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::sysvnp_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::sysvnp_compact<T, decltype(v)::value, MKL_INT>(
+            rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
+    });
 }
 
 template <typename T>
@@ -171,15 +173,17 @@ void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *
     if (lwork == -1) { /* workspace query: the tau scratch, one slot per group */
         const int V = vlen_for_format<T>(format); /* 0 for an unrecognized format */
         if (work && V) work[0] = T(cqr::detail::gels_lwork(m, n, nm, V));
-        return set_info(info, V ? 0 : -1);
+        *info = V ? 0 : -1;
+        return;
     }
-    if (nrhs == 0 || nm == 0) return set_info(info, 0);
+    *info = 0;
+    if (nrhs == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
-    set_info(info, run_format<T>(format, [&](auto v) {
-                 cqr::detail::gels_compact<T, decltype(v)::value, MKL_INT>(
-                     rowmajor, trans, m, n, nrhs, ap, ldap, bp, ldbp, work, nm);
-             }));
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::gels_compact<T, decltype(v)::value, MKL_INT>(
+            rowmajor, trans, m, n, nrhs, ap, ldap, bp, ldbp, work, nm);
+    });
 }
 
 } /* anonymous namespace */
