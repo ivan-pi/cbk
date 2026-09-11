@@ -32,8 +32,17 @@ threading only.
 | geqrf | segfault | segfault | segfault | segfault |
 | getrinp | segfault | segfault | segfault | n/a |
 
-`info` is written unconditionally (0 on success; the docs call it "reserved"),
-exactly like LAPACK's INFO. `taup` always receives the reflector scalars; a
+`info` is written unconditionally, and the value written is always 0. A
+sentinel (777, or -5) came back as 0 from every routine on every path: success,
+the `lwork = -1` query, `nm = 0`, `n = 0`, and inputs LAPACK would reject. A
+non-positive-definite lane for `potrf` (LAPACK: `info = j`), a zero pivot for
+`getrfnp`, and `getrinp` on that singular factor all left `info = 0` and
+poisoned the offending lane with NaN/Inf while the other lanes came out
+correct. So "reserved" means exactly that: `info` carries no information on
+2020.0.4, and per-lane failure is detectable only by inspecting the output. (cqr
+follows the same convention -- 0 on success, a poisoned lane on a numerical
+failure -- and adds -1 for an unrecognized `format`, the one failure its
+dispatch can see.) `taup` always receives the reflector scalars; a
 null `taup` is not "skip the copy". Consequence for cqr: the MKL-style wrappers
 write `*info` and `work[0]` without null checks, matching MKL. A null pointer
 fails loudly at the first write, which is the benign failure mode.
