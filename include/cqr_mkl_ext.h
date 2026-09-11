@@ -46,12 +46,12 @@
  *     0 on success, -1 for an unrecognized `format`.
  *   - Workspace: ?geqrf and ?ormqr take work/lwork like their LAPACK namesakes;
  *     with lwork = -1 the call is a query returning the optimal lwork in
- *     work[0] -- 1, these kernels need no scratch. Size each routine's work
- *     from ITS OWN query and give each its own buffer: MKL's mkl_?geqrf_compact
- *     needs n*V per thread (its query scales with mkl_get_max_threads() under a
- *     threaded MKL layer), and because compact routines skip checking, an
- *     undersized or shared work array is undefined behavior (a silent overrun;
- *     see .claude/mkl-compact-behavior.md).
+ *     work[0] -- 1, these kernels need no scratch. Always size work from a
+ *     query of the routine you will call, and give each routine its own
+ *     buffer: lwork is not checked (no compact routine checks it, MKL's
+ *     included), so an undersized work array is a silent overrun. This matters
+ *     when mixing cqr and MKL routines: the two libraries' workspace needs
+ *     differ, and one routine's lwork says nothing about another's.
  *   - ?gels's work is the exception: it is the routine's tau scratch, one slot
  *     per group so the groups can run in parallel, so its query returns
  *     max(1, min(m,n) * V * ceil(nm/V)) -- the size in scalars of a compact tau
