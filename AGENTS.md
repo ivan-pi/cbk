@@ -171,7 +171,15 @@ argument, which cannot be parenthesized, so they also sit between
   each benchmark keeps only its fill.
 - **One kernel per routine.** Every kernel addresses its operands through
   `BatchView` (strides `si`, `sj`), so column-major, row-major, and ormqr's
-  `side='R'` are the same code with different strides. Register blocking is
+  `side='R'` are the same code with different strides -- and gels's LQ case is
+  geqrf's kernel over the transposed view. The fused solves (gels, sysvnp)
+  compose the factorization and solve *group* kernels inside one
+  `for_each_group` body; add a fused driver the same way rather than
+  duplicating arithmetic. Do not add parameters to an existing group kernel's
+  signature for a new caller, even ones compiled out: GCC's interprocedural
+  passes key on the signature, and geqrf's plain path lost 8-13% that way
+  (measured). Share the step as an inline helper and give the new caller its
+  own kernel, as `geqrf_panel_compact_group` does. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
@@ -180,7 +188,10 @@ argument, which cannot be parenthesized, so they also sit between
   argument.
 - **Workspace (`lwork`).** Size each routine's `work` from *its own* `lwork = -1`
   query, and give each routine its own buffer. The compact kernels here need no
-  scratch (their query returns `1`), but MKL's `mkl_?geqrf_compact` needs `~n*V`.
+  scratch (their query returns `1`) except the MKL-style `gels`, whose `work`
+  is its `tau` scratch, one slot per group (`min(m,n)*V*ceil(nm/V)`, holding
+  `tau` on exit; the portable `?gels_compact` takes it as an explicit `taup`
+  output instead); MKL's `mkl_?geqrf_compact` needs `~n*V`.
   Because compact routines skip argument checking, handing one routine a `work`
   sized for another -- or sharing a buffer across `geqrf`/`ormqr` -- is undefined
   behavior: harmless on some MKL builds, silent heap corruption on others (this

@@ -81,6 +81,13 @@ template <class T> double max_abs_diff(const T *a, const T *b, size_t n)
     return d;
 }
 
+// The leading rows x cols block of a matrix, as a view of the same storage.
+template <class Mv> Mv leading(Mv M, int rows, int cols)
+{
+    assert(rows >= 0 && rows <= M.rows && cols >= 0 && cols <= M.cols);
+    return {M.data, M.si, M.sj, rows, cols};
+}
+
 // L1 (max column sum) norm of a matrix, in any layout its view describes.
 template <class Mv> double norm1(Mv M)
 {
@@ -212,8 +219,112 @@ template <class T, class Rv> void ref_trsm_upper(Rv R, MatrixView<T> B)
         }
 }
 
+// Dense BLAS ?trsm: solves op(A) X = alpha B (side='L') or X op(A) = alpha B
+// (side='R') in place, A the order-s triangular factor. B is pre-scaled by
+// alpha (so alpha == 0 gives B := 0), then a unit-alpha substitution runs. Only
+// the referenced triangle of A is touched; the diagonal is skipped entirely
+// when diag='U'. The ?trsm suite's reference, and the triangular steps of
+// ref_gels.
+template <class T, class Av>
+void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A,
+              MatrixView<T> B)
+{
+    const bool left = (side == 'L' || side == 'l');
+    const bool upper = (uplo == 'U' || uplo == 'u');
+    const bool tran = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
+    const bool unit = (diag == 'U' || diag == 'u');
+    const int m = B.rows, n = B.cols;
+    assert(A.rows == A.cols && A.rows == (left ? m : n));
+
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < m; ++i)
+            B(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
+
+    if (left) {
+        // solve op(A) X = B column by column; A is m x m
+        const bool back = (upper != tran);
+        for (int j = 0; j < n; ++j)
+            for (int t = 0; t < m; ++t) {
+                int i = back ? m - 1 - t : t;
+                T s = B(i, j);
+                if (back)
+                    for (int l = i + 1; l < m; ++l)
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
+                else
+                    for (int l = 0; l < i; ++l)
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
+                B(i, j) = unit ? s : s / A(i, i);
+            }
+    }
+    else {
+        // solve X op(A) = B column of X at a time; A is n x n
+        const bool fwd = (upper != tran);
+        for (int t = 0; t < n; ++t) {
+            int j = fwd ? t : n - 1 - t;
+            if (fwd)
+                for (int l = 0; l < j; ++l) {
+                    T a = tran ? A(j, l) : A(l, j);
+                    for (int i = 0; i < m; ++i)
+                        B(i, j) -= a * B(i, l);
+                }
+            else
+                for (int l = j + 1; l < n; ++l) {
+                    T a = tran ? A(j, l) : A(l, j);
+                    for (int i = 0; i < m; ++i)
+                        B(i, j) -= a * B(i, l);
+                }
+            if (!unit) {
+                T d = A(j, j);
+                for (int i = 0; i < m; ++i)
+                    B(i, j) /= d;
+            }
+        }
+    }
+}
+
+// dgels, unblocked: the least-squares (op(A) with more rows than columns) or
+// minimum-norm (more columns than rows) solution of op(A) X = B, op(A) = A
+// ('N') or A^T ('T'), A m x n and B max(m,n) x nrhs, each in the layout its
+// view carries. Factors the tall orientation F (A, or A^T when m < n: that is
+// the LQ of A in ?gelqf storage) with ref_geqr2 -- on exit A holds the
+// factorization and tau its min(m,n) reflector scalars -- then B := Q^T B,
+// R X = B (least squares: rows n..m-1 of B keep the residual) or R^T Y = B,
+// X = Q [Y; 0] (minimum norm). The same steps the compact kernel runs V lanes
+// at a time.
+template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T *tau)
+{
+    const bool tran = (trans == 'T' || trans == 't' || trans == 'C' || trans == 'c');
+    const int m = A.rows, n = A.cols, nrhs = B.cols;
+    const bool tall = (m >= n);
+    const int p = tall ? m : n, q = tall ? n : m;
+    const bool overdet = (tall != tran);
+    assert(B.rows == p);
+
+    // F: the tall orientation, p x q, column-major (the references need it so)
+    std::vector<T> Fs((size_t)p * q);
+    const auto F = mat_view(Fs.data(), p, q);
+    copy_matrix(tall ? A : A.transposed(), F);
+
+    ref_geqr2(F, tau);
+    const auto R = leading(F, q, q), Bq = leading(B, q, nrhs);
+    if (overdet) {
+        ref_orm2r('T', q, F, tau, B);
+        ref_trsm('L', 'U', 'N', 'N', T(1), R, Bq);
+    }
+    else {
+        ref_trsm('L', 'U', 'T', 'N', T(1), R, Bq);
+        for (int j = 0; j < nrhs; ++j)
+            for (int i = q; i < p; ++i)
+                B(i, j) = T(0);
+        ref_orm2r('N', q, F, tau, B);
+    }
+
+    // hand the factorization back in A's orientation
+    copy_matrix(F, tall ? A : A.transposed());
+}
+
 // ----------------------- portable C API, by scalar type ------------
-// compact<T>::geqrf / ormqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm forward
+// compact<T>::geqrf / ormqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm / gels forward
 // to the d/s entry points of cqr_compact.h, so the templated suites call one name for both precisions;
 // compact<T>::name labels their output.
 
@@ -242,6 +353,9 @@ template <> struct compact<T> {                                                 
     static int trsm(char lay, char si, char up, char tr, char di, int m, int n, T alpha,   \
                     const T *a, int lda, T *b, int ldb, int V, int nm)                     \
     { return p##trsm_compact(lay, si, up, tr, di, m, n, alpha, a, lda, b, ldb, V, nm); }   \
+    static int gels(char lay, char tr, int m, int n, int nrhs, T *a, int lda, T *b,       \
+                    int ldb, T *tau, int V, int nm)                                        \
+    { return p##gels_compact(lay, tr, m, n, nrhs, a, lda, b, ldb, tau, V, nm); }           \
 };
 // NOLINTEND(bugprone-macro-parentheses)
 // clang-format on

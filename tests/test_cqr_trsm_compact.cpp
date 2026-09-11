@@ -29,70 +29,8 @@
 
 using namespace cqr::test;
 
-// ----------------------- reference kernel (scalar) ------------------
-// Dense BLAS ?trsm: solves op(A) X = alpha B (side='L') or
-// X op(A) = alpha B (side='R') in place, A the order-s triangular factor.
-// B is pre-scaled by alpha (so alpha == 0 gives B := 0), then a unit-alpha
-// substitution runs. Only the referenced triangle of A is touched; the
-// diagonal is skipped entirely when diag='U'.
-
-template <class T, class Av>
-static void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A,
-                     MatrixView<T> B)
-{
-    const bool left = (side == 'L' || side == 'l');
-    const bool upper = (uplo == 'U' || uplo == 'u');
-    const bool tran = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
-    const bool unit = (diag == 'U' || diag == 'u');
-    const int m = B.rows, n = B.cols;
-    assert(A.rows == A.cols && A.rows == (left ? m : n));
-
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < m; ++i)
-            B(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
-
-    if (left) {
-        // solve op(A) X = B column by column; A is m x m
-        const bool back = (upper != tran);
-        for (int j = 0; j < n; ++j)
-            for (int t = 0; t < m; ++t) {
-                int i = back ? m - 1 - t : t;
-                T s = B(i, j);
-                if (back)
-                    for (int l = i + 1; l < m; ++l)
-                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
-                else
-                    for (int l = 0; l < i; ++l)
-                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
-                B(i, j) = unit ? s : s / A(i, i);
-            }
-    }
-    else {
-        // solve X op(A) = B column of X at a time; A is n x n
-        const bool fwd = (upper != tran);
-        for (int t = 0; t < n; ++t) {
-            int j = fwd ? t : n - 1 - t;
-            if (fwd)
-                for (int l = 0; l < j; ++l) {
-                    T a = tran ? A(j, l) : A(l, j);
-                    for (int i = 0; i < m; ++i)
-                        B(i, j) -= a * B(i, l);
-                }
-            else
-                for (int l = j + 1; l < n; ++l) {
-                    T a = tran ? A(j, l) : A(l, j);
-                    for (int i = 0; i < m; ++i)
-                        B(i, j) -= a * B(i, l);
-                }
-            if (!unit) {
-                T d = A(j, j);
-                for (int i = 0; i < m; ++i)
-                    B(i, j) /= d;
-            }
-        }
-    }
-}
-
+// The scalar reference is ref_trsm of test_compact_util.hpp (dense BLAS ?trsm
+// over views, in place); tri_apply forms the residual independently.
 // Padded pack slots carry the identity -- for a triangular A that is a unit
 // diagonal, so the kernel's divisions never hit a zero pivot in the padding.
 

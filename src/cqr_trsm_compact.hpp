@@ -222,21 +222,42 @@ void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int
     }
 }
 
-/* One group, any side / layout, alpha != 0: side='L' column-major routes to the
- * tuned trsm_left_dot; the other three side/layout combinations use the strided
- * kernel. The per-group entry point the LDL^T solve composes its sweeps from. */
+/* One group, any side / layout, alpha != 0, through the views. Routes to the
+ * tuned trsm_left_dot when it applies -- side='L' with B's rows contiguous
+ * (unit row stride) and A either column-major (unit row stride) or stored as
+ * its transpose (unit column stride: A is then M^T for the column-major M of
+ * leading dimension A.si, so uplo and transa flip -- the case of a QR factor
+ * reached through a transposed view, as gels's LQ path does) -- and to the
+ * strided kernel otherwise. One branch per group, outside every kernel loop.
+ * The per-group entry point the fused solves (gels, and through the pointer
+ * form below, the LDL^T solve) compose their sweeps from. */
+template <typename T, int V, typename Int = int>
+inline void trsm_compact_group(bool left, bool upper, bool tran, bool unit, Int m, Int n,
+                               T alpha, ConstBatchView<T, V, Int> A,
+                               BatchView<T, V, Int> B)
+{
+    if (left && B.si == 1 && A.si == 1)
+        trsm_left_dot<T, V, Int>(upper, tran, unit, m, n, alpha,
+                                 reinterpret_cast<const T *>(A.data), A.sj,
+                                 reinterpret_cast<T *>(B.data), B.sj);
+    else if (left && B.si == 1 && A.sj == 1)
+        trsm_left_dot<T, V, Int>(!upper, !tran, unit, m, n, alpha,
+                                 reinterpret_cast<const T *>(A.data), A.si,
+                                 reinterpret_cast<T *>(B.data), B.sj);
+    else
+        trsm_compact_group_strided<T, V, Int>(left, upper, tran, unit, m, n, alpha, A, B);
+}
+
+/* The same on packed pointers in a layout: side='L' column-major reaches the
+ * tuned path, the other three side/layout combinations the strided kernel. */
 template <typename T, int V, typename Int = int>
 inline void trsm_compact_group(bool left, bool upper, bool rowmajor, bool tran, bool unit,
                                Int m, Int n, T alpha, const T *a, Int ldap, T *b,
                                Int ldbp)
 {
-    if (left && !rowmajor)
-        trsm_left_dot<T, V, Int>(upper, tran, unit, m, n, alpha, a, ldap, b, ldbp);
-    else
-        trsm_compact_group_strided<T, V, Int>(
-            left, upper, tran, unit, m, n, alpha,
-            make_const_view<T, V, Int>(a, rowmajor, ldap),
-            make_view<T, V, Int>(b, rowmajor, ldbp));
+    trsm_compact_group<T, V, Int>(left, upper, tran, unit, m, n, alpha,
+                                  make_const_view<T, V, Int>(a, rowmajor, ldap),
+                                  make_view<T, V, Int>(b, rowmajor, ldbp));
 }
 
 /* All groups (nm matrices). A padded partial last group is processed too, which
@@ -256,20 +277,9 @@ void trsm_compact(bool left, bool upper, bool rowmajor, bool tran, bool unit, In
     const std::size_t str_b = group_stride(rowmajor, ldbp, m, n, V);
 
     /* alpha == 0 is the BLAS ?trsm fast path: B := 0 with A untouched. Handle it
-     * once here -- both group kernels then assume alpha != 0 -- zeroing each
-     * group's m x n block through the same strided B view the solve uses. */
+     * once here -- both group kernels then assume alpha != 0. */
     if (alpha == T(0)) {
-        using VT = typename pack<T, V>::type;
-        for_each_group<V>(
-            nm,
-            [&](Int g) {
-                auto B =
-                    make_view<T, V, Int>(bp + (std::size_t)g * str_b, rowmajor, ldbp);
-                for (Int j = 0; j < n; ++j)
-                    for (Int i = 0; i < m; ++i)
-                        B(i, j) = VT{};
-            },
-            (double)m * n * V /* stores per group */);
+        zero_compact<T, V, Int>(rowmajor, m, n, bp, ldbp, nm);
         return;
     }
 

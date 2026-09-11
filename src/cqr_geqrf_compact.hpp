@@ -87,6 +87,27 @@ inline void larfg_pack(const typename pack<T, V>::type &x0,
     vselect<T, V>(rdiag, has, beta, x0);
 }
 
+/* Build H(kk) from column kk of A, rows kk..m-1: the reflector body scaled in
+ * place below the diagonal, the R diagonal in A(kk,kk), tau[kk] = t (also
+ * returned in t for the caller's larf). One step of geqr2, shared by the two
+ * group kernels below. */
+template <typename T, int V, typename Int>
+inline void geqrf_reflector(Int kk, Int m, const BatchView<T, V, Int> &A,
+                            typename pack<T, V>::type *tau,
+                            typename pack<T, V>::type &t) noexcept
+{
+    using VT = typename pack<T, V>::type;
+    VT tail = VT{};
+    for (Int i = kk + 1; i < m; ++i)
+        tail += A(i, kk) * A(i, kk);
+    VT rdiag, inv;
+    larfg_pack<T, V>(A(kk, kk), tail, rdiag, t, inv);
+    tau[kk] = t;
+    for (Int i = kk + 1; i < m; ++i)
+        A(i, kk) = A(i, kk) * inv; /* reflector body */
+    A(kk, kk) = rdiag;             /* R diagonal */
+}
+
 /* One group of V interleaved m x n matrices, through the layout-agnostic view. */
 template <typename T, int V, typename Int = int>
 void geqrf_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_)
@@ -101,19 +122,41 @@ void geqrf_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_)
     const Int k = (m < n) ? m : n;
 
     for (Int kk = 0; kk < k; ++kk) {
-        /* build H(kk) from column kk, rows kk..m-1 */
-        VT tail = VT{};
-        for (Int i = kk + 1; i < m; ++i)
-            tail += A(i, kk) * A(i, kk);
-        VT rdiag, t, inv;
-        larfg_pack<T, V>(A(kk, kk), tail, rdiag, t, inv);
-        tau[kk] = t;
-        for (Int i = kk + 1; i < m; ++i)
-            A(i, kk) = A(i, kk) * inv; /* reflector body */
-        A(kk, kk) = rdiag;             /* R diagonal */
-
+        VT t;
+        geqrf_reflector<T, V, Int>(kk, m, A, tau, t);
         /* apply H(kk) to the trailing columns kk+1 .. n-1 */
         larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+    }
+}
+
+/* The same factorization with a panel C (m x ncols, viewed with the reflector
+ * axis first) riding along: every H(kk) is applied to all of C right after it
+ * is built, exactly as to the trailing columns of A, so on exit C = Q^T C. That
+ * is the QR of the fused matrix [A | C] truncated to A's min(m, n) reflectors --
+ * the one-pass least-squares reduction ?gels_compact runs, and identical
+ * arithmetic to a separate ormqr('L','T') sweep (which applies the same
+ * reflectors in the same order), but with each reflector loaded once for both
+ * panels while the group is cache-resident. A separate kernel, not a flag on
+ * the one above: an extra parameter, even one compiled out, changed GCC's
+ * codegen for the plain path. */
+template <typename T, int V, typename Int = int>
+void geqrf_panel_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_,
+                               BatchView<T, V, Int> C, Int ncols)
+{
+    using VT = typename pack<T, V>::type;
+    static_assert(std::is_floating_point_v<T>,
+                  "geqrf_compact is defined for real float/double");
+    assert(A.si && A.sj && C.si && C.sj);
+
+    VT *tau = reinterpret_cast<VT *>(tau_);
+    const auto Ac = A.as_const();
+    const Int k = (m < n) ? m : n;
+
+    for (Int kk = 0; kk < k; ++kk) {
+        VT t;
+        geqrf_reflector<T, V, Int>(kk, m, A, tau, t);
+        larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+        larf<T, V>(kk, m, Ac, t, C, Int(0), ncols);
     }
 }
 

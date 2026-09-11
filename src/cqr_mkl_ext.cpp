@@ -12,7 +12,9 @@
  * format (the one failure dispatch can detect). ?geqrf and ?ormqr answer the
  * lwork = -1 workspace query with 1: the kernels need no scratch. ?trsm has no
  * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?sytrfnp,
- * ?sytrsnp and ?sysvnp have info but no workspace.
+ * ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
+ * the tau scratch of its factorization, one slot per group -- so its query
+ * returns the size of a compact tau buffer for the batch.
  *
  * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
  */
@@ -25,6 +27,7 @@
 #include "cqr_sytrsnp_compact.hpp"
 #include "cqr_sysvnp_compact.hpp"
 #include "cqr_trsm_compact.hpp"
+#include "cqr_gels_compact.hpp"
 
 namespace {
 
@@ -160,6 +163,27 @@ void trsm(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa,
     });
 }
 
+template <typename T>
+void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *ap,
+          MKL_INT ldap, T *bp, MKL_INT ldbp, T *work, MKL_INT lwork, MKL_INT *info,
+          MKL_COMPACT_PACK format, MKL_INT nm)
+{
+    if (lwork == -1) { /* workspace query: the tau scratch, one slot per group */
+        return set_info(
+            info, run_format<T>(format, [&](auto v) {
+                if (work)
+                    work[0] = T(cqr::detail::gels_lwork(m, n, nm, decltype(v)::value));
+            }));
+    }
+    if (nrhs == 0 || nm == 0) return set_info(info, 0);
+
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    set_info(info, run_format<T>(format, [&](auto v) {
+                 cqr::detail::gels_compact<T, decltype(v)::value, MKL_INT>(
+                     rowmajor, trans, m, n, nrhs, ap, ldap, bp, ldbp, work, nm);
+             }));
+}
+
 } /* anonymous namespace */
 
 /* The C entry points: one definition per routine, instantiated for double (d)
@@ -212,6 +236,14 @@ void trsm(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa,
                                    MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm)    \
     {                                                                                    \
         trsm(layout, side, uplo, transa, diag, m, n, alpha, ap, ldap, bp, ldbp, format,  \
+             nm);                                                                        \
+    }                                                                                    \
+    void cqr_mkl_##p##gels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n,  \
+                                   MKL_INT nrhs, T *ap, MKL_INT ldap, T *bp,             \
+                                   MKL_INT ldbp, T *work, MKL_INT lwork, MKL_INT *info,  \
+                                   MKL_COMPACT_PACK format, MKL_INT nm)                  \
+    {                                                                                    \
+        gels(layout, trans, m, n, nrhs, ap, ldap, bp, ldbp, work, lwork, info, format,   \
              nm);                                                                        \
     }
 // NOLINTEND(bugprone-macro-parentheses)

@@ -13,6 +13,7 @@
  *   group_stride          -- scalars per group of V interleaved matrices.
  *   for_vlen              -- runtime interleave width -> compile-time V.
  *   for_each_group        -- the loop over groups, threaded with OpenMP.
+ *   zero_block / zero_compact -- B := 0 for a block of one group / a whole batch.
  *
  * V is the compact-format interleave width (the number of matrices whose
  * element (i,j) is stored contiguously). It does NOT need to match the hardware
@@ -265,6 +266,30 @@ void for_each_group(
 #endif
     for (Int g = 0; g < ngroups; ++g)
         body(g);
+}
+
+/* B(i0:i1, 0:ncols) := 0 for one group: the quick-return fills (trsm's
+ * alpha = 0, gels's empty op(A)) and gels's B(q:p) := 0 before it applies Q. */
+template <typename T, int V, typename Int>
+inline void zero_block(const BatchView<T, V, Int> &B, Int i0, Int i1, Int ncols) noexcept
+{
+    for (Int j = 0; j < ncols; ++j)
+        for (Int i = i0; i < i1; ++i)
+            B(i, j) = typename pack<T, V>::type{};
+}
+
+/* Every group of a rows x cols compact batch := 0, either layout. */
+template <typename T, int V, typename Int>
+void zero_compact(bool rowmajor, Int rows, Int cols, T *bp, Int ldbp, Int nm)
+{
+    const std::size_t str = group_stride(rowmajor, ldbp, rows, cols, V);
+    for_each_group<V>(
+        nm,
+        [&](Int g) {
+            const auto B = make_view<T, V, Int>(bp + g * str, rowmajor, ldbp);
+            zero_block<T, V, Int>(B, Int(0), rows, cols);
+        },
+        (double)rows * cols * V /* stores per group */);
 }
 
 } /* namespace cqr::detail */
