@@ -10,9 +10,10 @@
  * responsible for consistent parameters. MKL leaves the compact `info` reserved;
  * here it is a single scalar status, 0 on success, or -1 for an unrecognized
  * format (the one failure dispatch can detect). Like LAPACK's INFO it is a
- * required output, written unconditionally (as MKL's own compact routines do:
- * they crash on a null info). ?geqrf and ?ormqr answer the
- * lwork = -1 workspace query with 1: the kernels need no scratch. ?trsm has no
+ * required output, written unconditionally, and `work` a required buffer, as
+ * for MKL's own compact routines (which crash on a null info or work). ?geqrf
+ * and ?ormqr answer the lwork = -1 workspace query with 1: the kernels need no
+ * scratch. ?trsm has no
  * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?sytrfnp,
  * ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
  * the tau scratch of its factorization, one slot per group -- so its query
@@ -47,7 +48,7 @@ template <typename T, typename F> MKL_INT run_format(MKL_COMPACT_PACK format, F 
 template <typename T> bool workspace_query(T *work, MKL_INT lwork)
 {
     if (lwork != -1) return false;
-    if (work) work[0] = T(1);
+    work[0] = T(1);
     return true;
 }
 
@@ -172,7 +173,7 @@ void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *
 {
     if (lwork == -1) { /* workspace query: the tau scratch, one slot per group */
         const int V = vlen_for_format<T>(format); /* 0 for an unrecognized format */
-        if (work && V) work[0] = T(cqr::detail::gels_lwork(m, n, nm, V));
+        if (V) work[0] = T(cqr::detail::gels_lwork(m, n, nm, V));
         *info = V ? 0 : -1;
         return;
     }
