@@ -28,11 +28,13 @@
  *   (m >= n & 'T',                   (X = Q [Y; 0] is the minimum-norm solution)
  *    m <  n & 'N')
  *
- * The overdetermined reduction is fused: geqrf_compact_group applies each
- * reflector to B as it is built (the QR of [F | B] truncated to q reflectors),
- * so Q^T B costs no second sweep over the reflectors. The underdetermined case
- * needs the factorization complete before Q is applied, so it runs the three
- * steps in sequence.
+ * The overdetermined reduction is fused: geqrf_panel_compact_group applies
+ * each reflector to B as it is built (the QR of [F | B] truncated to q
+ * reflectors), so Q^T B costs no second sweep over the reflectors. B stays a
+ * separate array with its own leading dimension, as ?gels requires: the panel
+ * kernel reaches it through its own view, not an augmented buffer. The
+ * underdetermined case needs the factorization complete before Q is applied,
+ * so it runs the three steps in sequence.
  *
  * Compact storage (matches mkl_?gepack_compact); group g = idx/V, slot v = idx%V:
  *     A_v(i,j)  = ap  [ g*ldap*n*V    + (j*ldap + i)*V + v ]   (column-major)
