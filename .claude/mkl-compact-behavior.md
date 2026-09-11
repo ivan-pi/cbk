@@ -126,6 +126,58 @@ Consequences:
   would be either the exit crash (GNU layer) or the two-runtime conflict
   (Intel layer) unless the whole build moves to one runtime.
 
+### 3a. Calls from inside an OpenMP parallel region
+
+Whether MKL nests its own team inside the caller's region follows the
+documented MKL rule, and the compact routines obey it. Probe: two batches of
+2048 64x64 matrices, one per thread of a 2-thread `omp parallel` region, on 4
+cores, `mkl_set_num_threads(4)` set outside the region. References outside any
+region: 69 ms per batch on 1 thread, 18 ms on 4. Identical on 2020.0.4 and
+2026.1 (`mkl_gnu_thread`):
+
+| `omp_set_max_active_levels` | `mkl_set_dynamic` | query inside region | `mkl_get_max_threads()` inside | wall for both batches | CPU/wall | what ran |
+|---|---|---|---|---|---|---|
+| 1 | 1 (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
+| 1 | 0 | 4 x n*V | 4 | 69 ms | 1.9 | same: nesting is off, MKL's inner region is inactive |
+| 2 | 1 (default) | 1 x n*V | 1 | 69 ms | 1.9 | 2 outer threads, MKL serial inside each |
+| 2 | 0 | 4 x n*V | 4 | 40 ms | 3.2-3.6 | nested: each outer thread's call got a 4-thread team |
+
+- **Default behavior is serial inside a region.** With `MKL_DYNAMIC` on (the
+  default), MKL detects `omp_in_parallel()` and runs the call on one thread
+  regardless of `max_active_levels`; the query drops to `1 x n*V` accordingly.
+  That is exactly what the sequential layer gives, so for cqr's benchmarks
+  (an OpenMP loop over groups, one MKL call per group) linking the threaded
+  layer would change nothing.
+- **Nesting needs both switches**: `mkl_set_dynamic(0)` *and*
+  `omp_set_max_active_levels(>= 2)`. Then every outer thread's call spawns a
+  full team (8 threads on 4 cores here); oversubscribed, but the two batches
+  still finished in 40 ms against 2 x 18 ms for back-to-back 4-thread calls.
+- **The query follows `mkl_get_max_threads()`, not what will actually run.**
+  With `MKL_DYNAMIC` off and nesting disabled MKL reports 4 threads and a
+  `4 x n*V` query but runs serially: oversized, harmless. The dangerous
+  direction is the default one: a buffer queried *inside* a region
+  (`1 x n*V`) and reused *outside* it at 4 threads overruns by three slices.
+  Query where you call.
+
+### 3b. Selecting the threaded layer with CMake
+
+`-DBLA_VENDOR=Intel10_64lp` (instead of `Intel10_64lp_seq`) asks CMake's
+FindBLAS for the threaded layer, but on this C/C++-only project it does not
+produce a working binary by itself. FindBLAS 3.28 picks `mkl_gnu_thread` +
+`gomp` only when a GNU *Fortran* compiler is enabled; otherwise it pairs
+`mkl_intel_thread` with `iomp5`. `libiomp5` is not on the default library path
+(it lives under `/opt/intel/oneapi/compiler/<ver>/lib`), the link succeeds
+anyway because a shared library's unresolved `__kmpc_*` symbols are allowed at
+link time, and the test binary segfaults at startup. With
+`LD_PRELOAD=.../libiomp5.so` the same binary ran `test_cqr_geqrf_mkl` to
+"all checks passed", libgomp (cqr's launcher) and libiomp5 coexisting in one
+process. That coexistence is not reliable, though: the timing probe with the
+same pairing crashed mid-run at four threads. A threaded-MKL build of this
+repo would need the OpenMP runtime settled deliberately (Intel compiler +
+`iomp5` throughout, or `mkl_gnu_thread` + `gomp` via `BLA_VENDOR` plus an
+explicit choice), and per section 3 it would gain nothing for the per-group
+benchmark loop.
+
 ## 4. What MKL does not ship
 
 There is no `mkl_?ormqr_compact`; cqr's is the only compact `ormqr`, so its
