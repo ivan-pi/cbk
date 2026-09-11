@@ -191,7 +191,7 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 
 | n | 1 thread, 512 matrices | 4 threads, 128 matrices |
 |---|---|---|
-| 8 | 1.09x | 0.80x (0.59-0.67x on repeats); 1.22x with 512 matrices -- see below |
+| 8 | 1.09x | 0.80x with the old 2e5 gate (0.59-0.67x on repeats); 1.22x with 512 matrices; 0.9-1.4x with the 5e4 gate -- see below |
 | 16 | 1.41x | 1.30x |
 | 32 | 1.60x | 1.56x |
 | 64 | 1.24x | 1.30x |
@@ -209,10 +209,18 @@ sequential MKL driven one group per call), cqr/MKL throughput:
   the row is 1.22x in cqr's favor, and single-threaded it is 1.09-1.20x. Two
   smaller effects remain, both against MKL: driving MKL one group per call
   costs it 13% at n=8 against one whole-batch call (57 us vs 51 us for 512
-  matrices), 2-4% at n=16-32, nothing at n=64. Note for the launcher: MKL's
-  ungated loop beat serial cqr at 131k flops (1.59e7 vs 1.06e7 matrices/s), so
-  on this box the 2e5 gate is somewhat conservative; it was tuned on a
-  different machine and is a build-time constant (`CQR_OMP_MIN_FLOPS`).
+  matrices), 2-4% at n=16-32, nothing at n=64.
+- **The gate was lowered to 5e4 as a result** (`CQR_OMP_MIN_FLOPS`, still a
+  build-time override). A sweep with the gate compiled out put this box's
+  break-even near 3e4 estimated flops and the win from 6e4 up, against the
+  ~1e5 of the box the 2e5 was first tuned on. In isolation the n=8, 128-matrix
+  call went from 18.6 us serial to 10-12 us on four threads. In the benchmark
+  the row read 1.31x, 1.38x and 0.89x on clean runs, but two of five runs hit
+  millisecond stalls that also hit the per-matrix LAPACK column of the same
+  row; at ~10 us of work per path with best-of-3 timing, that row sits below
+  this VM's noise floor. The 512-matrix row (1.22x) is the reliable one for
+  n=8; a harness with more repetitions or more matrices at the smallest sizes
+  would be needed to make the 128-matrix row trustworthy.
 - Relative error against per-matrix LAPACK is identical for both.
 - **Where both fall below blocked LAPACK depends on the machine and on V.** On
   this box (1 MiB L2 per core) with V=8 doubles the crossover is near
