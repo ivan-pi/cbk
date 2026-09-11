@@ -185,7 +185,6 @@ template <class T> int suite2(MKL_LAYOUT layout, int nm, int m, int n)
     const int V = mkl<T>::vlen(fmt);
     const int k = std::min(m, n);
     const bool row = (layout == MKL_ROW_MAJOR);
-    const size_t sA = (size_t)m * n;
     const MKL_INT ldA = row ? n : m, ldc = row ? n : m;
 
     MatrixBatch<T> A(nm, m, n);

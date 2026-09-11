@@ -21,6 +21,7 @@
 
 #include "cqr_matrix_view.hpp"
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <vector>
@@ -44,8 +45,8 @@ template <typename T, typename Alloc = std::allocator<T>> class MatrixBatch {
     std::size_t stride() const { return (std::size_t)rows_ * cols_; }
     T       *data()       { return a_.data(); }
     const T *data() const { return a_.data(); }
-    T       *operator[](int idx)       { return a_.data() + idx * stride(); }
-    const T *operator[](int idx) const { return a_.data() + idx * stride(); }
+    T       *operator[](int idx)       { return a_.data() + checked(idx) * stride(); }
+    const T *operator[](int idx) const { return a_.data() + checked(idx) * stride(); }
     MatrixView<T>       view(int idx)       { return mat_view((*this)[idx], rows_, cols_); }
     ConstMatrixView<T>  view(int idx) const { return mat_view((*this)[idx], rows_, cols_); }
     T       &operator()(int idx, int i, int j)       { return view(idx)(i, j); }
@@ -73,6 +74,14 @@ template <typename T, typename Alloc = std::allocator<T>> class MatrixBatch {
     }
 
   private:
+    /* idx must name a matrix in the batch -- the batch-level analogue of the
+     * view's (i, j) bounds assert, and every accessor above routes through it. */
+    std::size_t checked(int idx) const
+    {
+        assert(idx >= 0 && idx < count_);
+        return (std::size_t)idx;
+    }
+
     int count_, rows_, cols_;
     vector_type a_;
 };

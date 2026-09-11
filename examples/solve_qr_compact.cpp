@@ -33,6 +33,7 @@
 #include "cqr_mkl_alloc.h"     /* mkl_alloc_bytes (calls mkl_malloc; links MKL) */
 #include "cqr_matrix_view.hpp" /* MatrixView, shared with the tests and benchmarks */
 
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -120,6 +121,7 @@ double norm1(const Matrix &A)
  * 1e-300 only guards a zero ||B|| against 0/0 = NaN; it is not a tolerance. */
 double rel_diff(const Matrix &A, const Matrix &B)
 {
+    assert(A.rows() == B.rows() && A.cols() == B.cols());
     Matrix D = A;                                                     /* D <- A */
     cblas_daxpy(D.rows() * D.cols(), -1.0, B.data(), 1, D.data(), 1); /* D <- A - B */
     return norm1(D) / std::max(norm1(B), 1e-300);

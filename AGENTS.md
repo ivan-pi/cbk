@@ -154,6 +154,15 @@ argument, which cannot be parenthesized, so they also sit between
   library and its tests are one internal codebase and share these views on
   purpose; what keeps the suites honest is that they compute the *answers*
   independently -- scalar LAPACK references, dense LAPACK/MKL cross-checks.
+  A routine that takes views (or batches) `assert`s what its contract
+  assumes: dimension compatibility across operands (`matmul`, `tri_apply`,
+  `solve_errors`, the scalar references), squareness where required
+  (`gen_spd`, `gen_tri`, `ref_potf2`, ...), and index ranges
+  (`MatrixView::operator()`, `MatrixBatch::operator[]`). Costs nothing in
+  Release, and the Debug suite run is what exercises it. `BatchView` is the
+  exception by construction -- it carries strides, not extents, so a kernel
+  cannot self-check; the kernels' dimension contract is the portable C API's
+  argument validation.
   Dense batches everywhere are `MatrixBatch` (`src/cqr_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`

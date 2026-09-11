@@ -267,6 +267,7 @@ template <class T> void gen_boosted(MatrixView<T> A, T boost = T(2))
 // mirror pins A(j,i) == A(i,j) exactly, on every compiler and FP model.
 template <class T> void gen_spd(MatrixView<T> A, double cond = 0.0)
 {
+    assert(A.rows == A.cols);
     const int n = A.rows;
     std::vector<T> Ms((size_t)n * n);
     const auto M = mat_view(Ms.data(), n, n);
@@ -304,6 +305,7 @@ template <class T> void gen_spd(MatrixView<T> A, double cond = 0.0)
 // triangle is mirrored from the lower so A is symmetric to the bit.
 template <class T> void gen_sym_ldlt(MatrixView<T> A)
 {
+    assert(A.rows == A.cols);
     const int n = A.rows;
     std::vector<T> Ls((size_t)n * n, T(0)), d(n);
     const auto L = mat_view(Ls.data(), n, n);
@@ -348,6 +350,7 @@ template <class At> double ldlt_reconstruct(const At &at, int i, int j, bool upp
 // the view's strides, so one body serves column-major and row-major.
 template <class T> void gen_tri(MatrixView<T> A, bool upper)
 {
+    assert(A.rows == A.cols);
     const int s = A.rows;
     for (int i = 0; i < s; ++i)
         for (int j = 0; j < s; ++j) {
@@ -490,6 +493,7 @@ std::vector<T> pack_compact(const MatrixBatch<T> &Mk, int ldp, int V,
 // get tau = 0 (the identity's reflectors).
 template <class T> void pack_tau(const MatrixBatch<T> &tau, T *tp, int V)
 {
+    assert(tau.cols() == 1);
     const int k = tau.rows(), nm = tau.count(), ng = (nm + V - 1) / V;
     const std::size_t gstride = group_stride(false, k, k, 1, V);
     const bool width_ok = for_vlen(V, [&](auto vw) {
@@ -516,6 +520,7 @@ template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
 
 template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
 {
+    assert(tau.cols() == 1);
     const int k = tau.rows(), nm = tau.count(), ng = (nm + V - 1) / V;
     const std::size_t gstride = group_stride(false, k, k, 1, V);
     const bool width_ok = for_vlen(V, [&](auto vw) {

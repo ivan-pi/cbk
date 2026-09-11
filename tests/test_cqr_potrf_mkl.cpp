@@ -145,7 +145,6 @@ template <class T> int suite2(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     const int V = mkl<T>::vlen(fmt);
     const bool row = (layout == MKL_ROW_MAJOR);
     const char ul = (uplo == MKL_UPPER) ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
     MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
