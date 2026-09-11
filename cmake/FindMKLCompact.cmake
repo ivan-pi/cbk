@@ -39,6 +39,9 @@ if(NOT MKLCompact_INTERFACE MATCHES "^(lp64|ilp64)$")
   message(FATAL_ERROR "MKLCompact_INTERFACE must be lp64 or ilp64 (got '${MKLCompact_INTERFACE}')")
 endif()
 
+# Only oneAPI's default location needs listing: the distro package
+# (/usr/include/mkl, /usr/lib/<arch>) is on CMake's default search paths and
+# is reached through the `mkl` include suffix and the architecture lib dir.
 set(_mkl_paths /opt/intel/oneapi/mkl/latest)
 
 find_path(MKLCompact_INCLUDE_DIR NAMES mkl_compact.h
