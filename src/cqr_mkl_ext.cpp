@@ -169,11 +169,9 @@ void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *
           MKL_COMPACT_PACK format, MKL_INT nm)
 {
     if (lwork == -1) { /* workspace query: the tau scratch, one slot per group */
-        return set_info(
-            info, run_format<T>(format, [&](auto v) {
-                if (work)
-                    work[0] = T(cqr::detail::gels_lwork(m, n, nm, decltype(v)::value));
-            }));
+        const int V = vlen_for_format<T>(format); /* 0 for an unrecognized format */
+        if (work && V) work[0] = T(cqr::detail::gels_lwork(m, n, nm, V));
+        return set_info(info, V ? 0 : -1);
     }
     if (nrhs == 0 || nm == 0) return set_info(info, 0);
 
