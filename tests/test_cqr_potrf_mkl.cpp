@@ -51,14 +51,13 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
     const bool row = (layout == MKL_ROW_MAJOR);
     const bool up = (uplo == MKL_UPPER);
     const char ul = up ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
-        gen_spd(A.data() + v * sA, n, cond);
+        gen_spd(A.view(v), cond);
 
     /* pack the full symmetric A, factor with the routine under test, unpack */
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+    auto Ap = A.base_ptrs();
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     auto ap_buf = cqr::detail::mkl_alloc_bytes<T>(sz_a);
     T *ap = ap_buf.get();
@@ -67,8 +66,8 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
     MKL_INT info = 99;
     cqr_mkl<T>::potrf(layout, uplo, n, ap, n, &info, fmt, nm);
 
-    std::vector<T> H(nm * sA);
-    auto Hp = batch_ptrs<T>(H.data(), nm, sA);
+    MatrixBatch<T> H(nm, n, n);
+    auto Hp = H.base_ptrs();
     mkl<T>::geunpack(layout, n, n, Hp.data(), n, ap, n, fmt, nm);
 
     int fails = 0;
@@ -78,18 +77,15 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
     }
 
     double worst_res = 0, worst_el = 0, worst_untouched = 0;
-    std::vector<T> Rec(sA), Lref(sA);
+    std::vector<T> Lref(A.stride());
     for (int v = 0; v < nm; ++v) {
-        const T *Av = A.data() + v * sA;
-        T *Hv = H.data() + v * sA;
-
         /* the factor is stored in `layout`; the input and the residual are the
          * column-major dense side */
-        const auto H = mat_view(Hv, n, n, n, row);
-        const auto A = mat_view(Av, n, n);
+        const auto Hm = H.view(v, row);
+        const auto Am = A.view(v);
 
         /* reconstruction residual and untouched-triangle check */
-        std::vector<T> R(sA, 0.0);
+        std::vector<T> R(A.stride(), 0.0);
         const auto Res = mat_view(R.data(), n, n);
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
@@ -97,35 +93,34 @@ int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
                 int lmax = std::min(i, j);
                 if (!up) /* A = L L^T */
                     for (int l = 0; l <= lmax; ++l)
-                        s += H(i, l) * H(j, l);
+                        s += Hm(i, l) * Hm(j, l);
                 else /* A = U^T U */
                     for (int l = 0; l <= lmax; ++l)
-                        s += H(l, i) * H(l, j);
-                Res(i, j) = (T)s - A(i, j);
+                        s += Hm(l, i) * Hm(l, j);
+                Res(i, j) = (T)s - Am(i, j);
             }
-        worst_res = std::max(worst_res,
-                             norm1(R.data(), n, n) / std::max(norm1(Av, n, n), 1e-300));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(Am), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
                 if (!named)
                     worst_untouched =
-                        std::max<double>(worst_untouched, std::abs(H(i, j) - A(i, j)));
+                        std::max<double>(worst_untouched, std::abs(Hm(i, j) - Am(i, j)));
             }
 
         /* elementwise vs LAPACKE_dpotrf (unique SPD factor -> a sharp signal) */
-        std::copy(Av, Av + sA, Lref.begin());
+        std::copy(A[v], A[v] + A.stride(), Lref.begin());
         lapack<T>::potrf(LAPACK_COL_MAJOR, ul, n, Lref.data(), n);
         const auto Lr = mat_view(Lref.data(), n, n);
         double el = 0, lref_norm = 0;
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
-                if (named) el = std::max<double>(el, std::abs(H(i, j) - Lr(i, j)));
+                if (named) el = std::max<double>(el, std::abs(Hm(i, j) - Lr(i, j)));
             }
-        lref_norm = norm1(Lref.data(), n, n); /* triangular factor L1 norm */
-        worst_el = std::max(worst_el, el / std::max(lref_norm, 1e-300));
+        lref_norm = norm1(Lr); /* triangular factor L1 norm */
+        worst_el = std::max(worst_el, el / std::max(lref_norm, norm_floor));
     }
 
     const double rtol = 20.0 * n * eps;
@@ -146,12 +141,11 @@ template <class T> int suite2(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     const int V = mkl<T>::vlen(fmt);
     const bool row = (layout == MKL_ROW_MAJOR);
     const char ul = (uplo == MKL_UPPER) ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
-        gen_spd(A.data() + v * sA, n, 0.0);
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+        gen_spd(A.view(v), 0.0);
+    auto Ap = A.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     auto ap1 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
@@ -182,17 +176,16 @@ template <class T> int suite3(int nm, int n, int nrhs)
     const double eps = std::numeric_limits<T>::epsilon();
     const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
     const int V = mkl<T>::vlen(fmt);
-    const std::vector<T> X = known_solution<T>(n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
 
-    const size_t sA = (size_t)n * n, sB = (size_t)n * nrhs;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        T *Av = A.data() + v * sA;
-        gen_spd(Av, n, 0.0);
-        matmul(n, nrhs, n, Av, n, X.data(), n, B.data() + v * sB, n); /* B = A X */
+        gen_spd(A.view(v), 0.0);
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     MKL_INT sz_b = mkl<T>::get_size(n, nrhs, fmt, nm);
@@ -214,8 +207,8 @@ template <class T> int suite3(int nm, int n, int nrhs)
     mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_LOWER, MKL_TRANS, MKL_NONUNIT, n, nrhs,
                  T(1), ap, n, bp, n, fmt, nm);
 
-    std::vector<T> Xhat(nm * sB);
-    auto Op = batch_ptrs<T>(Xhat.data(), nm, sB);
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, bp, n, fmt, nm);
 
     int fails = 0;
@@ -223,17 +216,7 @@ template <class T> int suite3(int nm, int n, int nrhs)
         ++fails;
         std::printf("    info = %ld (expected 0)\n", (long)info);
     }
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> AX(sB);
-    for (int v = 0; v < nm; ++v) {
-        const T *Av = A.data() + v * sA, *Bv = B.data() + v * sB;
-        const T *Xv = Xhat.data() + v * sB;
-        worst_fwd = std::max(worst_fwd, max_abs_diff(Xv, X.data(), sB) /
-                                            std::max(norm1(X.data(), n, nrhs), 1e-300));
-        matmul(n, nrhs, n, Av, n, Xv, n, AX.data(), n);
-        worst_res = std::max(worst_res, max_abs_diff(AX.data(), Bv, sB) /
-                                            std::max(norm1(Bv, n, nrhs), 1e-300));
-    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
     const double rtol = 100.0 * n * eps;
     bool ok = (worst_fwd <= rtol && worst_res <= rtol);
     fails += !ok;
@@ -283,10 +266,5 @@ template <class T> int run_suites()
 int main()
 {
     const int fails = run_suites<double>() + run_suites<float>();
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

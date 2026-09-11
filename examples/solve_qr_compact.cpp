@@ -30,8 +30,10 @@
 #include <mkl_compact.h>
 
 #include "cqr_mkl_ext.h"
-#include "cqr_mkl_alloc.h" /* mkl_alloc_bytes (calls mkl_malloc; links MKL) */
+#include "cqr_mkl_alloc.h"     /* mkl_alloc_bytes (calls mkl_malloc; links MKL) */
+#include "cqr_matrix_view.hpp" /* MatrixView, shared with the tests and benchmarks */
 
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -41,6 +43,10 @@
 #include <algorithm>
 
 namespace {
+
+using cqr::detail::ConstMatrixView;
+using cqr::detail::mat_view;
+using cqr::detail::MatrixView;
 
 /* Deterministic uniform reals in [-1, 1), seeded once for reproducibility. */
 std::mt19937_64 rng(42);
@@ -93,6 +99,13 @@ class Matrix {
     double  operator()(int i, int j) const { return a_[i + j * rows_]; }
     // clang-format on
 
+    /* The same storage as a MatrixView (src/cqr_matrix_view.hpp), for handing
+     * to anything that takes the library's dense view -- the strided element
+     * access the test suites and benchmarks address their matrices through.
+     * The view owns nothing: it stays valid only while this Matrix does. */
+    MatrixView<double> view() { return mat_view(a_.data(), rows_, cols_); }
+    ConstMatrixView<double> view() const { return mat_view(a_.data(), rows_, cols_); }
+
   private:
     int rows_, cols_;
     std::vector<double> a_;
@@ -104,12 +117,17 @@ double norm1(const Matrix &A)
     return LAPACKE_dlange(LAPACK_COL_MAJOR, '1', A.rows(), A.cols(), A.data(), A.ld());
 }
 
+/* Denominator floor for relative differences: only guards a zero ||B|| against
+ * 0/0 = NaN (the suites' norm_floor convention); it is not a tolerance. */
+constexpr double norm_floor = 1e-300;
+
 /* Relative 1-norm difference ||A - B||_1 / ||B||_1 (A, B same shape). */
 double rel_diff(const Matrix &A, const Matrix &B)
 {
+    assert(A.rows() == B.rows() && A.cols() == B.cols());
     Matrix D = A;                                                     /* D <- A */
     cblas_daxpy(D.rows() * D.cols(), -1.0, B.data(), 1, D.data(), 1); /* D <- A - B */
-    return norm1(D) / std::max(norm1(B), 1e-300);
+    return norm1(D) / std::max(norm1(B), norm_floor);
 }
 
 /* Per-matrix base pointers the compact pack/unpack routines expect, one per

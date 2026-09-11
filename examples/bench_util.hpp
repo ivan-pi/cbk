@@ -1,11 +1,13 @@
 /* bench_util.hpp
  *
  * The harness shared by the benchmark programs: abort-on-failure checks, the
- * MKL compact-format lookups, the dense MatrixView the pools are addressed
- * through, pack-aligned std::vector storage, best-of-N
- * timing, the OpenMP thread count, and the factorization / solve benchmarks'
- * command line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs MKL
- * headers only.
+ * MKL compact-format lookups, pack-aligned std::vector storage, MatrixPool (the
+ * batch of dense matrices every benchmark measures on) with PackedPool (its
+ * pristine compact image, restored before every timed pass), best-of-N timing,
+ * the OpenMP thread count, and the factorization / solve benchmarks' command
+ * line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs the MKL
+ * headers, and PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs
+ * using it link MKL (all benchmarks do).
  *
  * Assisted-by: Claude:claude-opus-4.8
  */
@@ -14,7 +16,11 @@
 #define CQR_BENCH_UTIL_HPP
 
 #include "cqr_mkl_ext.h"
+#include "cqr_mkl_alloc.h" /* mkl_alloc_bytes / mkl_buffer, for PackedPool */
+#include "cqr_matrix_batch.hpp"
 #include "cqr_matrix_view.hpp"
+
+#include <mkl_compact.h> /* mkl_dget_size_compact / mkl_dgepack_compact */
 
 #include <chrono>
 #include <cstdio>
@@ -36,6 +42,11 @@ using cqr::detail::format_for_vlen;     /* interleave width -> pack format */
 using cqr::detail::mat_view;            /* dense strided view (cqr_matrix_view.hpp) */
 using cqr::detail::MatrixView;
 using cqr::detail::vlen_for_format; /* pack format -> interleave width */
+
+/* Denominator floor for relative errors: the same divide-by-zero guard, value
+ * and rationale as the test suites' norm_floor (tests/test_compact_util.hpp);
+ * the two harness trees share no header, hence the twin definition. */
+constexpr double norm_floor = 1e-300;
 
 /* Report and abort on the spot if cond is false. */
 inline void check(bool cond, const char *what)
@@ -64,6 +75,39 @@ template <typename T> struct aligned_allocator {
     bool operator!=(const aligned_allocator &) const noexcept { return false; }
 };
 template <typename T> using aligned_vector = std::vector<T, aligned_allocator<T>>;
+
+/* The batch every benchmark measures on: MatrixBatch (src/cqr_matrix_batch.hpp,
+ * shared with the test suites), allocated pack-aligned so a dense pool and its
+ * LAPACK working copies start aligned like the compact buffers. The benchmarks
+ * differ only in what they put in their matrices (diagonally dominant, SPD,
+ * symmetric indefinite, ...), so the fill stays with each of them; a
+ * right-hand-side block is the same thing with cols = nrhs, so the benchmarks
+ * that solve keep two of these. */
+using MatrixPool = cqr::detail::MatrixBatch<double, aligned_allocator<double>>;
+
+/* A pool packed column-major into a compact buffer it owns: the pristine bytes
+ * an in-place compact routine's working copy is restored from before every
+ * timed pass (the pack itself stays untimed). */
+struct PackedPool {
+    MKL_INT bytes; /* mkl_dget_size_compact reports bytes */
+    cqr::detail::mkl_buffer<double> p;
+
+    PackedPool(const MatrixPool &P, MKL_COMPACT_PACK fmt)
+        : bytes(mkl_dget_size_compact(P.rows(), P.cols(), fmt, P.count())),
+          p(cqr::detail::mkl_alloc_bytes<double>(bytes))
+    {
+        auto ptrs = P.base_ptrs();
+        mkl_dgepack_compact(MKL_COL_MAJOR, P.rows(), P.cols(), ptrs.data(), P.rows(),
+                            p.get(), P.rows(), fmt, P.count());
+    }
+
+    /* An uninitialized working buffer of the same size. */
+    cqr::detail::mkl_buffer<double> work() const
+    {
+        return cqr::detail::mkl_alloc_bytes<double>(bytes);
+    }
+    void restore_into(double *dst) const { std::memcpy(dst, p.get(), bytes); }
+};
 
 /* Best (minimum) wall time over `reps` timed passes, in seconds. `reset` runs
  * untimed before every pass (e.g. to restore input the timed work destroys);

@@ -71,9 +71,9 @@ double sysv_gflop(int n, int nrhs)
            1e-9;
 }
 
-/* A pool of `nmat` dense column-major n x n symmetric *indefinite* matrices,
- * back to back in `a`, each with the right-hand sides B = A X (n x nrhs,
- * column-major) back to back in `b`, for the known X(:,j) = j + 1.
+/* The batch of systems: `nmat` n x n symmetric *indefinite* matrices in `a`,
+ * each with its right-hand sides B = A X (n x nrhs) in `b`, for the known
+ * X(:,j) = j + 1.
  *
  * Each A is symmetric with random off-diagonals in [-1,1] and a diagonal of
  * magnitude 2n with alternating sign, so it is strictly diagonally dominant
@@ -84,14 +84,10 @@ double sysv_gflop(int n, int nrhs)
  * needs ?sysv, not ?posv). O(n^2) to build, no O(n^3) product. The full matrix
  * is stored (both triangles) so the per-matrix LAPACK path and the compact pack
  * see identical symmetric input; each routine reads only the lower triangle. */
-struct Pool {
-    int n, nmat, nrhs;
-    aligned_vector<double> a; /* nmat * n*n,    64 B-aligned */
-    aligned_vector<double> b; /* nmat * n*nrhs, 64 B-aligned */
+struct Systems {
+    MatrixPool a, b;
 
-    Pool(int n_, int nmat_, int nrhs_)
-        : n(n_), nmat(nmat_), nrhs(nrhs_), a((size_t)nmat_ * n_ * n_),
-          b((size_t)nmat_ * n_ * nrhs_)
+    Systems(int n, int nmat, int nrhs) : a(nmat, n, n), b(nmat, n, nrhs)
     {
         std::mt19937_64 rng(2025);
         std::uniform_real_distribution<double> dist(-1.0, 1.0);
@@ -101,34 +97,19 @@ struct Pool {
             for (int i = 0; i < n; ++i)
                 X(i, j) = j + 1;
         for (int v = 0; v < nmat; ++v) {
-            const auto Av = A(v), Bv = B(v);
+            const auto A = a.view(v), B = b.view(v);
             for (int j = 0; j < n; ++j) {
                 for (int i = j + 1; i < n; ++i) {
                     double x = dist(rng);
-                    Av(i, j) = x; /* lower */
-                    Av(j, i) = x; /* mirror to upper (symmetric) */
+                    A(i, j) = x; /* lower */
+                    A(j, i) = x; /* mirror to upper (symmetric) */
                 }
-                Av(j, j) = (j % 2 ? -2.0 : 2.0) * n; /* dominant, mixed sign */
+                A(j, j) = (j % 2 ? -2.0 : 2.0) * n; /* dominant, mixed sign */
             }
             /* B = A X for this matrix */
             cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, nrhs, n, 1.0,
-                        Av.data, Av.ld(), X.data, X.ld(), 0.0, Bv.data, Bv.ld());
+                        A.data, A.ld(), X.data, X.ld(), 0.0, B.data, B.ld());
         }
-    }
-
-    /* Matrix v of the pool and its right-hand side block, as dense views. */
-    MatrixView<double> A(int v) { return mat_view(a.data() + (size_t)v * n * n, n, n); }
-    MatrixView<double> B(int v)
-    {
-        return mat_view(b.data() + (size_t)v * n * nrhs, n, nrhs);
-    }
-    MatrixView<const double> A(int v) const
-    {
-        return mat_view(a.data() + (size_t)v * n * n, n, n);
-    }
-    MatrixView<const double> B(int v) const
-    {
-        return mat_view(b.data() + (size_t)v * n * nrhs, n, nrhs);
     }
 };
 
@@ -172,43 +153,27 @@ double forward_error(const double *x, int n, int nrhs, int nmat)
     return worst / nrhs; /* max|X| = nrhs */
 }
 
-/* Pack the pool's A and B into fresh compact buffers (the pristine copies the
- * timed passes are restored from). */
+/* The pristine compact images of the systems and their right-hand sides
+ * (bench_util's PackedPool, once per pool), the state every solve starts from. */
 struct Packed {
-    MKL_INT sz_a, sz_b;
-    cqr::detail::mkl_buffer<double> ap, bp;
+    PackedPool a, b;
 
-    Packed(const Pool &P, MKL_COMPACT_PACK fmt)
-        : sz_a(mkl_dget_size_compact(P.n, P.n, fmt, P.nmat)),
-          sz_b(mkl_dget_size_compact(P.n, P.nrhs, fmt, P.nmat)),
-          ap(cqr::detail::mkl_alloc_bytes<double>(sz_a)),
-          bp(cqr::detail::mkl_alloc_bytes<double>(sz_b))
-    {
-        const int n = P.n, nmat = P.nmat, nrhs = P.nrhs;
-        std::vector<const double *> Ap(nmat), Bp(nmat);
-        for (int v = 0; v < nmat; ++v) {
-            Ap[v] = P.A(v).data;
-            Bp[v] = P.B(v).data;
-        }
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, ap.get(), n, fmt, nmat);
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, nrhs, Bp.data(), n, bp.get(), n, fmt, nmat);
-    }
+    Packed(const Systems &P, MKL_COMPACT_PACK fmt) : a(P.a, fmt), b(P.b, fmt) {}
 
-    /* Working copies of the pristine A and B, the state every solve starts from. */
-    void restore_into(double *a, double *b) const
+    void restore_into(double *ap, double *bp) const
     {
-        std::memcpy(a, ap.get(), sz_a);
-        std::memcpy(b, bp.get(), sz_b);
+        a.restore_into(ap);
+        b.restore_into(bp);
     }
 };
 
 /* Forward error of the compact path: solve fresh copies of the packed pool,
  * unpack X, compare to the known solution. Untimed correctness gate. */
-double compact_error(const Pool &P, const Packed &pk, MKL_COMPACT_PACK fmt)
+double compact_error(const Systems &P, const Packed &pk, MKL_COMPACT_PACK fmt)
 {
-    const int n = P.n, nmat = P.nmat, nrhs = P.nrhs;
-    auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-    auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+    const int n = P.a.rows(), nmat = P.a.count(), nrhs = P.b.cols();
+    auto ap = pk.a.work();
+    auto bp = pk.b.work();
     pk.restore_into(ap.get(), bp.get());
     solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
 
@@ -238,10 +203,10 @@ void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
     std::printf("-----+------------+-------------+-------------\n");
 
     for (int n = nmin; n <= nmax; n += stride) {
-        Pool P(n, nmat, nrhs);
+        const Systems P(n, nmat, nrhs);
         Packed pk(P, fmt);
-        auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-        auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+        auto ap = pk.a.work();
+        auto bp = pk.b.work();
         auto restore = [&] { pk.restore_into(ap.get(), bp.get()); };
         const double t = best_time(reps, restore, [&] {
             solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
@@ -296,20 +261,20 @@ int main(int argc, char **argv)
                               *std::max_element(sizes.begin(), sizes.end()));
     double log_speed = 0.0;
     for (int n : sizes) {
-        Pool P(n, nmat, nrhs);
+        const Systems P(n, nmat, nrhs);
         Packed pk(P, fmt);
 
         /* working copies: compact (cqr) and standard layout (LAPACK) */
-        auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-        auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+        auto ap = pk.a.work();
+        auto bp = pk.b.work();
         aligned_vector<double> a_work, b_work;
 
         /* both paths destroy A and B, so restore the input (untimed) before
          * each timed pass */
         auto restore_compact = [&] { pk.restore_into(ap.get(), bp.get()); };
         auto restore_dense = [&] {
-            a_work = P.a;
-            b_work = P.b;
+            a_work = P.a.storage();
+            b_work = P.b.storage();
         };
 
         double t_cqr = best_time(reps, restore_compact, [&] {

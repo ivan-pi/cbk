@@ -69,35 +69,32 @@ double potrf_gflop(int n)
     return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0) * 1e-9;
 }
 
-/* A pool of `nmat` dense column-major n x n symmetric positive-definite matrices,
- * back to back in `a` (n*n per matrix). Each is built symmetric with random
- * off-diagonals in [-1,1] and a diagonal of 2n, so it is strictly diagonally
- * dominant (row off-diagonal magnitudes sum to at most n-1 < 2n) and therefore
- * SPD and well conditioned -- the O(n^2) analogue of the geqrf pool's diagonal
- * boost, without an O(n^3) M^T M product. The full matrix is stored (both
- * triangles) so the per-matrix LAPACK path and the compact pack see identical
- * symmetric input; each routine reads only the lower triangle. */
-struct Pool {
-    int n, nmat;
-    aligned_vector<double> a; /* nmat * n*n, 64 B-aligned */
-
-    Pool(int n_, int nmat_) : n(n_), nmat(nmat_), a((size_t)nmat_ * n_ * n_)
-    {
-        std::mt19937_64 rng(2025);
-        std::uniform_real_distribution<double> dist(-1.0, 1.0);
-        for (int v = 0; v < nmat; ++v) {
-            double *A = a.data() + (size_t)v * n * n;
-            for (int j = 0; j < n; ++j) {
-                for (int i = j + 1; i < n; ++i) {
-                    double x = dist(rng);
-                    A[i + (size_t)j * n] = x; /* lower */
-                    A[j + (size_t)i * n] = x; /* mirror to upper (symmetric) */
-                }
-                A[j + (size_t)j * n] = 2.0 * n; /* diagonal dominant -> SPD */
+/* A pool of `nmat` n x n symmetric positive-definite matrices. Each is built
+ * symmetric with random off-diagonals in [-1,1] and a diagonal of 2n, so it is
+ * strictly diagonally dominant (row off-diagonal magnitudes sum to at most
+ * n-1 < 2n) and therefore SPD and well conditioned -- the O(n^2) analogue of
+ * the geqrf pool's diagonal boost, without an O(n^3) M^T M product. The full
+ * matrix is stored (both triangles) so the per-matrix LAPACK path and the
+ * compact pack see identical symmetric input; each routine reads only the
+ * lower triangle. */
+MatrixPool make_pool(int n, int nmat)
+{
+    MatrixPool P(nmat, n, n);
+    std::mt19937_64 rng(2025);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    for (int v = 0; v < nmat; ++v) {
+        const auto A = P.view(v);
+        for (int j = 0; j < n; ++j) {
+            for (int i = j + 1; i < n; ++i) {
+                double x = dist(rng);
+                A(i, j) = x; /* lower */
+                A(j, i) = x; /* mirror to upper (symmetric) */
             }
+            A(j, j) = 2.0 * n; /* diagonal dominant -> SPD */
         }
     }
-};
+    return P;
+}
 
 /* Factor a pre-packed compact pool of nmat matrices in place, column-major
  * lower (A = L L^T). cqr: one call on the whole pool, threaded inside the
@@ -132,43 +129,36 @@ void factor_unbatched(double *a, int n, int nmat)
  * LAPACKE_dpotrf, scaled by the factor's L1 norm. The SPD Cholesky factor is
  * unique (positive diagonal), so this elementwise difference is a sharp signal.
  * Untimed correctness gate. */
-double factor_error(const Pool &P, MKL_COMPACT_PACK fmt, int V)
+double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT_PACK fmt,
+                    int V)
 {
-    const int n = P.n, nmat = P.nmat;
-    const size_t sA = (size_t)n * n;
+    const int n = P.rows(), nmat = P.count();
 
-    MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-    auto ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-
-    std::vector<double *> Ap(nmat);
-    for (int v = 0; v < nmat; ++v)
-        Ap[v] = const_cast<double *>(P.a.data()) + v * sA;
-    mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, ap.get(), n, fmt, nmat);
-
+    /* factor a fresh working copy of the pristine pack */
+    auto ap = pristine.work();
+    pristine.restore_into(ap.get());
     factor_compact(true, ap.get(), n, nmat, V, fmt);
 
-    std::vector<double> H(nmat * sA);
-    std::vector<double *> Hp(nmat);
-    for (int v = 0; v < nmat; ++v)
-        Hp[v] = H.data() + v * sA;
+    MatrixPool H(nmat, n, n);
+    auto Hp = H.base_ptrs();
     mkl_dgeunpack_compact(MKL_COL_MAJOR, n, n, Hp.data(), n, ap.get(), n, fmt, nmat);
 
     double worst = 0;
-    std::vector<double> Href(sA);
+    std::vector<double> Hrefs(P.stride());
+    const auto Href = mat_view(Hrefs.data(), n, n);
     for (int v = 0; v < nmat; ++v) {
-        const double *Av = P.a.data() + v * sA;
-        std::copy(Av, Av + sA, Href.begin());
-        LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, Href.data(), n);
+        std::copy(P[v], P[v] + P.stride(), Hrefs.begin());
+        LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, Hrefs.data(), n);
         /* compare only the lower triangle (i >= j): the factor L, uniquely
          * defined, vs LAPACK's; the strict upper triangle is untouched by both. */
+        const auto Hm = H.view(v);
         double num = 0, den = 0;
         for (int j = 0; j < n; ++j)
             for (int i = j; i < n; ++i) {
-                const size_t off = i + (size_t)j * n;
-                num = std::max(num, std::abs(H[v * sA + off] - Href[off]));
-                den = std::max(den, std::abs(Href[off]));
+                num = std::max(num, std::abs(Hm(i, j) - Href(i, j)));
+                den = std::max(den, std::abs(Href(i, j)));
             }
-        worst = std::max(worst, num / std::max(den, 1e-300));
+        worst = std::max(worst, num / std::max(den, norm_floor));
     }
     return worst;
 }
@@ -192,18 +182,12 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
     std::printf("-----+------------+-------------+-------------\n");
 
     for (int n = nmin; n <= nmax; n += stride) {
-        Pool P(n, nmat);
+        const MatrixPool P = make_pool(n, nmat);
 
-        MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        std::vector<double *> Ap(nmat);
-        for (int v = 0; v < nmat; ++v)
-            Ap[v] = P.a.data() + (size_t)v * n * n;
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, pristine.get(), n, fmt,
-                            nmat);
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
 
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
         const double t = best_time(
             reps, restore, [&] { factor_compact(true, work_ap.get(), n, nmat, V, fmt); });
         std::printf("%4d | %10.3e | %11.2f | %11.2e\n", n, t, nmat * potrf_gflop(n) / t,
@@ -256,23 +240,17 @@ int main(int argc, char **argv)
 
     double log_speed_vs_lapack = 0.0;
     for (int n : sizes) {
-        Pool P(n, nmat);
+        const MatrixPool P = make_pool(n, nmat);
 
-        /* pristine packed buffer + two working copies (cqr, mkl) */
-        MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        std::vector<double *> Ap(nmat);
-        for (int v = 0; v < nmat; ++v)
-            Ap[v] = P.a.data() + (size_t)v * n * n;
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, pristine.get(), n, fmt,
-                            nmat);
+        /* pristine packed pool + one working copy both compact paths share */
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
 
         aligned_vector<double> pool_work; /* standard-layout copy (aligned like pool) */
 
         /* both compact paths factor in place, so restore the packed input
          * (untimed) before each timed pass */
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
 
         double t_cqr = best_time(
             reps, restore, [&] { factor_compact(true, work_ap.get(), n, nmat, V, fmt); });
@@ -280,10 +258,10 @@ int main(int argc, char **argv)
             factor_compact(false, work_ap.get(), n, nmat, V, fmt);
         });
         double t_lap = best_time(
-            reps, [&] { pool_work = P.a; },
+            reps, [&] { pool_work = P.storage(); },
             [&] { factor_unbatched(pool_work.data(), n, nmat); });
 
-        const double rel = factor_error(P, fmt, V);
+        const double rel = factor_error(P, pristine, fmt, V);
         check(rel <= 1e-9, "compact factorization matches LAPACK");
 
         const double sp_lap = t_lap / t_cqr;     /* cqr speedup over LAPACK */

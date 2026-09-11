@@ -31,33 +31,33 @@ using namespace cqr::test;
 // the upper triangle. Only the named triangle is read or written. No SPD check
 // (mirrors the routine under test): a bad pivot yields NaN/Inf.
 
-template <class T> static void ref_potf2(char uplo, int n, T *A, int lda)
+template <class T> static void ref_potf2(char uplo, MatrixView<T> A)
 {
+    assert(A.rows == A.cols);
     const bool upper = (uplo == 'U' || uplo == 'u');
+    const int n = A.rows;
     if (!upper) {
         for (int j = 0; j < n; ++j) {
-            T d = std::sqrt(A[j + (size_t)j * lda]);
-            A[j + (size_t)j * lda] = d;
+            T d = std::sqrt(A(j, j));
+            A(j, j) = d;
             T invd = T(1) / d;
             for (int i = j + 1; i < n; ++i)
-                A[i + (size_t)j * lda] *= invd; // scale pivot column
-            for (int jj = j + 1; jj < n; ++jj)  // rank-1 trailing update, lower
+                A(i, j) *= invd;               // scale pivot column
+            for (int jj = j + 1; jj < n; ++jj) // rank-1 trailing update, lower
                 for (int i = jj; i < n; ++i)
-                    A[i + (size_t)jj * lda] -=
-                        A[i + (size_t)j * lda] * A[jj + (size_t)j * lda];
+                    A(i, jj) -= A(i, j) * A(jj, j);
         }
     }
     else {
         for (int j = 0; j < n; ++j) {
-            T d = std::sqrt(A[j + (size_t)j * lda]);
-            A[j + (size_t)j * lda] = d;
+            T d = std::sqrt(A(j, j));
+            A(j, j) = d;
             T invd = T(1) / d;
             for (int c = j + 1; c < n; ++c)
-                A[j + (size_t)c * lda] *= invd; // scale pivot row
-            for (int c = j + 1; c < n; ++c)     // rank-1 trailing update, upper
+                A(j, c) *= invd;            // scale pivot row
+            for (int c = j + 1; c < n; ++c) // rank-1 trailing update, upper
                 for (int r = j + 1; r <= c; ++r)
-                    A[r + (size_t)c * lda] -=
-                        A[j + (size_t)r * lda] * A[j + (size_t)c * lda];
+                    A(r, c) -= A(j, r) * A(j, c);
         }
     }
 }
@@ -73,21 +73,20 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     // random SPD batch + scalar reference factor for this uplo
     MatrixBatch<T> A(nm, n, n), Aref(nm, n, n);
     for (int idx = 0; idx < nm; ++idx) {
-        gen_spd(A[idx], n);
+        gen_spd(A.view(idx));
         std::copy(A[idx], A[idx] + (size_t)n * n, Aref[idx]);
-        ref_potf2(uplo, n, Aref[idx], n);
+        ref_potf2(uplo, Aref.view(idx));
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
     double e_fac = 0, e_rec = 0, e_untouched = 0;
-    std::vector<T> Rec((size_t)n * n);
+    std::vector<T> Recs((size_t)n * n);
+    const auto Rec = mat_view(Recs.data(), n, n);
     for (int idx = 0; idx < nm; ++idx) {
         // check 1: named-triangle factor vs scalar reference (elementwise)
         // check 3: strictly-opposite triangle unchanged from the input A
@@ -112,9 +111,9 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
                 else // A = U^T U : sum_l U(l,i) U(l,j), l <= min(i,j)
                     for (int l = 0; l <= std::min(i, j); ++l)
                         s += (double)Aout(idx, l, i) * (double)Aout(idx, l, j);
-                Rec[i + (size_t)j * n] = (T)s;
+                Rec(i, j) = (T)s;
             }
-        e_rec = std::max(e_rec, max_abs_diff(Rec.data(), A[idx], (size_t)n * n));
+        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)n * n));
     }
 
     const double scale = std::max(1, n);
@@ -160,15 +159,13 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
             A(idx, 0, 0) = T(-1);
         }
         else {
-            gen_spd(A[idx], n);
+            gen_spd(A.view(idx));
             std::copy(A[idx], A[idx] + (size_t)n * n, Aref[idx]);
-            ref_potf2(uplo, n, Aref[idx], n);
+            ref_potf2(uplo, Aref.view(idx));
         }
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -209,15 +206,17 @@ static int test_validation()
 {
     const int n = 8, V = 4, nm = 4, ld = 8;
     std::vector<double> ap((size_t)ld * n * V, 0);
-    for (int g = 0; g < 1; ++g) // seed a valid identity-ish diagonal so factoring is sane
-        for (int v = 0; v < V; ++v)
-            for (int i = 0; i < n; ++i)
-                ap[((size_t)i * ld + i) * V + v] = 1.0;
+    // Seed a valid identity-ish diagonal so factoring is sane (one group's
+    // worth). The offset is the compact (interleaved) one, not a dense 2-D
+    // layout.
+    for (int v = 0; v < V; ++v)
+        for (int i = 0; i < n; ++i)
+            ap[((size_t)i * ld + i) * V + v] = 1.0;
     auto call = [&](char lay, char up, int n_, int ldap_, int V_, int nm_) {
         return dpotrf_compact(lay, up, n_, ap.data(), ldap_, V_, nm_);
     };
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid col L",  call('C', 'L', n,  ld,  V, nm),   0},
         {"valid row U",  call('R', 'U', n,  ld,  V, nm),   0},
         {"bad layout",   call('X', 'L', n,  ld,  V, nm),  -1},
@@ -230,15 +229,7 @@ static int test_validation()
         {"empty nm=0",   call('C', 'L', n,  ld,  V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 // ------------------------------- main --------------------------------
@@ -274,10 +265,5 @@ int main()
     // 10 groups: takes the OpenMP group loop when the team has <= 10 threads.
     fails += run_case<double, 4>(40, 20, 'L', 'C');
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

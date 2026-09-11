@@ -57,14 +57,13 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     const bool row = (layout == MKL_ROW_MAJOR);
     const bool up = (uplo == MKL_UPPER);
     const char ul = up ? 'U' : 'L';
-    const size_t sA = (size_t)n * n;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
-        gen_sym_ldlt(A.data() + v * sA, n);
+        gen_sym_ldlt(A.view(v));
 
     /* pack the full symmetric A, factor with the routine under test, unpack */
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+    auto Ap = A.base_ptrs();
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     auto ap_buf = cqr::detail::mkl_alloc_bytes<T>(sz_a);
     T *ap = ap_buf.get();
@@ -73,8 +72,8 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     MKL_INT info = 99;
     cqr_mkl<T>::sytrfnp(layout, uplo, n, ap, n, &info, fmt, nm);
 
-    std::vector<T> H(nm * sA);
-    auto Hp = batch_ptrs<T>(H.data(), nm, sA);
+    MatrixBatch<T> H(nm, n, n);
+    auto Hp = H.base_ptrs();
     mkl<T>::geunpack(layout, n, n, Hp.data(), n, ap, n, fmt, nm);
 
     int fails = 0;
@@ -84,30 +83,26 @@ template <class T> int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n)
     }
 
     double worst_res = 0, worst_untouched = 0;
-    std::vector<T> R(sA);
+    std::vector<T> R(A.stride());
     for (int v = 0; v < nm; ++v) {
-        const T *Av = A.data() + v * sA;
-        T *Hv = H.data() + v * sA;
-
         /* the factor is stored in `layout`; the input and the residual are the
          * column-major dense side */
-        const auto H = mat_view(Hv, n, n, n, row);
-        const auto A = mat_view(Av, n, n);
+        const auto Hm = H.view(v, row);
+        const auto Am = A.view(v);
         const auto Res = mat_view(R.data(), n, n);
 
         /* reconstruction residual: unit factor off the diagonal, D on it */
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j)
-                Res(i, j) = (T)(ldlt_reconstruct(H, i, j, up) - (double)A(i, j));
-        worst_res = std::max(worst_res,
-                             norm1(R.data(), n, n) / std::max(norm1(Av, n, n), 1e-300));
+                Res(i, j) = (T)(ldlt_reconstruct(Hm, i, j, up) - (double)Am(i, j));
+        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(Am), norm_floor));
 
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j) {
                 const bool named = up ? (i <= j) : (i >= j);
                 if (!named)
                     worst_untouched =
-                        std::max<double>(worst_untouched, std::abs(H(i, j) - A(i, j)));
+                        std::max<double>(worst_untouched, std::abs(Hm(i, j) - Am(i, j)));
             }
     }
 
@@ -127,12 +122,11 @@ template <class T> int suite2(int nm, int n)
 {
     const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
     const int V = mkl<T>::vlen(fmt);
-    const size_t sA = (size_t)n * n;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, n, n);
     for (int v = 0; v < nm; ++v)
-        gen_sym_ldlt(A.data() + v * sA, n);
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+        gen_sym_ldlt(A.view(v));
+    auto Ap = A.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     auto ap1 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
@@ -148,16 +142,16 @@ template <class T> int suite2(int nm, int n)
      * unit-lower L must match ours and its U diagonal must be our D. The two
      * implementations do not share an arithmetic order, so a small fixed
      * tolerance confirms the same pivots, not bit equality. */
-    std::vector<T> F(nm * sA), G(nm * sA);
-    auto Fp = batch_ptrs<T>(F.data(), nm, sA);
-    auto Gp = batch_ptrs<T>(G.data(), nm, sA);
+    MatrixBatch<T> F(nm, n, n), G(nm, n, n);
+    auto Fp = F.base_ptrs();
+    auto Gp = G.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, n, n, Fp.data(), n, ap1.get(), n, fmt, nm);
     mkl<T>::geunpack(MKL_COL_MAJOR, n, n, Gp.data(), n, ap2.get(), n, fmt, nm);
 
     double dl = 0, dd = 0;
     for (int v = 0; v < nm; ++v) {
-        const auto Fv = mat_view(F.data() + v * sA, n, n); /* our (D, L)       */
-        const auto Gv = mat_view(G.data() + v * sA, n, n); /* MKL's LU (D L^T) */
+        const auto Fv = F.view(v); /* our (D, L)       */
+        const auto Gv = G.view(v); /* MKL's LU (D L^T) */
         for (int j = 0; j < n; ++j) {
             dd = std::max<double>(dd, std::abs(Fv(j, j) - Gv(j, j)));
             for (int i = j + 1; i < n; ++i)
@@ -183,36 +177,24 @@ template <class T> int suite3(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
     const bool row = (layout == MKL_ROW_MAJOR);
     const char ul = (uplo == MKL_UPPER) ? 'U' : 'L';
 
-    const std::vector<T> X = known_solution<T>(n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
 
-    const size_t sA = (size_t)n * n, sB = (size_t)n * nrhs;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        T *Av = A.data() + v * sA;
-        gen_sym_ldlt(Av, n);
-        matmul(n, nrhs, n, Av, n, X.data(), n, B.data() + v * sB, n); /* B = A X */
+        gen_sym_ldlt(A.view(v));
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+    auto Ap = A.base_ptrs();
 
     /* mkl_?ge(un)pack_compact read/write the dense side in `layout` too, so the
      * row-major runs pack from (and unpack to) a row-major staging copy of the
      * non-square B with ld = nrhs. The symmetric square A needs no staging: its
      * row-major image is itself. */
-    std::vector<T> Bsrc;
-    const T *bsrc = B.data();
-    if (row) {
-        Bsrc.resize(nm * sB);
-        for (int v = 0; v < nm; ++v) {
-            const auto src = mat_view(B.data() + v * sB, n, nrhs);
-            const auto dst =
-                mat_view(Bsrc.data() + v * sB, n, nrhs, nrhs, /*rowmajor=*/true);
-            for (int j = 0; j < nrhs; ++j)
-                for (int i = 0; i < n; ++i)
-                    dst(i, j) = src(i, j); /* same matrix, the other layout */
-        }
-        bsrc = Bsrc.data();
-    }
-    auto Bp = batch_ptrs<const T>(bsrc, nm, sB);
+    MatrixBatch<T> Bsrc(row ? nm : 0, n, nrhs);
+    for (int v = 0; v < Bsrc.count(); ++v) /* same matrices, the other layout */
+        copy_matrix(B.view(v), Bsrc.view(v, /*rowmajor=*/true));
+    auto Bp = row ? Bsrc.base_ptrs() : B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
     MKL_INT sz_b = mkl<T>::get_size(n, nrhs, fmt, nm);
@@ -237,18 +219,12 @@ template <class T> int suite3(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
     const size_t na = (size_t)sz_a / sizeof(T), nb = (size_t)sz_b / sizeof(T);
     const bool fused_same = std::equal(ap, ap + na, ap2) && std::equal(bp, bp + nb, bp2);
 
-    std::vector<T> Xout(nm * sB), Xhat(nm * sB);
-    auto Op = batch_ptrs<T>(Xout.data(), nm, sB);
+    MatrixBatch<T> Xout(nm, n, nrhs), Xhat(nm, n, nrhs);
+    auto Op = Xout.base_ptrs();
     mkl<T>::geunpack(layout, n, nrhs, Op.data(), ldb, bp, ldb, fmt, nm);
     if (row) { /* stage back to column-major for the checks */
-        for (int v = 0; v < nm; ++v) {
-            const auto src =
-                mat_view(Xout.data() + v * sB, n, nrhs, nrhs, /*rowmajor=*/true);
-            const auto dst = mat_view(Xhat.data() + v * sB, n, nrhs);
-            for (int j = 0; j < nrhs; ++j)
-                for (int i = 0; i < n; ++i)
-                    dst(i, j) = src(i, j);
-        }
+        for (int v = 0; v < nm; ++v)
+            copy_matrix(Xout.view(v, /*rowmajor=*/true), Xhat.view(v));
     }
     else {
         Xhat = Xout;
@@ -260,17 +236,7 @@ template <class T> int suite3(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
         std::printf("    info = %ld/%ld/%ld (expected 0/0/0)\n", (long)info_f,
                     (long)info_s, (long)info_v);
     }
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> AX(sB);
-    for (int v = 0; v < nm; ++v) {
-        const T *Av = A.data() + v * sA, *Bv = B.data() + v * sB;
-        const T *Xv = Xhat.data() + v * sB;
-        worst_fwd = std::max(worst_fwd, max_abs_diff(Xv, X.data(), sB) /
-                                            std::max(norm1(X.data(), n, nrhs), 1e-300));
-        matmul(n, nrhs, n, Av, n, Xv, n, AX.data(), n);
-        worst_res = std::max(worst_res, max_abs_diff(AX.data(), Bv, sB) /
-                                            std::max(norm1(Bv, n, nrhs), 1e-300));
-    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
     /* the residual is what the backward-stable sweeps control; the forward
      * error additionally carries cond(A), so its gate gets headroom */
     const double rtol_res = 100.0 * n * eps;
@@ -324,10 +290,5 @@ template <class T> int run_suites()
 int main()
 {
     const int fails = run_suites<double>() + run_suites<float>();
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

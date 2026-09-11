@@ -38,9 +38,10 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
            shared cqr_compact_common.hpp; sysvnp's is a driver over the sytrfnp
            and sytrsnp group kernels), the two adapter sources that implement
            the public headers (cqr_compact.cpp, cqr_mkl_ext.cpp), and
-           cqr_matrix_view.hpp, the dense MatrixView the tests, benchmarks and
-           examples share (internal: src/ is on their include path, but the
-           public API stays include/)
+           cqr_matrix_view.hpp and cqr_matrix_batch.hpp, the dense MatrixView
+           and the owning MatrixBatch the tests, benchmarks and examples share
+           (internal: src/ is on their include path, but the public API stays
+           include/)
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
@@ -147,6 +148,27 @@ argument, which cannot be parenthesized, so they also sit between
   transpose is a stride swap. Do not hand-write `A[i + (size_t)j * lda]` in
   new tests, benchmarks or examples -- take a view. `MatrixView` asserts its
   bounds, so run the suites once in a `Debug` build when adding indexing code.
+  The tests use both: the pack/unpack helpers in `test_compact_util.hpp` write
+  the interleaved side through `BatchView` (`for_vlen` turns their runtime `V`
+  into its compile-time one) and the dense side through `MatrixBatch`. The
+  library and its tests are one internal codebase and share these views on
+  purpose; what keeps the suites honest is that they compute the *answers*
+  independently -- scalar LAPACK references, dense LAPACK/MKL cross-checks.
+  A routine that takes views (or batches) `assert`s what its contract
+  assumes: dimension compatibility across operands (`matmul`, `tri_apply`,
+  `solve_errors`, the scalar references), squareness where required
+  (`gen_spd`, `gen_tri`, `ref_potf2`, ...), and index ranges
+  (`MatrixView::operator()`, `MatrixBatch::operator[]`). Costs nothing in
+  Release, and the Debug suite run is what exercises it. `BatchView` is the
+  exception by construction -- it carries strides, not extents, so a kernel
+  cannot self-check; the kernels' dimension contract is the portable C API's
+  argument validation.
+  Dense batches everywhere are `MatrixBatch` (`src/cqr_matrix_batch.hpp`):
+  storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
+  pack/unpack routines take. The benchmarks alias it as `MatrixPool`
+  (`examples/bench_util.hpp`) with 64-byte-aligned storage and pair it with
+  `PackedPool`, the pristine compact image their timed passes restore from;
+  each benchmark keeps only its fill.
 - **One kernel per routine.** Every kernel addresses its operands through
   `BatchView` (strides `si`, `sj`), so column-major, row-major, and ormqr's
   `side='R'` are the same code with different strides. Register blocking is

@@ -17,6 +17,7 @@
 //
 // Assisted-by: Claude:claude-opus-4.8
 
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -29,26 +30,26 @@
 using namespace cqr::test;
 
 // ----------------------- reference kernel (scalar) ------------------
-// Dense column-major BLAS ?trsm: solves op(A) X = alpha B (side='L') or
+// Dense BLAS ?trsm: solves op(A) X = alpha B (side='L') or
 // X op(A) = alpha B (side='R') in place, A the order-s triangular factor.
 // B is pre-scaled by alpha (so alpha == 0 gives B := 0), then a unit-alpha
 // substitution runs. Only the referenced triangle of A is touched; the
 // diagonal is skipped entirely when diag='U'.
 
-template <class T>
-static void ref_trsm(char side, char uplo, char transa, char diag, int m, int n, T alpha,
-                     const T *A, int lda, T *B, int ldb)
+template <class T, class Av>
+static void ref_trsm(char side, char uplo, char transa, char diag, T alpha, Av A,
+                     MatrixView<T> B)
 {
     const bool left = (side == 'L' || side == 'l');
     const bool upper = (uplo == 'U' || uplo == 'u');
     const bool tran = (transa == 'T' || transa == 't' || transa == 'C' || transa == 'c');
     const bool unit = (diag == 'U' || diag == 'u');
-    auto Ae = [&](int i, int j) -> T { return A[i + (size_t)j * lda]; };
-    auto Be = [&](int i, int j) -> T & { return B[i + (size_t)j * ldb]; };
+    const int m = B.rows, n = B.cols;
+    assert(A.rows == A.cols && A.rows == (left ? m : n));
 
     for (int j = 0; j < n; ++j)
         for (int i = 0; i < m; ++i)
-            Be(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
+            B(i, j) *= alpha; // B := alpha B (alpha == 0 -> B := 0)
 
     if (left) {
         // solve op(A) X = B column by column; A is m x m
@@ -56,14 +57,14 @@ static void ref_trsm(char side, char uplo, char transa, char diag, int m, int n,
         for (int j = 0; j < n; ++j)
             for (int t = 0; t < m; ++t) {
                 int i = back ? m - 1 - t : t;
-                T s = Be(i, j);
+                T s = B(i, j);
                 if (back)
                     for (int l = i + 1; l < m; ++l)
-                        s -= (tran ? Ae(l, i) : Ae(i, l)) * Be(l, j);
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
                 else
                     for (int l = 0; l < i; ++l)
-                        s -= (tran ? Ae(l, i) : Ae(i, l)) * Be(l, j);
-                Be(i, j) = unit ? s : s / Ae(i, i);
+                        s -= (tran ? A(l, i) : A(i, l)) * B(l, j);
+                B(i, j) = unit ? s : s / A(i, i);
             }
     }
     else {
@@ -73,20 +74,20 @@ static void ref_trsm(char side, char uplo, char transa, char diag, int m, int n,
             int j = fwd ? t : n - 1 - t;
             if (fwd)
                 for (int l = 0; l < j; ++l) {
-                    T a = tran ? Ae(j, l) : Ae(l, j);
+                    T a = tran ? A(j, l) : A(l, j);
                     for (int i = 0; i < m; ++i)
-                        Be(i, j) -= a * Be(i, l);
+                        B(i, j) -= a * B(i, l);
                 }
             else
                 for (int l = j + 1; l < n; ++l) {
-                    T a = tran ? Ae(j, l) : Ae(l, j);
+                    T a = tran ? A(j, l) : A(l, j);
                     for (int i = 0; i < m; ++i)
-                        Be(i, j) -= a * Be(i, l);
+                        B(i, j) -= a * B(i, l);
                 }
             if (!unit) {
-                T d = Ae(j, j);
+                T d = A(j, j);
                 for (int i = 0; i < m; ++i)
-                    Be(i, j) /= d;
+                    B(i, j) /= d;
             }
         }
     }
@@ -111,7 +112,7 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     MatrixBatch<T> A(nm, s, s);
     const bool up = (uplo == 'U');
     for (int idx = 0; idx < nm; ++idx)
-        gen_tri<T>(A[idx], s, up);
+        gen_tri(A.view(idx), up);
 
     // random B (m x n) and its reference solution
     MatrixBatch<T> B(nm, m, n), Xref(nm, m, n);
@@ -119,14 +120,12 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
         for (size_t e = 0; e < (size_t)m * n; ++e)
             B[idx][e] = frand<T>();
         std::copy(B[idx], B[idx] + (size_t)m * n, Xref[idx]);
-        ref_trsm<T>(side, uplo, transa, diag, m, n, alpha, A[idx], s, Xref[idx], m);
+        ref_trsm(side, uplo, transa, diag, alpha, A.view(idx), Xref.view(idx));
     }
 
     // pack, solve with the routine under test, unpack
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * s * s * V), bp((size_t)ng * m * n * V);
-    pack_compact(A, ap.data(), s, V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(A, s, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     int info = compact<T>::trsm('C', side, uplo, transa, diag, m, n, alpha, ap.data(), s,
                                 bp.data(), m, V, nm);
@@ -140,16 +139,18 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     // kernel cannot slip through (the ?trsm analogue of the reconstruction /
     // round-trip identities the geqrf/potrf/ormqr self-tests check).
     double worst_fwd = 0, worst_res = 0;
-    std::vector<T> R((size_t)m * n), aB((size_t)m * n);
+    std::vector<T> Rs((size_t)m * n), aBs((size_t)m * n);
+    const auto R = mat_view(Rs.data(), m, n), aB = mat_view(aBs.data(), m, n);
     for (int idx = 0; idx < nm; ++idx) {
         worst_fwd =
             std::max(worst_fwd, max_abs_diff(Bout[idx], Xref[idx], (size_t)m * n) /
-                                    std::max(norm1(Xref[idx], m, n), 1e-300));
-        tri_apply<T>(side, uplo, transa, diag, m, n, A[idx], s, Bout[idx], m, R.data());
+                                    std::max(norm1(Xref.view(idx)), norm_floor));
+        tri_apply(side, uplo, transa, diag, A.view(idx), Bout.view(idx), R);
         for (size_t e = 0; e < (size_t)m * n; ++e)
-            aB[e] = alpha * B[idx][e];
-        worst_res = std::max(worst_res, max_abs_diff(R.data(), aB.data(), (size_t)m * n) /
-                                            std::max(norm1(aB.data(), m, n), 1e-300));
+            aBs[e] = alpha * B[idx][e];
+        worst_res =
+            std::max(worst_res, max_abs_diff(Rs.data(), aBs.data(), (size_t)m * n) /
+                                    std::max(norm1(aB), norm_floor));
     }
     const double worst = std::max(worst_fwd, worst_res);
 
@@ -178,7 +179,7 @@ static int test_validation()
                              ldb_, V_, nm_);
     };
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid L col",  call('C','L','U','N','N', m, n,  m,   m,   V, nm),   0},
         {"valid R col",  call('C','R','L','T','U', m, n,  n,   m,   V, nm),   0},
         {"valid row",    call('R','L','U','N','N', m, n,  m,   n,   V, nm),   0},
@@ -201,15 +202,7 @@ static int test_validation()
         {"empty nm=0",   call('C','L','U','N','N', m, n,  m,   m,   V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-13s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 // ------------------------------- main --------------------------------
@@ -247,10 +240,5 @@ int main()
     fails += run_case<float, 8>('L', 'U', 'N', 'N', 16, 16, 1);
     fails += run_case<float, 16>('L', 'L', 'N', 'N', 32, 12, 2);
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

@@ -36,15 +36,14 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     // random A batch, diagonal-boosted so the columns stay well conditioned
     MatrixBatch<T> A(nm, m, n), Aref(nm, m, n), tau_ref(nm, k, 1);
     for (int idx = 0; idx < nm; ++idx) {
-        gen_boosted(A[idx], m, n);
+        gen_boosted(A.view(idx));
         std::copy(A[idx], A[idx] + (size_t)m * n, Aref[idx]); // Aref <- A
-        ref_geqr2(m, n, Aref[idx], m, tau_ref[idx]);          // reference (H, tau)
+        ref_geqr2(Aref.view(idx), tau_ref[idx]);              // reference (H, tau)
     }
 
     // pack A, factor with the routine under test, unpack (H, tau)
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * n * V), tp((size_t)ng * k * V);
-    pack_compact(A, ap.data(), m, V);
+    std::vector<T> ap = pack_compact(A, m, V);
+    std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V); /* the kernel fills it */
 
     int info = compact<T>::geqrf('C', m, n, ap.data(), m, tp.data(), V, nm);
 
@@ -62,12 +61,13 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     // check 2: reconstruction Q * triu(H) == A (valid factorization)
     double e_rec = 0;
     for (int idx = 0; idx < nm; ++idx) {
-        std::vector<T> Rec((size_t)m * n, T(0)); // start from R
+        std::vector<T> Recs((size_t)m * n, T(0)); // start from R
+        const auto Rec = mat_view(Recs.data(), m, n);
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, k - 1); ++i)
-                Rec[i + (size_t)j * m] = Aout(idx, i, j);
-        ref_orm2r('N', m, n, k, Aout[idx], m, tau_out[idx], Rec.data(), m);
-        e_rec = std::max(e_rec, max_abs_diff(Rec.data(), A[idx], (size_t)m * n));
+                Rec(i, j) = Aout(idx, i, j);
+        ref_orm2r('N', k, Aout.view(idx), tau_out[idx], Rec);
+        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
     }
 
     // check 3: solve A X = B with the produced reflectors (square only), using
@@ -75,20 +75,20 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     double e_solve = -1;
     if (m == n) {
         const int nrhs = 3;
-        const std::vector<T> X = known_solution<T>(n, nrhs);
+        const std::vector<T> Xs = known_solution<T>(n, nrhs);
+        const auto X = mat_view(Xs.data(), n, nrhs);
         MatrixBatch<T> B(nm, n, nrhs);
-        std::vector<T> bp((size_t)ng * n * nrhs * V);
         for (int idx = 0; idx < nm; ++idx)
-            matmul(n, nrhs, n, A[idx], n, X.data(), n, B[idx], n); /* B = A X */
-        pack_compact(B, bp.data(), n, V);
+            matmul(A.view(idx), X, B.view(idx)); /* B = A X */
+        std::vector<T> bp = pack_compact(B, n, V);
         compact<T>::ormqr('T', n, nrhs, k, ap.data(), n, tp.data(), bp.data(), n, V, nm);
         MatrixBatch<T> Bo(nm, n, nrhs);
         unpack_compact(Bo, bp.data(), n, V);
         e_solve = 0;
         for (int idx = 0; idx < nm; ++idx) {
-            ref_trsm_upper(n, nrhs, Aout[idx], n, Bo[idx], n);
+            ref_trsm_upper(Aout.view(idx), Bo.view(idx));
             e_solve =
-                std::max(e_solve, max_abs_diff(Bo[idx], X.data(), (size_t)n * nrhs));
+                std::max(e_solve, max_abs_diff(Bo[idx], Xs.data(), (size_t)n * nrhs));
         }
     }
 
@@ -117,7 +117,7 @@ static int test_validation()
         return dgeqrf_compact(lay, m_, n_, ap.data(), ldap_, tau.data(), V_, nm_);
     };
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid col",   call('C', m, n,  ld,  V, nm),   0},
         {"valid row",   call('R', m, n,  n,   V, nm),   0},   // row-major ld >= n
         {"bad layout",  call('X', m, n,  ld,  V, nm),  -1},
@@ -130,15 +130,7 @@ static int test_validation()
         {"empty nm=0",  call('C', m, n,  ld,  V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 // ------------------------------- main --------------------------------
@@ -162,10 +154,5 @@ int main()
     fails += run_case<float, 8>(16, 30, 30);
     fails += run_case<float, 16>(32, 43, 17);
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

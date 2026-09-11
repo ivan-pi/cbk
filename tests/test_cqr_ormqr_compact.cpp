@@ -37,9 +37,9 @@ using namespace cqr::test;
  * column index placed at position j, so A(:,jpvt) = Q R. Used to drive the
  * kernel from a rank-revealing factorization + back-permutation solve --
  * the production (RBF-FD) use case the kernel must support. */
-template <class T> static void ref_geqp3(int m, int n, T *A, int lda, int *jpvt, T *tau)
+template <class T> static void ref_geqp3(MatrixView<T> A, int *jpvt, T *tau)
 {
-    const int k = std::min(m, n);
+    const int m = A.rows, n = A.cols, k = std::min(m, n);
     for (int j = 0; j < n; ++j)
         jpvt[j] = j;
 
@@ -49,7 +49,7 @@ template <class T> static void ref_geqp3(int m, int n, T *A, int lda, int *jpvt,
         for (int j = kk; j < n; ++j) {
             T s = 0;
             for (int i = kk; i < m; ++i)
-                s += A[i + (size_t)j * lda] * A[i + (size_t)j * lda];
+                s += A(i, j) * A(i, j);
             if (s > best) {
                 best = s;
                 piv = j;
@@ -57,18 +57,18 @@ template <class T> static void ref_geqp3(int m, int n, T *A, int lda, int *jpvt,
         }
         if (piv != kk) {
             for (int i = 0; i < m; ++i)
-                std::swap(A[i + (size_t)kk * lda], A[i + (size_t)piv * lda]);
+                std::swap(A(i, kk), A(i, piv));
             std::swap(jpvt[kk], jpvt[piv]);
         }
-        ref_larfg(m - kk, &A[kk + (size_t)kk * lda], &A[(kk + 1) + (size_t)kk * lda],
-                  &tau[kk]);
+        /* as in ref_geqr2: the reflector is the contiguous column tail */
+        ref_larfg(m - kk, &A(kk, kk), A.col(kk) + kk + 1, &tau[kk]);
         for (int j = kk + 1; j < n; ++j) {
-            T w = A[kk + (size_t)j * lda];
+            T w = A(kk, j);
             for (int i = kk + 1; i < m; ++i)
-                w += A[i + (size_t)kk * lda] * A[i + (size_t)j * lda];
-            A[kk + (size_t)j * lda] -= tau[kk] * w;
+                w += A(i, kk) * A(i, j);
+            A(kk, j) -= tau[kk] * w;
             for (int i = kk + 1; i < m; ++i)
-                A[i + (size_t)j * lda] -= tau[kk] * A[i + (size_t)kk * lda] * w;
+                A(i, j) -= tau[kk] * A(i, kk) * w;
         }
     }
 }
@@ -82,27 +82,24 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     const double tol_exact = 100.0 * eps;   /* same op sequence */
     const double tol_solve = 1e5 * eps * m; /* cond(A)-dependent */
 
-    const std::vector<T> X = known_solution<T>(m, nrhs);
+    const std::vector<T> Xs = known_solution<T>(m, nrhs);
+    const auto X = mat_view(Xs.data(), m, nrhs);
 
     MatrixBatch<T> A(nm, m, m), Afac(nm, m, m), B(nm, m, nrhs), Bref(nm, m, nrhs),
         Bout(nm, m, nrhs), tau(nm, m, 1);
     for (int kk = 0; kk < nm; ++kk) {
-        T *a = A[kk];
-        gen_boosted(a, m, m); /* diagonal boost tames cond for float */
-        matmul(m, nrhs, m, a, m, X.data(), m, B[kk], m); /* B = A X */
+        gen_boosted(A.view(kk));           /* diagonal boost tames cond for float */
+        matmul(A.view(kk), X, B.view(kk)); /* B = A X */
 
-        std::copy(a, a + (size_t)m * m, Afac[kk]);
-        ref_geqr2(m, m, Afac[kk], m, tau[kk]);
+        std::copy(A[kk], A[kk] + (size_t)m * m, Afac[kk]);
+        ref_geqr2(Afac.view(kk), tau[kk]);
         std::copy(B[kk], B[kk] + (size_t)m * nrhs, Bref[kk]);
-        ref_orm2r('T', m, nrhs, k, Afac[kk], m, tau[kk], Bref[kk], m);
+        ref_orm2r('T', k, Afac.view(kk), tau[kk], Bref.view(kk));
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
-    pack_compact(Afac, ap.data(), m, V);
-    pack_tau(tau, tp.data(), V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(Afac, m, V);
+    std::vector<T> tp = pack_tau(tau, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     /* check 1: compact Q^T B vs scalar */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
@@ -114,8 +111,8 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     /* check 2: solve recovers X */
     double e2 = 0;
     for (int kk = 0; kk < nm; ++kk) {
-        ref_trsm_upper(m, nrhs, Afac[kk], m, Bout[kk], m);
-        e2 = std::max<double>(e2, max_abs_diff(Bout[kk], X.data(), (size_t)m * nrhs));
+        ref_trsm_upper(Afac.view(kk), Bout.view(kk));
+        e2 = std::max<double>(e2, max_abs_diff(Bout[kk], Xs.data(), (size_t)m * nrhs));
     }
 
     /* check 3: 'N' undoes 'T' */
@@ -146,25 +143,24 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
     const T eps = std::numeric_limits<T>::epsilon();
     const double tol_solve = 1e5 * eps * m; /* cond(A)-dependent */
 
-    const std::vector<T> X = known_solution<T>(m, nrhs);
+    const std::vector<T> Xs = known_solution<T>(m, nrhs);
+    const auto X = mat_view(Xs.data(), m, nrhs);
 
     MatrixBatch<T> Afac(nm, m, m), B(nm, m, nrhs), Bout(nm, m, nrhs), tau(nm, m, 1);
     MatrixBatch<int> jpvt(nm, m, 1);
     for (int kk = 0; kk < nm; ++kk) {
-        std::vector<T> A((size_t)m * m);
-        gen_boosted(A.data(), m, m); /* diagonal boost tames cond */
-        matmul(m, nrhs, m, A.data(), m, X.data(), m, B[kk], m); /* B = A X */
+        std::vector<T> As((size_t)m * m);
+        const auto A = mat_view(As.data(), m, m);
+        gen_boosted(A);           /* diagonal boost tames cond */
+        matmul(A, X, B.view(kk)); /* B = A X */
 
-        std::copy(A.begin(), A.end(), Afac[kk]);
-        ref_geqp3(m, m, Afac[kk], m, jpvt[kk], tau[kk]);
+        std::copy(As.begin(), As.end(), Afac[kk]);
+        ref_geqp3(Afac.view(kk), jpvt[kk], tau[kk]);
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
-    pack_compact(Afac, ap.data(), m, V);
-    pack_tau(tau, tp.data(), V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(Afac, m, V);
+    std::vector<T> tp = pack_tau(tau, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     /* kernel: c := Q^T b */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
@@ -172,13 +168,15 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
 
     /* R y = c, then back-permute x(jpvt(j)) = y(j); compare against X */
     double e = 0;
-    std::vector<T> x((size_t)m * nrhs);
+    std::vector<T> xs((size_t)m * nrhs);
+    const auto x = mat_view(xs.data(), m, nrhs);
     for (int kk = 0; kk < nm; ++kk) {
-        ref_trsm_upper(m, nrhs, Afac[kk], m, Bout[kk], m);
+        ref_trsm_upper(Afac.view(kk), Bout.view(kk));
+        const auto y = Bout.view(kk);
         for (int j = 0; j < nrhs; ++j)
             for (int i = 0; i < m; ++i)
-                x[jpvt[kk][i] + (size_t)j * m] = Bout[kk][i + (size_t)j * m];
-        e = std::max<double>(e, max_abs_diff(x.data(), X.data(), (size_t)m * nrhs));
+                x(jpvt[kk][i], j) = y(i, j);
+        e = std::max<double>(e, max_abs_diff(xs.data(), Xs.data(), (size_t)m * nrhs));
     }
 
     bool ok = e <= tol_solve;
@@ -192,9 +190,9 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
 template <class T> static void bench(int V, int nm, int m, int nrhs, int reps)
 {
     const int k = m;
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
+    std::vector<T> ap = compact_buffer<T>(nm, m, m, m, V);
+    std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V);
+    std::vector<T> bp = compact_buffer<T>(nm, m, nrhs, m, V);
     for (auto &x : ap)
         x = frand<T>() * T(1e-3);
     for (auto &x : tp)
@@ -235,7 +233,7 @@ static int test_validation()
     };
 
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid",          call('T', m, nrhs, k,   ld,    ld,    V, nm),   0},
         {"bad trans",      call('X', m, nrhs, k,   ld,    ld,    V, nm),  -1},
         {"m<0",            call('T', -1, nrhs, k,  ld,    ld,    V, nm),  -2},
@@ -249,15 +247,7 @@ static int test_validation()
         {"empty nm=0",     call('T', m, nrhs, k,   ld,    ld,    V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 /* ------------------------------- main -------------------------------- */
@@ -294,10 +284,5 @@ int main(int argc, char **)
         bench<float>(8, 16, 43, 8, 100000);
     }
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }
