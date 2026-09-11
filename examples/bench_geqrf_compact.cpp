@@ -64,7 +64,7 @@ MatrixPool make_pool(int m, int n, int nmat)
     std::mt19937_64 rng(2025);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
     for (int v = 0; v < nmat; ++v) {
-        const auto A = P.matrix(v);
+        const auto A = P.view(v);
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < m; ++i)
                 A(i, j) = dist(rng);
@@ -121,7 +121,7 @@ void factor_unbatched(double *a, int m, int n, int nmat)
  * the matrix L1 norm. Untimed correctness gate. */
 double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
 {
-    const int m = P.rows, n = P.cols, nmat = P.nmat, k = std::min(m, n);
+    const int m = P.rows(), n = P.cols(), nmat = P.count(), k = std::min(m, n);
     const size_t sA = P.stride();
 
     MKL_INT sz_a = mkl_dget_size_compact(m, n, fmt, nmat);
@@ -151,7 +151,7 @@ double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
     double worst = 0;
     std::vector<double> Href(sA), tref(k);
     for (int v = 0; v < nmat; ++v) {
-        const double *Av = P.matrix(v).data;
+        const double *Av = P.view(v).data;
         std::copy(Av, Av + sA, Href.begin());
         LAPACKE_dgeqrf(LAPACK_COL_MAJOR, m, n, Href.data(), m, tref.data());
         double num = 0, den = 0;
@@ -188,14 +188,10 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
         const int m = n, k = n;
         const MatrixPool P = make_pool(m, n, nmat);
 
-        MKL_INT sz_a = mkl_dget_size_compact(m, n, fmt, nmat);
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
         MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
         auto taup = cqr::detail::mkl_alloc_bytes<double>(sz_t);
-        auto Ap = P.base_ptrs();
-        mkl_dgepack_compact(MKL_COL_MAJOR, m, n, Ap.data(), m, pristine.get(), m, fmt,
-                            nmat);
 
         double wq;
         MKL_INT info;
@@ -203,7 +199,7 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
                                &info, fmt, V);
         const MKL_INT lwork = (MKL_INT)wq;
 
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
         const double t = best_time(reps, restore, [&] {
             factor_compact(true, work_ap.get(), taup.get(), m, n, nmat, V, fmt, lwork);
         });
@@ -260,15 +256,11 @@ int main(int argc, char **argv)
         const int m = n, k = n;
         const MatrixPool P = make_pool(m, n, nmat);
 
-        /* pristine packed buffer + two working copies (cqr, mkl) */
-        MKL_INT sz_a = mkl_dget_size_compact(m, n, fmt, nmat);
+        /* pristine packed pool + one working copy both compact paths share */
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
         MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
         auto taup = cqr::detail::mkl_alloc_bytes<double>(sz_t);
-        auto Ap = P.base_ptrs();
-        mkl_dgepack_compact(MKL_COL_MAJOR, m, n, Ap.data(), m, pristine.get(), m, fmt,
-                            nmat);
 
         /* Each routine reports its own optimal lwork (MKL's compact geqrf needs
          * real scratch; ours needs none). Query both and size per path. */
@@ -285,7 +277,7 @@ int main(int argc, char **argv)
 
         /* both compact paths factor in place, so restore the packed input
          * (untimed) before each timed pass */
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
 
         double t_cqr = best_time(reps, restore, [&] {
             factor_compact(true, work_ap.get(), taup.get(), m, n, nmat, V, fmt,
@@ -296,7 +288,7 @@ int main(int argc, char **argv)
                            lwork_mkl);
         });
         double t_lap = best_time(
-            reps, [&] { pool_work = P.storage; },
+            reps, [&] { pool_work = P.storage(); },
             [&] { factor_unbatched(pool_work.data(), m, n, nmat); });
 
         const double rel = factor_error(P, fmt, V);

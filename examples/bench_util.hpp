@@ -2,9 +2,12 @@
  *
  * The harness shared by the benchmark programs: abort-on-failure checks, the
  * MKL compact-format lookups, pack-aligned std::vector storage, MatrixPool (the
- * batch of dense matrices every benchmark measures on), best-of-N timing, the
- * OpenMP thread count, and the factorization / solve benchmarks' command line
- * (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs MKL headers only.
+ * batch of dense matrices every benchmark measures on) with PackedPool (its
+ * pristine compact image, restored before every timed pass), best-of-N timing,
+ * the OpenMP thread count, and the factorization / solve benchmarks' command
+ * line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs the MKL
+ * headers, and PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs
+ * using it link MKL (all benchmarks do).
  *
  * Assisted-by: Claude:claude-opus-4.8
  */
@@ -13,7 +16,11 @@
 #define CQR_BENCH_UTIL_HPP
 
 #include "cqr_mkl_ext.h"
+#include "cqr_mkl_alloc.h" /* mkl_alloc_bytes / mkl_buffer, for PackedPool */
+#include "cqr_matrix_batch.hpp"
 #include "cqr_matrix_view.hpp"
+
+#include <mkl_compact.h> /* mkl_dget_size_compact / mkl_dgepack_compact */
 
 #include <chrono>
 #include <cstdio>
@@ -64,57 +71,37 @@ template <typename T> struct aligned_allocator {
 };
 template <typename T> using aligned_vector = std::vector<T, aligned_allocator<T>>;
 
-/* The batch every benchmark measures on: `nmat` column-major rows x cols
- * matrices, back to back in one pack-aligned buffer, matrix v starting at
- * v*rows*cols with leading dimension rows.
- *
- * The benchmarks differ only in what they put in their matrices (diagonally
- * dominant, SPD, symmetric indefinite, ...), so the fill stays with each of
- * them and this holds what they all need: the storage, the per-matrix view to
- * write it through, and the array of per-matrix base pointers the compact
- * pack/unpack routines take. A right-hand-side block is the same thing with
- * cols = nrhs, so the benchmarks that solve keep two of these. */
-struct MatrixPool {
-    int nmat, rows, cols;
-    aligned_vector<double> storage; /* nmat * rows*cols, 64 B-aligned */
+/* The batch every benchmark measures on: MatrixBatch (src/cqr_matrix_batch.hpp,
+ * shared with the test suites), allocated pack-aligned so a dense pool and its
+ * LAPACK working copies start aligned like the compact buffers. The benchmarks
+ * differ only in what they put in their matrices (diagonally dominant, SPD,
+ * symmetric indefinite, ...), so the fill stays with each of them; a
+ * right-hand-side block is the same thing with cols = nrhs, so the benchmarks
+ * that solve keep two of these. */
+using MatrixPool = cqr::detail::MatrixBatch<double, aligned_allocator<double>>;
 
-    MatrixPool(int nmat_, int rows_, int cols_)
-        : nmat(nmat_), rows(rows_), cols(cols_),
-          storage((std::size_t)nmat_ * rows_ * cols_)
-    {
-    }
+/* A pool packed column-major into a compact buffer it owns: the pristine bytes
+ * an in-place compact routine's working copy is restored from before every
+ * timed pass (the pack itself stays untimed). */
+struct PackedPool {
+    MKL_INT bytes; /* mkl_dget_size_compact reports bytes */
+    cqr::detail::mkl_buffer<double> p;
 
-    /* Scalars per matrix, and the buffer the compact routines pack from. */
-    std::size_t stride() const { return (std::size_t)rows * cols; }
-    double *data() { return storage.data(); }
-    const double *data() const { return storage.data(); }
-
-    /* Matrix v: rows x cols, column-major, leading dimension rows. */
-    MatrixView<double> matrix(int v)
+    PackedPool(const MatrixPool &P, MKL_COMPACT_PACK fmt)
+        : bytes(mkl_dget_size_compact(P.rows(), P.cols(), fmt, P.count())),
+          p(cqr::detail::mkl_alloc_bytes<double>(bytes))
     {
-        return mat_view(data() + v * stride(), rows, cols);
-    }
-    MatrixView<const double> matrix(int v) const
-    {
-        return mat_view(data() + v * stride(), rows, cols);
+        auto ptrs = P.base_ptrs();
+        mkl_dgepack_compact(MKL_COL_MAJOR, P.rows(), P.cols(), ptrs.data(), P.rows(),
+                            p.get(), P.rows(), fmt, P.count());
     }
 
-    /* One base pointer per matrix -- the array form mkl_?gepack_compact and
-     * mkl_?geunpack_compact take (the const overload is the packing one). */
-    std::vector<double *> base_ptrs()
+    /* An uninitialized working buffer of the same size. */
+    cqr::detail::mkl_buffer<double> work() const
     {
-        std::vector<double *> p(nmat);
-        for (int v = 0; v < nmat; ++v)
-            p[v] = matrix(v).data;
-        return p;
+        return cqr::detail::mkl_alloc_bytes<double>(bytes);
     }
-    std::vector<const double *> base_ptrs() const
-    {
-        std::vector<const double *> p(nmat);
-        for (int v = 0; v < nmat; ++v)
-            p[v] = matrix(v).data;
-        return p;
-    }
+    void restore_into(double *dst) const { std::memcpy(dst, p.get(), bytes); }
 };
 
 /* Best (minimum) wall time over `reps` timed passes, in seconds. `reset` runs

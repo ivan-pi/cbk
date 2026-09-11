@@ -124,10 +124,8 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     }
 
     // pack, solve with the routine under test, unpack
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * s * s * V), bp((size_t)ng * m * n * V);
-    pack_compact(A, ap.data(), s, V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(A, s, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     int info = compact<T>::trsm('C', side, uplo, transa, diag, m, n, alpha, ap.data(), s,
                                 bp.data(), m, V, nm);
@@ -181,7 +179,7 @@ static int test_validation()
                              ldb_, V_, nm_);
     };
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid L col",  call('C','L','U','N','N', m, n,  m,   m,   V, nm),   0},
         {"valid R col",  call('C','R','L','T','U', m, n,  n,   m,   V, nm),   0},
         {"valid row",    call('R','L','U','N','N', m, n,  m,   n,   V, nm),   0},
@@ -204,15 +202,7 @@ static int test_validation()
         {"empty nm=0",   call('C','L','U','N','N', m, n,  m,   m,   V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-13s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 // ------------------------------- main --------------------------------
@@ -250,10 +240,5 @@ int main()
     fails += run_case<float, 8>('L', 'U', 'N', 'N', 16, 16, 1);
     fails += run_case<float, 16>('L', 'L', 'N', 'N', 32, 12, 2);
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

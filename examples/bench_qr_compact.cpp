@@ -77,7 +77,7 @@ struct Systems {
         std::mt19937_64 rng(42);
         std::uniform_real_distribution<double> dist(-1.0, 1.0);
         for (int v = 0; v < nmat; ++v) {
-            const auto A = a.matrix(v), B = b.matrix(v);
+            const auto A = a.view(v), B = b.view(v);
             for (int j = 0; j < n; ++j)
                 for (int i = 0; i < n; ++i)
                     A(i, j) = dist(rng);
@@ -115,7 +115,7 @@ enum class Backend { Mkl, Cqr };
  * the max solution error. */
 double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
 {
-    const int n = P.a.rows, nmat = P.a.nmat, nrhs = 1;
+    const int n = P.a.rows(), nmat = P.a.count(), nrhs = 1;
     const int ngroups = (nmat + V - 1) / V;
     double maxerr = 0.0;
 
@@ -155,8 +155,8 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             const MKL_INT cnt = std::min(V, nmat - base); /* last group may be short */
 
             for (int s = 0; s < cnt; ++s) {
-                Aptr[s] = P.a.matrix(base + s).data;
-                Bptr[s] = P.b.matrix(base + s).data;
+                Aptr[s] = P.a.view(base + s).data;
+                Bptr[s] = P.b.view(base + s).data;
                 Xptr[s] = xout.data() + (size_t)s * n;
             }
 
@@ -280,8 +280,8 @@ int main(int argc, char **argv)
         const double tu = best_time(
             reps,
             [&] {
-                wa = P.a.storage;
-                wb = P.b.storage;
+                wa = P.a.storage();
+                wb = P.b.storage();
             },
             [&] { err_u = run_unbatched(n, nmat, wa.data(), wb.data()); });
 

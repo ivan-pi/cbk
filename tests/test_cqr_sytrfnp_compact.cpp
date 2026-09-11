@@ -82,9 +82,7 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -149,10 +147,8 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
         matmul(A.view(idx), X, B.view(idx));
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V), bp((size_t)ng * n * nrhs * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
-    pack_compact(B, bp.data(), ldb, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
     std::vector<T> ap2 = ap, bp2 = bp; // the fused call's copies
 
     int info_f = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
@@ -164,17 +160,7 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
     MatrixBatch<T> Xhat(nm, n, nrhs);
     unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
 
-    double e_fwd = 0, e_res = 0;
-    const size_t sB = (size_t)n * nrhs;
-    std::vector<T> AXs(sB);
-    const auto AX = mat_view(AXs.data(), n, nrhs);
-    for (int idx = 0; idx < nm; ++idx) {
-        e_fwd = std::max(e_fwd, max_abs_diff(Xhat[idx], Xs.data(), sB) /
-                                    std::max(norm1(X), 1e-300));
-        matmul(A.view(idx), Xhat.view(idx), AX);
-        e_res = std::max(e_res, max_abs_diff(AXs.data(), B[idx], sB) /
-                                    std::max(norm1(B.view(idx)), 1e-300));
-    }
+    const auto [e_fwd, e_res] = solve_errors(A, B, Xhat, X);
     // fused vs two-step, on the raw compact buffers (padded lanes included)
     const bool fused_same = (ap2 == ap) && (bp2 == bp);
 
@@ -230,8 +216,7 @@ template <class T, int V> static int run_zerodiag(char uplo, char layout)
         ref_sytf2np(uplo, Aref.view(idx));
     }
 
-    std::vector<T> ap((size_t)n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -290,8 +275,7 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
         }
     }
 
-    std::vector<T> ap((size_t)n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -359,11 +343,7 @@ static int test_validation()
                                     ldbp_, V_, nm_);
          }},
     };
-    struct Case {
-        const char *what;
-        int got, want;
-    };
-    std::vector<Case> t;
+    std::vector<ApiCheck> t;
     // clang-format off
     t.insert(t.end(), {
         {"trf valid col L", callf('C', 'L', n,  ld,  V, nm),   0},
@@ -393,14 +373,7 @@ static int test_validation()
             {"empty nrhs",  calls('C', 'L', n, 0,   ld, n,     V, nm),   0},
         });
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", t.size(), bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t.data(), t.size());
 }
 
 // ------------------------------- main --------------------------------
@@ -455,10 +428,5 @@ int main()
     fails += run_case<double, 4>(40, 20, 'L', 'C');
     fails += run_solve<double, 4>(40, 20, 4, 'L', 'C');
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

@@ -55,17 +55,19 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
     const int ldH = rowmajor ? k : s; /* dense leading dims */
     const int ldC = rowmajor ? n : m;
 
-    const size_t sH = (size_t)s * k, sT = (size_t)k, sB = (size_t)m * n;
-    std::vector<T> H(nm * sH), tau(nm * sT), B(nm * sB), Bref(nm * sB), Bout(nm * sB);
+    const size_t sB = (size_t)m * n;
+    MatrixBatch<T> H(nm, s, k), tau(nm, k, 1), B(nm, m, n), Bref(nm, m, n),
+        Bout(nm, m, n);
 
     for (int v = 0; v < nm; ++v) {
-        T *Hv = H.data() + v * sH, *tv = tau.data() + v * sT;
-        T *Bv = B.data() + v * sB, *Rv = Bref.data() + v * sB;
-        for (size_t i = 0; i < sH; ++i)
+        T *Hv = H[v], *tv = tau[v];
+        T *Bv = B[v], *Rv = Bref[v];
+        for (size_t i = 0; i < H.stride(); ++i)
             Hv[i] = frand<T>();
-        /* boost the (i,i) diagonal (same offset in both layouts) */
-        for (int i = 0; i < std::min(s, k); ++i)
-            Hv[(size_t)i * ldH + i] += T(2);
+        /* boost the diagonal; H is dense in `layout`, which its view carries */
+        const auto Hm = mat_view(Hv, s, k, ldH, rowmajor);
+        for (int d = 0; d < std::min(s, k); ++d)
+            Hm(d, d) += T(2);
         /* turn H into a real Householder representation via dense QR */
         lapack<T>::geqrf(lap, s, k, Hv, ldH, tv);
         for (size_t i = 0; i < sB; ++i)
@@ -76,9 +78,9 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
     }
 
     /* pack into MKL Compact format (tau is a vector: layout-agnostic) */
-    auto Hp = batch_ptrs<const T>(H.data(), nm, sH);
-    auto Tp = batch_ptrs<const T>(tau.data(), nm, sT);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Hp = H.base_ptrs();
+    auto Tp = tau.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(s, k, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
@@ -104,7 +106,7 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
                       (MKL_INT)wq, &info, fmt, nm);
 
     /* unpack and compare against the dense reference */
-    auto Op = batch_ptrs<T>(Bout.data(), nm, sB);
+    auto Op = Bout.base_ptrs();
     mkl<T>::geunpack(layout, m, n, Op.data(), ldC, cp, ldcp, fmt, nm);
 
     int fails = 0;
@@ -114,7 +116,7 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
     }
     double worst = 0;
     for (int v = 0; v < nm; ++v) {
-        const T *Bo = Bout.data() + v * sB, *Rv = Bref.data() + v * sB;
+        const T *Bo = Bout[v], *Rv = Bref[v];
         double resid = max_abs_diff(Bo, Rv, sB);
         /* the reference is stored in `layout`, which its view carries */
         double rel = resid / std::max(norm1(mat_view(Rv, m, n, ldC, rowmajor)), 1e-300);
@@ -143,16 +145,14 @@ template <class T> int suite2(int nm, int n, int nrhs)
     const auto X = mat_view(Xs.data(), n, nrhs);
 
     /* each batch in one contiguous column-major buffer, matrix v at v*stride */
-    const size_t sA = (size_t)n * n, sB = (size_t)n * nrhs;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view(A.data() + v * sA, n, n);
-        gen_boosted(Av); /* diagonal boost tames cond */
-        matmul(Av, X, mat_view(B.data() + v * sB, n, nrhs)); /* B = A X */
+        gen_boosted(A.view(v));          /* diagonal boost tames cond */
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
 
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
@@ -184,8 +184,8 @@ template <class T> int suite2(int nm, int n, int nrhs)
     mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n, nrhs,
                  T(1), ap, m, cp, m, fmt, nm);
 
-    std::vector<T> Xhat(nm * sB);
-    auto Op = batch_ptrs<T>(Xhat.data(), nm, sB);
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, cp, m, fmt, nm);
 
     int fails = 0;
@@ -193,19 +193,7 @@ template <class T> int suite2(int nm, int n, int nrhs)
         ++fails;
         std::printf("    info = %ld (expected 0)\n", (long)info);
     }
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> AXs(sB);
-    const auto AX = mat_view(AXs.data(), n, nrhs);
-    for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view<const T>(A.data() + v * sA, n, n);
-        const auto Bv = mat_view<const T>(B.data() + v * sB, n, nrhs);
-        const auto Xv = mat_view<const T>(Xhat.data() + v * sB, n, nrhs);
-        double fwd = max_abs_diff(Xv.data, Xs.data(), sB) / std::max(norm1(X), 1e-300);
-        worst_fwd = std::max(worst_fwd, fwd);
-        matmul(Av, Xv, AX); /* AX = A Xhat */
-        double res = max_abs_diff(AXs.data(), Bv.data, sB) / std::max(norm1(Bv), 1e-300);
-        worst_res = std::max(worst_res, res);
-    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
     const double rtol = 100.0 * n * eps;
     bool ok = (worst_fwd <= rtol && worst_res <= rtol);
     fails += !ok;
@@ -248,10 +236,5 @@ template <class T> int run_suites()
 int main()
 {
     const int fails = run_suites<double>() + run_suites<float>();
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

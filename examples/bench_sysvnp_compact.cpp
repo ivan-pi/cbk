@@ -97,7 +97,7 @@ struct Systems {
             for (int i = 0; i < n; ++i)
                 X(i, j) = j + 1;
         for (int v = 0; v < nmat; ++v) {
-            const auto A = a.matrix(v), B = b.matrix(v);
+            const auto A = a.view(v), B = b.view(v);
             for (int j = 0; j < n; ++j) {
                 for (int i = j + 1; i < n; ++i) {
                     double x = dist(rng);
@@ -153,30 +153,17 @@ double forward_error(const double *x, int n, int nrhs, int nmat)
     return worst / nrhs; /* max|X| = nrhs */
 }
 
-/* Pack the pool's A and B into fresh compact buffers (the pristine copies the
- * timed passes are restored from). */
+/* The pristine compact images of the systems and their right-hand sides
+ * (bench_util's PackedPool, once per pool), the state every solve starts from. */
 struct Packed {
-    MKL_INT sz_a, sz_b;
-    cqr::detail::mkl_buffer<double> ap, bp;
+    PackedPool a, b;
 
-    Packed(const Systems &P, MKL_COMPACT_PACK fmt)
-        : sz_a(mkl_dget_size_compact(P.a.rows, P.a.cols, fmt, P.a.nmat)),
-          sz_b(mkl_dget_size_compact(P.b.rows, P.b.cols, fmt, P.b.nmat)),
-          ap(cqr::detail::mkl_alloc_bytes<double>(sz_a)),
-          bp(cqr::detail::mkl_alloc_bytes<double>(sz_b))
-    {
-        const int n = P.a.rows, nmat = P.a.nmat, nrhs = P.b.cols;
-        auto Ap = P.a.base_ptrs();
-        auto Bp = P.b.base_ptrs();
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, ap.get(), n, fmt, nmat);
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, nrhs, Bp.data(), n, bp.get(), n, fmt, nmat);
-    }
+    Packed(const Systems &P, MKL_COMPACT_PACK fmt) : a(P.a, fmt), b(P.b, fmt) {}
 
-    /* Working copies of the pristine A and B, the state every solve starts from. */
-    void restore_into(double *a, double *b) const
+    void restore_into(double *ap, double *bp) const
     {
-        std::memcpy(a, ap.get(), sz_a);
-        std::memcpy(b, bp.get(), sz_b);
+        a.restore_into(ap);
+        b.restore_into(bp);
     }
 };
 
@@ -184,9 +171,9 @@ struct Packed {
  * unpack X, compare to the known solution. Untimed correctness gate. */
 double compact_error(const Systems &P, const Packed &pk, MKL_COMPACT_PACK fmt)
 {
-    const int n = P.a.rows, nmat = P.a.nmat, nrhs = P.b.cols;
-    auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-    auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+    const int n = P.a.rows(), nmat = P.a.count(), nrhs = P.b.cols();
+    auto ap = pk.a.work();
+    auto bp = pk.b.work();
     pk.restore_into(ap.get(), bp.get());
     solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
 
@@ -218,8 +205,8 @@ void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
     for (int n = nmin; n <= nmax; n += stride) {
         const Systems P(n, nmat, nrhs);
         Packed pk(P, fmt);
-        auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-        auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+        auto ap = pk.a.work();
+        auto bp = pk.b.work();
         auto restore = [&] { pk.restore_into(ap.get(), bp.get()); };
         const double t = best_time(reps, restore, [&] {
             solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
@@ -278,16 +265,16 @@ int main(int argc, char **argv)
         Packed pk(P, fmt);
 
         /* working copies: compact (cqr) and standard layout (LAPACK) */
-        auto ap = cqr::detail::mkl_alloc_bytes<double>(pk.sz_a);
-        auto bp = cqr::detail::mkl_alloc_bytes<double>(pk.sz_b);
+        auto ap = pk.a.work();
+        auto bp = pk.b.work();
         aligned_vector<double> a_work, b_work;
 
         /* both paths destroy A and B, so restore the input (untimed) before
          * each timed pass */
         auto restore_compact = [&] { pk.restore_into(ap.get(), bp.get()); };
         auto restore_dense = [&] {
-            a_work = P.a.storage;
-            b_work = P.b.storage;
+            a_work = P.a.storage();
+            b_work = P.b.storage();
         };
 
         double t_cqr = best_time(reps, restore_compact, [&] {

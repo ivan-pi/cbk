@@ -87,12 +87,12 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
     const int k = std::min(m, n);
     const size_t sA = (size_t)m * n, sT = (size_t)k;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, m, n);
     for (int v = 0; v < nm; ++v)
-        gen_matrix(mat_view(A.data() + v * sA, m, n), cond, structure);
+        gen_matrix(A.view(v), cond, structure);
 
     /* pack A, factor with the routine under test, unpack (H, tau) */
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+    auto Ap = A.base_ptrs();
     MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
     auto ap_buf = cqr::detail::mkl_alloc_bytes<T>(sz_a);
@@ -105,9 +105,9 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
     cqr_mkl<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq, -1, &info, fmt, nm);
     cqr_mkl<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq, (MKL_INT)wq, &info, fmt, nm);
 
-    std::vector<T> H(nm * sA), tau(nm * sT);
-    auto Hp = batch_ptrs<T>(H.data(), nm, sA);
-    auto Tp = batch_ptrs<T>(tau.data(), nm, sT);
+    MatrixBatch<T> H(nm, m, n), tau(nm, k, 1);
+    auto Hp = H.base_ptrs();
+    auto Tp = tau.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, m, n, Hp.data(), m, ap, m, fmt, nm);
     mkl<T>::geunpack(MKL_COL_MAJOR, k, 1, Tp.data(), k, taup, k, fmt, nm);
 
@@ -123,8 +123,8 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
     const auto QtAm = mat_view(QtA.data(), k, n);
     const auto QtQm = mat_view(QtQ.data(), k, k);
     for (int v = 0; v < nm; ++v) {
-        const T *Av = A.data() + v * sA;
-        const T *Hv = H.data() + v * sA, *tv = tau.data() + v * sT;
+        const T *Av = A[v];
+        const T *Hv = H[v], *tv = tau[v];
         const auto Am = mat_view(Av, m, n); /* the input, column-major */
         const auto Hm = mat_view(Hv, m, n); /* the factor (H, tau) it produced */
 
@@ -188,12 +188,12 @@ template <class T> int suite2(MKL_LAYOUT layout, int nm, int m, int n)
     const size_t sA = (size_t)m * n;
     const MKL_INT ldA = row ? n : m, ldc = row ? n : m;
 
-    std::vector<T> A(nm * sA);
+    MatrixBatch<T> A(nm, m, n);
     for (int v = 0; v < nm; ++v)
-        gen_matrix(mat_view(A.data() + v * sA, m, n), 0.0);
+        gen_matrix(A.view(v), 0.0);
     /* A was generated column-major; for a row-major run reinterpret the same
      * numbers as a row-major m x n (a genuinely different matrix, still fine). */
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
+    auto Ap = A.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
@@ -246,15 +246,13 @@ template <class T> int suite3(int nm, int n, int nrhs)
     const std::vector<T> Xs = known_solution<T>(n, nrhs);
     const auto X = mat_view(Xs.data(), n, nrhs);
 
-    const size_t sA = (size_t)n * n, sB = (size_t)n * nrhs;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view(A.data() + v * sA, n, n);
-        gen_matrix(Av, 0.0);
-        matmul(Av, X, mat_view(B.data() + v * sB, n, nrhs)); /* B = A X */
+        gen_matrix(A.view(v), 0.0);
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
@@ -290,8 +288,8 @@ template <class T> int suite3(int nm, int n, int nrhs)
     mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n, nrhs,
                  T(1), ap, m, cp, m, fmt, nm);
 
-    std::vector<T> Xhat(nm * sB);
-    auto Op = batch_ptrs<T>(Xhat.data(), nm, sB);
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, cp, m, fmt, nm);
 
     int fails = 0;
@@ -299,19 +297,7 @@ template <class T> int suite3(int nm, int n, int nrhs)
         ++fails;
         std::printf("    info = %ld (expected 0)\n", (long)info);
     }
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> AXs(sB);
-    const auto AX = mat_view(AXs.data(), n, nrhs);
-    for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view<const T>(A.data() + v * sA, n, n);
-        const auto Bv = mat_view<const T>(B.data() + v * sB, n, nrhs);
-        const auto Xv = mat_view<const T>(Xhat.data() + v * sB, n, nrhs);
-        worst_fwd = std::max(worst_fwd, max_abs_diff(Xv.data, Xs.data(), sB) /
-                                            std::max(norm1(X), 1e-300));
-        matmul(Av, Xv, AX);
-        worst_res = std::max(worst_res, max_abs_diff(AXs.data(), Bv.data, sB) /
-                                            std::max(norm1(Bv), 1e-300));
-    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
     const double rtol = 100.0 * n * eps;
     bool ok = (worst_fwd <= rtol && worst_res <= rtol);
     fails += !ok;
@@ -361,10 +347,5 @@ template <class T> int run_suites()
 int main()
 {
     const int fails = run_suites<double>() + run_suites<float>();
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

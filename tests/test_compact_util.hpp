@@ -12,7 +12,10 @@
 
 #include "cqr_compact.h"
 #include "cqr_compact_common.hpp"
+#include "cqr_matrix_batch.hpp"
 #include "cqr_matrix_view.hpp"
+
+#include <cstdio>
 
 #include <cassert>
 #include <cmath>
@@ -31,6 +34,7 @@ namespace cqr::test {
 // (src/cqr_compact_common.hpp).
 using cqr::detail::ConstMatrixView;
 using cqr::detail::mat_view;
+using cqr::detail::MatrixBatch;
 using cqr::detail::MatrixView;
 
 using cqr::detail::for_vlen;
@@ -227,15 +231,6 @@ CQR_TEST_COMPACT_DISPATCH(float, s, "float")
 
 // ----------------------- input generation ----------------------------
 
-// nm pointers into base, `stride` apart -- one per matrix, for the MKL pack API.
-template <class T> std::vector<T *> batch_ptrs(T *base, int nm, size_t stride)
-{
-    std::vector<T *> p(nm);
-    for (int v = 0; v < nm; ++v)
-        p[v] = base + (size_t)v * stride;
-    return p;
-}
-
 // Random m x n matrix with the leading diagonal boosted by `boost`, which
 // tames the conditioning of the square/tall QR and solve tests.
 template <class T> void gen_boosted(MatrixView<T> A, T boost = T(2))
@@ -390,31 +385,8 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 }
 
 // ----------------------- dense batches and compact packing -----------
-
-// A batch of `count` column-major rows x cols matrices in one contiguous buffer;
-// matrix idx starts at idx*rows*cols with leading dimension rows.
-template <class T> class MatrixBatch {
-  public:
-    MatrixBatch(int count, int rows, int cols)
-        : count_(count), rows_(rows), cols_(cols), a_((size_t)count * rows * cols)
-    {
-    }
-    // clang-format off
-    int count() const { return count_; }
-    int rows()  const { return rows_; }
-    int cols()  const { return cols_; }
-    T       *operator[](int idx)       { return a_.data() + (size_t)idx * rows_ * cols_; }
-    const T *operator[](int idx) const { return a_.data() + (size_t)idx * rows_ * cols_; }
-    MatrixView<T>       view(int idx)       { return mat_view((*this)[idx], rows_, cols_); }
-    ConstMatrixView<T>  view(int idx) const { return mat_view((*this)[idx], rows_, cols_); }
-    T       &operator()(int idx, int i, int j)       { return view(idx)(i, j); }
-    const T &operator()(int idx, int i, int j) const { return view(idx)(i, j); }
-    // clang-format on
-
-  private:
-    int count_, rows_, cols_;
-    std::vector<T> a_;
-};
+// The dense batches are MatrixBatch (src/cqr_matrix_batch.hpp), shared with
+// the benchmarks; the suites allocate with the default allocator.
 
 // Compact pack/unpack (matches mkl_?gepack_compact). group g = idx/V, slot
 // v = idx%V; element (i,j) of every matrix in a group is one V-wide pack, and
@@ -434,6 +406,19 @@ template <class T> class MatrixBatch {
 // purpose; what makes the suites independent of the kernels is that they
 // compute the *answers* independently (scalar LAPACK references, dense
 // LAPACK/MKL cross-checks), not that they re-derive the addressing.
+
+// A zeroed compact buffer sized for nm rows x cols matrices at leading
+// dimension ldp -- the one place the ng * gstride sizing is written. For a
+// buffer the kernel fills (tau, say), use it directly; for one packed from a
+// batch, the pack_compact/pack_tau overloads below return it filled.
+template <class T>
+std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
+                              bool rowmajor = false)
+{
+    const int ng = (nm + V - 1) / V;
+    return std::vector<T>((std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V));
+}
+
 template <class T>
 void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false)
 {
@@ -480,6 +465,16 @@ void unpack_compact(MatrixBatch<T> &Mk, const T *p, int ldp, int V, bool rowmajo
     (void)width_ok;
 }
 
+// The suites' usual shape: pack into a freshly sized buffer and return it.
+template <class T>
+std::vector<T> pack_compact(const MatrixBatch<T> &Mk, int ldp, int V,
+                            bool rowmajor = false)
+{
+    auto p = compact_buffer<T>(Mk.count(), Mk.rows(), Mk.cols(), ldp, V, rowmajor);
+    pack_compact(Mk, p.data(), ldp, V, rowmajor);
+    return p;
+}
+
 // A tau batch (k scalars per matrix) is packed as k x 1 matrices; padded slots
 // get tau = 0 (the identity's reflectors).
 template <class T> void pack_tau(const MatrixBatch<T> &tau, T *tp, int V)
@@ -501,6 +496,13 @@ template <class T> void pack_tau(const MatrixBatch<T> &tau, T *tp, int V)
     (void)width_ok;
 }
 
+template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
+{
+    auto tp = compact_buffer<T>(tau.count(), tau.rows(), 1, tau.rows(), V);
+    pack_tau(tau, tp.data(), V);
+    return tp;
+}
+
 template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
 {
     const int k = tau.rows(), nm = tau.count(), ng = (nm + V - 1) / V;
@@ -520,6 +522,71 @@ template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
     });
     assert(width_ok && "interleave width must be 2, 4, 8 or 16");
     (void)width_ok;
+}
+
+// ----------------------- shared checks and epilogues -----------------
+
+// The end-to-end solve gate every solving suite closes with: the worst
+// relative forward error of Xhat against the known X, and the worst relative
+// residual ||A Xhat - B|| formed densely -- so a solver bug cannot hide behind
+// the factorization that produced Xhat.
+struct SolveErrors {
+    double fwd, res;
+};
+
+template <class T>
+SolveErrors solve_errors(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
+                         const MatrixBatch<T> &Xhat, ConstMatrixView<T> X)
+{
+    const size_t sB = Xhat.stride();
+    std::vector<T> AXs(sB);
+    const auto AX = mat_view(AXs.data(), Xhat.rows(), Xhat.cols());
+    const double nX = std::max(norm1(X), 1e-300);
+    SolveErrors e{0, 0};
+    for (int v = 0; v < Xhat.count(); ++v) {
+        e.fwd = std::max(e.fwd, max_abs_diff(Xhat[v], X.data, sB) / nX);
+        matmul(A.view(v), Xhat.view(v), AX);
+        e.res = std::max(e.res, max_abs_diff(AXs.data(), B[v], sB) /
+                                    std::max(norm1(B.view(v)), 1e-300));
+    }
+    return e;
+}
+
+// One row of a C API validation table: the call made, what it returned, and
+// what LAPACK-style argument checking must return.
+struct ApiCheck {
+    const char *what;
+    int got, want;
+};
+
+// Verdict over a validation table (each failing row spelled out); the return
+// value is the table's contribution to the suite's fail count.
+inline int report_api_checks(const ApiCheck *t, std::size_t n)
+{
+    int bad = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        bad += (t[i].got != t[i].want);
+    std::printf("C API validation: %zu checks | %s\n", n, bad ? "FAIL" : "OK");
+    for (std::size_t i = 0; i < n; ++i)
+        if (t[i].got != t[i].want)
+            std::printf("  %-13s got=%d want=%d\n", t[i].what, t[i].got, t[i].want);
+    return bad ? 1 : 0;
+}
+template <std::size_t N> int report_api_checks(const ApiCheck (&t)[N])
+{
+    return report_api_checks(t, N);
+}
+
+// The suites' shared main() ending: report and turn the fail count into the
+// process exit code.
+inline int finish(int fails)
+{
+    if (fails) {
+        std::printf("\n%d CHECK(S) FAILED\n", fails);
+        return 1;
+    }
+    std::printf("\nall checks passed\n");
+    return 0;
 }
 
 } // namespace cqr::test

@@ -83,7 +83,7 @@ MatrixPool make_pool(int n, int nmat)
     std::mt19937_64 rng(2025);
     std::uniform_real_distribution<double> dist(-1.0, 1.0);
     for (int v = 0; v < nmat; ++v) {
-        const auto A = P.matrix(v);
+        const auto A = P.view(v);
         for (int j = 0; j < n; ++j) {
             for (int i = j + 1; i < n; ++i) {
                 double x = dist(rng);
@@ -131,7 +131,7 @@ void factor_unbatched(double *a, int n, int nmat)
  * Untimed correctness gate. */
 double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
 {
-    const int n = P.rows, nmat = P.nmat;
+    const int n = P.rows(), nmat = P.count();
     const size_t sA = P.stride();
 
     MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
@@ -151,7 +151,7 @@ double factor_error(const MatrixPool &P, MKL_COMPACT_PACK fmt, int V)
     double worst = 0;
     std::vector<double> Href(sA);
     for (int v = 0; v < nmat; ++v) {
-        const double *Av = P.matrix(v).data;
+        const double *Av = P.view(v).data;
         std::copy(Av, Av + sA, Href.begin());
         LAPACKE_dpotrf(LAPACK_COL_MAJOR, 'L', n, Href.data(), n);
         /* compare only the lower triangle (i >= j): the factor L, uniquely
@@ -189,14 +189,10 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
     for (int n = nmin; n <= nmax; n += stride) {
         const MatrixPool P = make_pool(n, nmat);
 
-        MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto Ap = P.base_ptrs();
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, pristine.get(), n, fmt,
-                            nmat);
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
 
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
         const double t = best_time(
             reps, restore, [&] { factor_compact(true, work_ap.get(), n, nmat, V, fmt); });
         std::printf("%4d | %10.3e | %11.2f | %11.2e\n", n, t, nmat * potrf_gflop(n) / t,
@@ -251,19 +247,15 @@ int main(int argc, char **argv)
     for (int n : sizes) {
         const MatrixPool P = make_pool(n, nmat);
 
-        /* pristine packed buffer + two working copies (cqr, mkl) */
-        MKL_INT sz_a = mkl_dget_size_compact(n, n, fmt, nmat);
-        auto pristine = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto work_ap = cqr::detail::mkl_alloc_bytes<double>(sz_a);
-        auto Ap = P.base_ptrs();
-        mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Ap.data(), n, pristine.get(), n, fmt,
-                            nmat);
+        /* pristine packed pool + one working copy both compact paths share */
+        const PackedPool pristine(P, fmt);
+        auto work_ap = pristine.work();
 
         aligned_vector<double> pool_work; /* standard-layout copy (aligned like pool) */
 
         /* both compact paths factor in place, so restore the packed input
          * (untimed) before each timed pass */
-        auto restore = [&] { std::memcpy(work_ap.get(), pristine.get(), sz_a); };
+        auto restore = [&] { pristine.restore_into(work_ap.get()); };
 
         double t_cqr = best_time(
             reps, restore, [&] { factor_compact(true, work_ap.get(), n, nmat, V, fmt); });
@@ -271,7 +263,7 @@ int main(int argc, char **argv)
             factor_compact(false, work_ap.get(), n, nmat, V, fmt);
         });
         double t_lap = best_time(
-            reps, [&] { pool_work = P.storage; },
+            reps, [&] { pool_work = P.storage(); },
             [&] { factor_unbatched(pool_work.data(), n, nmat); });
 
         const double rel = factor_error(P, fmt, V);

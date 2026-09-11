@@ -97,12 +97,9 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
         ref_orm2r('T', k, Afac.view(kk), tau[kk], Bref.view(kk));
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
-    pack_compact(Afac, ap.data(), m, V);
-    pack_tau(tau, tp.data(), V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(Afac, m, V);
+    std::vector<T> tp = pack_tau(tau, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     /* check 1: compact Q^T B vs scalar */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
@@ -161,12 +158,9 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
         ref_geqp3(Afac.view(kk), jpvt[kk], tau[kk]);
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
-    pack_compact(Afac, ap.data(), m, V);
-    pack_tau(tau, tp.data(), V);
-    pack_compact(B, bp.data(), m, V);
+    std::vector<T> ap = pack_compact(Afac, m, V);
+    std::vector<T> tp = pack_tau(tau, V);
+    std::vector<T> bp = pack_compact(B, m, V);
 
     /* kernel: c := Q^T b */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
@@ -196,9 +190,9 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
 template <class T> static void bench(int V, int nm, int m, int nrhs, int reps)
 {
     const int k = m;
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * m * m * V), tp((size_t)ng * k * V),
-        bp((size_t)ng * m * nrhs * V);
+    std::vector<T> ap = compact_buffer<T>(nm, m, m, m, V);
+    std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V);
+    std::vector<T> bp = compact_buffer<T>(nm, m, nrhs, m, V);
     for (auto &x : ap)
         x = frand<T>() * T(1e-3);
     for (auto &x : tp)
@@ -239,7 +233,7 @@ static int test_validation()
     };
 
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid",          call('T', m, nrhs, k,   ld,    ld,    V, nm),   0},
         {"bad trans",      call('X', m, nrhs, k,   ld,    ld,    V, nm),  -1},
         {"m<0",            call('T', -1, nrhs, k,  ld,    ld,    V, nm),  -2},
@@ -253,15 +247,7 @@ static int test_validation()
         {"empty nm=0",     call('T', m, nrhs, k,   ld,    ld,    V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 /* ------------------------------- main -------------------------------- */
@@ -298,10 +284,5 @@ int main(int argc, char **)
         bench<float>(8, 16, 43, 8, 100000);
     }
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

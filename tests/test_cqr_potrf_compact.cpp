@@ -78,9 +78,7 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -166,9 +164,7 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
         }
     }
 
-    int ng = (nm + V - 1) / V;
-    std::vector<T> ap((size_t)ng * n * n * V);
-    pack_compact(A, ap.data(), n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
     int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
@@ -219,7 +215,7 @@ static int test_validation()
         return dpotrf_compact(lay, up, n_, ap.data(), ldap_, V_, nm_);
     };
     // clang-format off
-    struct { const char *what; int got, want; } t[] = {
+    const ApiCheck t[] = {
         {"valid col L",  call('C', 'L', n,  ld,  V, nm),   0},
         {"valid row U",  call('R', 'U', n,  ld,  V, nm),   0},
         {"bad layout",   call('X', 'L', n,  ld,  V, nm),  -1},
@@ -232,15 +228,7 @@ static int test_validation()
         {"empty nm=0",   call('C', 'L', n,  ld,  V, 0),    0},
     };
     // clang-format on
-    int bad = 0;
-    for (auto &c : t)
-        bad += (c.got != c.want);
-    std::printf("C API validation: %zu checks | %s\n", sizeof(t) / sizeof(t[0]),
-                bad ? "FAIL" : "OK");
-    for (auto &c : t)
-        if (c.got != c.want)
-            std::printf("  %-12s got=%d want=%d\n", c.what, c.got, c.want);
-    return bad ? 1 : 0;
+    return report_api_checks(t);
 }
 
 // ------------------------------- main --------------------------------
@@ -276,10 +264,5 @@ int main()
     // 10 groups: takes the OpenMP group loop when the team has <= 10 threads.
     fails += run_case<double, 4>(40, 20, 'L', 'C');
 
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }

@@ -52,13 +52,12 @@ int suite1(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa
     const int s = left ? m : n; /* A is s x s */
     const T alpha = T(0.5) + frand<T>();
 
-    const size_t sA = (size_t)s * s, sB = (size_t)m * n;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, s, s), B(nm, m, n);
     for (int v = 0; v < nm; ++v) {
         /* A is square, so its leading dimension is s in either layout */
-        gen_tri(mat_view(A.data() + v * sA, s, s, s, rowmajor), uplo == MKL_UPPER);
-        T *Bv = B.data() + v * sB;
-        for (size_t e = 0; e < sB; ++e)
+        gen_tri(mat_view(A[v], s, s, s, rowmajor), uplo == MKL_UPPER);
+        T *Bv = B[v];
+        for (size_t e = 0; e < B.stride(); ++e)
             Bv[e] = frand<T>();
     }
 
@@ -68,8 +67,8 @@ int suite1(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa
     const MKL_INT ldap = s;               /* compact leading dims */
     const MKL_INT ldbp = rowmajor ? n : m;
 
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(s, s, fmt, nm);
     MKL_INT sz_b = mkl<T>::get_size(m, n, fmt, nm);
@@ -112,15 +111,13 @@ template <class T> int suite2(int nm, int n, int nrhs)
     const std::vector<T> Xs = known_solution<T>(n, nrhs);
     const auto X = mat_view(Xs.data(), n, nrhs);
 
-    const size_t sA = (size_t)n * n, sB = (size_t)n * nrhs;
-    std::vector<T> A(nm * sA), B(nm * sB);
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view(A.data() + v * sA, n, n);
-        gen_boosted(Av); /* diagonal boost tames conditioning */
-        matmul(Av, X, mat_view(B.data() + v * sB, n, nrhs)); /* B = A X */
+        gen_boosted(A.view(v));          /* diagonal boost tames conditioning */
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
-    auto Ap = batch_ptrs<const T>(A.data(), nm, sA);
-    auto Bp = batch_ptrs<const T>(B.data(), nm, sB);
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
 
     MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
     MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
@@ -153,23 +150,11 @@ template <class T> int suite2(int nm, int n, int nrhs)
     cqr_mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n,
                      nrhs, T(1), ap, m, cp, m, fmt, nm);
 
-    std::vector<T> Xhat(nm * sB);
-    auto Op = batch_ptrs<T>(Xhat.data(), nm, sB);
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
     mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, cp, m, fmt, nm);
 
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> AXs(sB);
-    const auto AX = mat_view(AXs.data(), n, nrhs);
-    const double nX = std::max(norm1(X), 1e-300); /* X is loop-invariant */
-    for (int v = 0; v < nm; ++v) {
-        const auto Av = mat_view<const T>(A.data() + v * sA, n, n);
-        const auto Bv = mat_view<const T>(B.data() + v * sB, n, nrhs);
-        const auto Xv = mat_view<const T>(Xhat.data() + v * sB, n, nrhs);
-        worst_fwd = std::max(worst_fwd, max_abs_diff(Xv.data, Xs.data(), sB) / nX);
-        matmul(Av, Xv, AX);
-        worst_res = std::max(worst_res, max_abs_diff(AXs.data(), Bv.data, sB) /
-                                            std::max(norm1(Bv), 1e-300));
-    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
     const double rtol = 100.0 * n * eps;
     bool ok = (info == 0) && (worst_fwd <= rtol) && (worst_res <= rtol);
     std::printf(
@@ -218,10 +203,5 @@ template <class T> int run_suites()
 int main()
 {
     const int fails = run_suites<double>() + run_suites<float>();
-    if (fails) {
-        std::printf("\n%d CHECK(S) FAILED\n", fails);
-        return 1;
-    }
-    std::printf("\nall checks passed\n");
-    return 0;
+    return finish(fails);
 }
