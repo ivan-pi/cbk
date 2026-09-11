@@ -191,7 +191,7 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 
 | n | 1 thread, 512 matrices | 4 threads, 128 matrices |
 |---|---|---|
-| 8 | 1.09x | 0.80x |
+| 8 | 1.09x | 0.80x (0.59-0.67x on repeats); 1.22x with 512 matrices -- see below |
 | 16 | 1.41x | 1.30x |
 | 32 | 1.60x | 1.56x |
 | 64 | 1.24x | 1.30x |
@@ -199,13 +199,20 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 | 256 | 1.49x | 1.46x |
 | 500 | 1.45x | 1.48x |
 
-- **The n=8 row is biased against MKL by the harness, not by MKL.** Driving
-  MKL one group per call costs 13% at n=8 single-threaded against one
-  whole-batch call (57 us vs 51 us for 512 matrices), 2-4% at n=16-32, and
-  nothing at n=64. At four threads the harness additionally forks a team over
-  groups of ~2700 flops each, which cqr's launcher would refuse to do (its
-  `parallel_min_flops` gate); MKL's loop in the benchmark has no such gate.
-  Whole-batch MKL calls would remove both effects.
+- **The n=8 row at four threads is cqr's launcher gate, not MKL.** The
+  launcher estimates 2*m*n*k*V = 8192 flops per group for geqrf; 128 matrices
+  are 16 groups, 131k flops, below its `parallel_min_flops` gate of 2e5, so
+  cqr ran serial on that row while the benchmark's MKL loop forked four
+  threads regardless. Evidence: cqr's n=8 throughput at 128 matrices is the
+  same with one thread (1.07e7 matrices/s) as with four (1.06e7); repeats gave
+  0.59-0.67x. With 512 matrices (524k flops, above the gate) at four threads
+  the row is 1.22x in cqr's favor, and single-threaded it is 1.09-1.20x. Two
+  smaller effects remain, both against MKL: driving MKL one group per call
+  costs it 13% at n=8 against one whole-batch call (57 us vs 51 us for 512
+  matrices), 2-4% at n=16-32, nothing at n=64. Note for the launcher: MKL's
+  ungated loop beat serial cqr at 131k flops (1.59e7 vs 1.06e7 matrices/s), so
+  on this box the 2e5 gate is somewhat conservative; it was tuned on a
+  different machine and is a build-time constant (`CQR_OMP_MIN_FLOPS`).
 - Relative error against per-matrix LAPACK is identical for both.
 - **Where both fall below blocked LAPACK depends on the machine and on V.** On
   this box (1 MiB L2 per core) with V=8 doubles the crossover is near
