@@ -13,6 +13,7 @@
  *   group_stride          -- scalars per group of V interleaved matrices.
  *   for_vlen              -- runtime interleave width -> compile-time V.
  *   for_each_group        -- the loop over groups, threaded with OpenMP.
+ *   zero_block / zero_compact -- B := 0 for a block of one group / a whole batch.
  *
  * V is the compact-format interleave width (the number of matrices whose
  * element (i,j) is stored contiguously). It does NOT need to match the hardware
@@ -224,11 +225,15 @@ template <typename F> bool for_vlen(int V, F &&f)
 /* whenever it has two groups and two threads.                         */
 /*                                                                     */
 /* parallel_min_flops was measured, not guessed: a fork/join costs     */
-/* 2-3 us on the 4-core AVX-512 box this was tuned on (gcc, libgomp);  */
-/* dgeqrf calls below ~1e5 flops ran slower in parallel and everything */
-/* above 2e5 gained 1.4-3.6x. The constant scales with fork cost times */
-/* single-core flop rate, so override -DCQR_OMP_MIN_FLOPS for a        */
-/* different runtime or machine.                                       */
+/* 2-3 us (gcc, libgomp). On the 4-core AVX-512 box it was first tuned */
+/* on, dgeqrf calls below ~1e5 flops ran slower in parallel and        */
+/* everything above 2e5 gained 1.4-3.6x; on a second 4-core AVX-512    */
+/* box parallel broke even near 3e4 and won from 6e4 up, and the 2e5   */
+/* gate left up to 1.8x on the table (8x8 batches of 128). 5e4 is the  */
+/* compromise: within 10% of serial at 3e4 on the faster-forking box,  */
+/* near break-even on the slower one. The constant scales with fork    */
+/* cost times single-core flop rate, so override -DCQR_OMP_MIN_FLOPS   */
+/* for a different runtime or machine.                                 */
 /*                                                                     */
 /* Composition: the gate first asks whether one more nesting level may */
 /* be active at all, then uses omp_get_max_threads(), the team size at */
@@ -241,7 +246,7 @@ template <typename F> bool for_vlen(int V, F &&f)
 /* ------------------------------------------------------------------ */
 
 #ifndef CQR_OMP_MIN_FLOPS
-#define CQR_OMP_MIN_FLOPS 2e5
+#define CQR_OMP_MIN_FLOPS 5e4
 #endif
 constexpr double parallel_min_flops = CQR_OMP_MIN_FLOPS;
 
@@ -265,6 +270,30 @@ void for_each_group(
 #endif
     for (Int g = 0; g < ngroups; ++g)
         body(g);
+}
+
+/* B(i0:i1, 0:ncols) := 0 for one group: the quick-return fills (trsm's
+ * alpha = 0, gels's empty op(A)) and gels's B(q:p) := 0 before it applies Q. */
+template <typename T, int V, typename Int>
+inline void zero_block(const BatchView<T, V, Int> &B, Int i0, Int i1, Int ncols) noexcept
+{
+    for (Int j = 0; j < ncols; ++j)
+        for (Int i = i0; i < i1; ++i)
+            B(i, j) = typename pack<T, V>::type{};
+}
+
+/* Every group of a rows x cols compact batch := 0, either layout. */
+template <typename T, int V, typename Int>
+void zero_compact(bool rowmajor, Int rows, Int cols, T *bp, Int ldbp, Int nm)
+{
+    const std::size_t str = group_stride(rowmajor, ldbp, rows, cols, V);
+    for_each_group<V>(
+        nm,
+        [&](Int g) {
+            const auto B = make_view<T, V, Int>(bp + g * str, rowmajor, ldbp);
+            zero_block<T, V, Int>(B, Int(0), rows, cols);
+        },
+        (double)rows * cols * V /* stores per group */);
 }
 
 } /* namespace cqr::detail */

@@ -1,19 +1,26 @@
 /* bench_qr_compact.cpp
  *
  * Throughput benchmark: solving many small square systems A_v X_v = B_v with
- * the QR pipeline (X = R^-1 Q^T B), comparing three ways to run the same math:
+ * the QR pipeline (X = R^-1 Q^T B), comparing five ways to run the same math:
  *
  *   MKL batched  mkl_dgeqrf_compact     -> cqr_mkl_dormqr_compact -> mkl_dtrsm_compact
  *   cqr batched  cqr_mkl_dgeqrf_compact -> cqr_mkl_dormqr_compact -> cqr_mkl_dtrsm_compact
+ *   cqr gels     cqr_mkl_dgels_compact  (the three steps as one call per group)
  *   unbatched    LAPACKE_dgeqrf         -> LAPACKE_dormqr          -> cblas_dtrsm
+ *   LAPACK gels  LAPACKE_dgels          (LAPACK's own one-call driver, per matrix)
  *
- * The two batched paths run the same compact pipeline from different libraries:
- * the MKL path uses MKL's own `mkl_?geqrf_compact` and `mkl_?trsm_compact`, the
- * cqr path this repo's open `cqr_mkl_?geqrf_compact` and `cqr_mkl_?trsm_compact`,
- * so the cqr path runs the whole solve with no MKL compute kernel (MKL only packs
- * and unpacks) and their ratio is the end-to-end MKL-vs-open comparison. MKL has
- * no compact `ormqr`, so `cqr_mkl_dormqr_compact` is shared by both. The
- * unbatched path is the conventional per-matrix LAPACK baseline.
+ * The two three-step batched paths run the same compact pipeline from different
+ * libraries: the MKL path uses MKL's own `mkl_?geqrf_compact` and
+ * `mkl_?trsm_compact`, the cqr path this repo's open `cqr_mkl_?geqrf_compact`
+ * and `cqr_mkl_?trsm_compact`, so the cqr path runs the whole solve with no MKL
+ * compute kernel (MKL only packs and unpacks) and their ratio is the end-to-end
+ * MKL-vs-open comparison. MKL has no compact `ormqr`, so `cqr_mkl_dormqr_compact`
+ * is shared by both. The gels path is the same open math fused into one call
+ * (the apply-Q^T folded into the factorization, no separate reflector sweep), so
+ * gels vs cqr-batch is what the fusion buys. The unbatched path is the
+ * conventional per-matrix LAPACK baseline, and LAPACKE_dgels the like-for-like
+ * one-call baseline for cqr_mkl_dgels_compact (it runs the same three steps
+ * inside, blocked, plus its norm scaling and rank test).
  *
  * For each size, a pool of `nmat` well-conditioned matrices with known solution
  * X == 1 is built once, and each path solves it -- the batched paths packing
@@ -102,16 +109,17 @@ double sol_error(const double *x, int n)
     return e;
 }
 
-/* Which library backs the batched compute pipeline -- the QR factorization and
- * the closing triangular solve. MKL has no compact ormqr, so cqr_mkl_dormqr is
- * shared by both; every other compute kernel comes from the selected library. */
-enum class Backend { Mkl, Cqr };
+/* What runs the batched compute between the shared pack and unpack: the
+ * three-step pipeline with MKL's or cqr's geqrf and trsm (MKL has no compact
+ * ormqr, so cqr_mkl_dormqr is shared by both), or cqr's one-call gels. */
+enum class Backend { Mkl, Cqr, Gels };
 
 /* ===== batched path: compact group-of-V pipeline ======================= *
  * Process the pool in groups of V, packing/factoring/solving/unpacking each
  * group inside the timed region. `impl` picks the backend for the geqrf and the
- * trsm (MKL's compact kernels, or this repo's open drop-ins); the shared
- * cqr_mkl_dormqr and the pack/unpack around them are identical for both. Returns
+ * trsm (MKL's compact kernels, or this repo's open drop-ins) -- the shared
+ * cqr_mkl_dormqr and the pack/unpack around them are identical for both -- or
+ * the one-call cqr_mkl_dgels_compact between the same pack and unpack. Returns
  * the max solution error. */
 double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
 {
@@ -131,17 +139,24 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             mkl_dget_size_compact(n, nrhs, fmt, V), align);
         double *ap = ap_buf.get(), *taup = taup_buf.get(), *bp = bp_buf.get();
 
-        /* Select the batched backend once: MKL's own compact kernels, or this
+        /* Select the pipeline's kernels once: MKL's own compact kernels, or this
          * repo's open drop-ins (byte-identical signatures). The ormqr below is
-         * always cqr's -- MKL ships no compact ormqr. */
+         * always cqr's -- MKL ships no compact ormqr. (Unused, like taup, on the
+         * gels path, which keeps its tau in work.) */
         const auto geqrf_compact =
             (impl == Backend::Cqr) ? cqr_mkl_dgeqrf_compact : mkl_dgeqrf_compact;
         const auto trsm_compact =
             (impl == Backend::Cqr) ? cqr_mkl_dtrsm_compact : mkl_dtrsm_compact;
 
+        /* Each routine's workspace from its own query (gels's is its tau
+         * scratch, the size of a compact tau buffer for one group). */
         MKL_INT info[1]; /* compact status: a single scalar (MKL convention) */
         double wq;
-        geqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &wq, -1, info, fmt, V);
+        if (impl == Backend::Gels)
+            cqr_mkl_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n, &wq, -1,
+                                  info, fmt, V);
+        else
+            geqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &wq, -1, info, fmt, V);
         const MKL_INT lwork = (MKL_INT)wq;
         std::vector<double> work((size_t)std::max<MKL_INT>(lwork, 1));
 
@@ -163,13 +178,19 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Aptr.data(), n, ap, n, fmt, cnt);
             mkl_dgepack_compact(MKL_COL_MAJOR, n, nrhs, Bptr.data(), n, bp, n, fmt, cnt);
 
-            geqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, work.data(), lwork, info, fmt,
-                          cnt);
-            double dummy;
-            cqr_mkl_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup, bp,
-                                   n, &dummy, 1, info, fmt, cnt);
-            trsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n,
-                         nrhs, 1.0, ap, n, bp, n, fmt, cnt);
+            if (impl == Backend::Gels) {
+                cqr_mkl_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n,
+                                      work.data(), lwork, info, fmt, cnt);
+            }
+            else {
+                geqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, work.data(), lwork, info,
+                              fmt, cnt);
+                double dummy;
+                cqr_mkl_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup,
+                                       bp, n, &dummy, 1, info, fmt, cnt);
+                trsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT,
+                             n, nrhs, 1.0, ap, n, bp, n, fmt, cnt);
+            }
 
             mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xptr.data(), n, bp, n, fmt,
                                   cnt);
@@ -181,14 +202,17 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
     return maxerr;
 }
 
-/* ===== non-batched path: conventional per-matrix LAPACK ================ *
- * One dense matrix at a time: dgeqrf -> dormqr -> dtrsm, factoring in place
- * (no per-matrix copy in the hot loop -- the application does not reuse the
- * matrix afterwards). The caller refreshes `a`/`b` from the pristine pool
- * outside the timed region, since the factorization destroys them. `a` holds
- * the matrices (n*n each), `b` the right-hand sides (n each, overwritten with
- * the solutions). Returns the max solution error. */
-double run_unbatched(int n, int nmat, double *a, double *b)
+/* ===== non-batched paths: conventional per-matrix LAPACK =============== *
+ * One dense matrix at a time, factoring in place (no per-matrix copy in the
+ * hot loop -- the application does not reuse the matrix afterwards): the
+ * dgeqrf -> dormqr -> dtrsm chain, or LAPACK's own one-call driver dgels (the
+ * same QR solve for a square full-rank system, so the two differ by dgels's
+ * bookkeeping; dgels is the like-for-like baseline for cqr-gels). The caller
+ * refreshes `a`/`b` from the pristine pool outside the timed region, since the
+ * factorization destroys them. `a` holds the matrices (n*n each), `b` the
+ * right-hand sides (n each, overwritten with the solutions). Returns the max
+ * solution error. */
+double run_unbatched(int n, int nmat, double *a, double *b, bool dgels)
 {
     const int nrhs = 1;
     double maxerr = 0.0;
@@ -199,15 +223,18 @@ double run_unbatched(int n, int nmat, double *a, double *b)
 
 #pragma omp for schedule(static)
         for (int v = 0; v < nmat; ++v) {
-            double *A = a + (size_t)v * n * n; /* dgeqrf overwrites A */
-            double *B = b + (size_t)v * n;     /* dormqr/dtrsm overwrite B */
+            double *A = a + (size_t)v * n * n; /* overwritten with (H, R) */
+            double *B = b + (size_t)v * n;     /* overwritten with X */
 
-            LAPACKE_dgeqrf(LAPACK_COL_MAJOR, n, n, A, n, tau.data());
-            LAPACKE_dormqr(LAPACK_COL_MAJOR, 'L', 'T', n, nrhs, n, A, n, tau.data(), B,
-                           n);
-            cblas_dtrsm(CblasColMajor, CblasLeft, CblasUpper, CblasNoTrans, CblasNonUnit,
-                        n, nrhs, 1.0, A, n, B, n);
-
+            if (dgels)
+                LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', n, n, nrhs, A, n, B, n);
+            else {
+                LAPACKE_dgeqrf(LAPACK_COL_MAJOR, n, n, A, n, tau.data());
+                LAPACKE_dormqr(LAPACK_COL_MAJOR, 'L', 'T', n, nrhs, n, A, n, tau.data(),
+                               B, n);
+                cblas_dtrsm(CblasColMajor, CblasLeft, CblasUpper, CblasNoTrans,
+                            CblasNonUnit, n, nrhs, 1.0, A, n, B, n);
+            }
             maxerr = std::max(maxerr, sol_error(B, n));
         }
     }
@@ -240,28 +267,31 @@ int main(int argc, char **argv)
     const int nrhs = 1; /* single RHS per system (see Systems / run_batched) */
     const double eps = std::numeric_limits<double>::epsilon();
 
-    std::printf("QR solve throughput (matrices/second), three paths:\n");
+    std::printf("QR solve throughput (matrices/second), five paths:\n");
     std::printf("  MKL-batch  mkl_dgeqrf_compact     -> cqr_mkl_dormqr_compact -> "
                 "mkl_dtrsm_compact\n");
     std::printf("  cqr-batch  cqr_mkl_dgeqrf_compact -> cqr_mkl_dormqr_compact -> "
                 "cqr_mkl_dtrsm_compact\n");
+    std::printf("  cqr-gels   cqr_mkl_dgels_compact  (the three steps as one call per "
+                "group)\n");
     std::printf("  unbatched  LAPACKE_dgeqrf         -> LAPACKE_dormqr          -> "
                 "cblas_dtrsm\n");
+    std::printf("  dgels      LAPACKE_dgels          (LAPACK's one-call driver, per "
+                "matrix)\n");
     std::printf("matrices=%d  reps=%d  rhs=%d  simdlen=%d (%s)  OpenMP threads=%d\n\n",
                 nmat, reps, nrhs, V, compact_format_name(fmt), nthreads);
-    /* Throughput as matrices/second (scientific) for each path, then two speedups:
-     * cqr-batch over the per-matrix baseline (the headline batched win), and
-     * cqr-batch over MKL-batch (the two batched paths differ in the geqrf and the
-     * trsm -- ormqr is shared -- so this is the end-to-end effect of the fully open
-     * compact pipeline vs MKL's). The error is the forward error vs the known
+    /* Throughput as matrices/second for each path, then the four speedups
+     * BENCHMARKS.md explains; the error is the forward error vs the known
      * solution X == 1, not vs LAPACK. */
-    std::printf("   n | MKL-batch   cqr-batch   unbatched  | cqr/unbat | cqr/MKL | max "
-                "fwd err (vs X=1)\n");
-    std::printf("     |  (mat/s)     (mat/s)     (mat/s)    |           |         |\n");
-    std::printf("-----+-------------------------------------+-----------+---------+------"
-                "-------------\n");
+    std::printf("   n | MKL-batch   cqr-batch   cqr-gels    unbatched   dgels      | "
+                "gels/dgels | gels/unbat | gels/cqr | cqr/MKL | max fwd err (vs X=1)\n");
+    std::printf("     |  (mat/s)     (mat/s)     (mat/s)     (mat/s)     (mat/s)    | "
+                "           |            |          |         |\n");
+    std::printf("-----+-------------------------------------------------------------+-"
+                "-----------+------------+----------+---------+-------------------\n");
 
-    double log_cqr_vs_unbat = 0.0, log_cqr_vs_mkl = 0.0;
+    double log_gels_vs_dgels = 0.0, log_gels_vs_unbat = 0.0, log_gels_vs_cqr = 0.0,
+           log_cqr_vs_mkl = 0.0;
     for (const int n : sizes) {
         const Systems P(n, nmat);
 
@@ -270,38 +300,51 @@ int main(int argc, char **argv)
          * factors in place, so refresh a destroyable working copy of the pool
          * before each pass -- untimed, mirroring an application that consumes
          * the matrix rather than copying it inside the solve. */
-        aligned_vector<double> wa, wb; /* filled by the reset step below */
+        aligned_vector<double> wa, wb; /* filled by restore, untimed, before each pass */
+        const auto restore = [&] {
+            wa = P.a.storage();
+            wb = P.b.storage();
+        };
 
-        double err_m = 0.0, err_c = 0.0, err_u = 0.0;
+        double err_m = 0.0, err_c = 0.0, err_g = 0.0, err_u = 0.0, err_d = 0.0;
         const double tb_mkl =
             best_time(reps, [] {}, [&] { err_m = run_batched(P, fmt, V, Backend::Mkl); });
         const double tb_cqr =
             best_time(reps, [] {}, [&] { err_c = run_batched(P, fmt, V, Backend::Cqr); });
-        const double tu = best_time(
-            reps,
-            [&] {
-                wa = P.a.storage();
-                wb = P.b.storage();
-            },
-            [&] { err_u = run_unbatched(n, nmat, wa.data(), wb.data()); });
+        const double tb_gels = best_time(
+            reps, [] {}, [&] { err_g = run_batched(P, fmt, V, Backend::Gels); });
+        const double tu = best_time(reps, restore, [&] {
+            err_u = run_unbatched(n, nmat, wa.data(), wb.data(), false);
+        });
+        const double td = best_time(reps, restore, [&] {
+            err_d = run_unbatched(n, nmat, wa.data(), wb.data(), true);
+        });
 
         const double rtol = 100.0 * n * eps;
-        const double maxerr = std::max({err_m, err_c, err_u});
+        const double maxerr = std::max({err_m, err_c, err_g, err_u, err_d});
         check(maxerr <= rtol, "solve accuracy within rtol");
 
-        const double cqr_vs_unbat = tu / tb_cqr;
+        const double gels_vs_dgels = td / tb_gels;
+        const double gels_vs_unbat = tu / tb_gels;
+        const double gels_vs_cqr = tb_cqr / tb_gels;
         const double cqr_vs_mkl = tb_mkl / tb_cqr;
-        log_cqr_vs_unbat += std::log(cqr_vs_unbat);
+        log_gels_vs_dgels += std::log(gels_vs_dgels);
+        log_gels_vs_unbat += std::log(gels_vs_unbat);
+        log_gels_vs_cqr += std::log(gels_vs_cqr);
         log_cqr_vs_mkl += std::log(cqr_vs_mkl);
-        std::printf("%4d | %10.2e  %10.2e  %10.2e | %8.2fx | %6.2fx | %.2e (rtol %.1e)\n",
-                    n, nmat / tb_mkl, nmat / tb_cqr, nmat / tu, cqr_vs_unbat, cqr_vs_mkl,
-                    maxerr, rtol);
+        std::printf("%4d | %10.2e  %10.2e  %10.2e  %10.2e  %10.2e | %9.2fx | %9.2fx | "
+                    "%7.2fx | %6.2fx | %.2e (rtol %.1e)\n",
+                    n, nmat / tb_mkl, nmat / tb_cqr, nmat / tb_gels, nmat / tu, nmat / td,
+                    gels_vs_dgels, gels_vs_unbat, gels_vs_cqr, cqr_vs_mkl, maxerr, rtol);
     }
 
-    std::printf("-----+-------------------------------------+-----------+---------+------"
-                "-------------\n");
-    std::printf("geometric-mean speedup across sizes:  cqr-batch vs unbatched %.2fx"
-                "   |   cqr-batch vs MKL-batch %.2fx\n",
-                std::exp(log_cqr_vs_unbat / nsizes), std::exp(log_cqr_vs_mkl / nsizes));
+    std::printf("-----+-------------------------------------------------------------+-"
+                "-----------+------------+----------+---------+-------------------\n");
+    std::printf("geometric-mean speedup across sizes:  cqr-gels vs dgels %.2fx   |   "
+                "cqr-gels vs unbatched %.2fx   |   cqr-gels vs cqr-batch %.2fx   |   "
+                "cqr-batch vs MKL-batch %.2fx\n",
+                std::exp(log_gels_vs_dgels / nsizes),
+                std::exp(log_gels_vs_unbat / nsizes), std::exp(log_gels_vs_cqr / nsizes),
+                std::exp(log_cqr_vs_mkl / nsizes));
     return 0;
 }

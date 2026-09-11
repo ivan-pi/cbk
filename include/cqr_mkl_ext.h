@@ -11,6 +11,7 @@
  *   cqr_mkl_?sytrsnp_compact -- solve A X = B from that LDL^T factor
  *   cqr_mkl_?sysvnp_compact  -- LDL^T factor + solve, fused per group
  *   cqr_mkl_?trsm_compact    -- triangular solve op(A) X = alpha B (and variants)
+ *   cqr_mkl_?gels_compact    -- least-squares / minimum-norm solve op(A) X = B, one call
  *
  * All take MKL's MKL_LAYOUT + MKL_COMPACT_PACK interface, so they drop into the
  * MKL compact ecosystem (pack with mkl_?gepack_compact, take `format` from
@@ -30,6 +31,13 @@
  *
  *     cqr_mkl_dsysvnp_compact(..., A -> (L, D), B);   // A = L D L^T; B := A^{-1} B
  *
+ * and cqr_mkl_?gels_compact is the QR chain -- generalized to over- and
+ * underdetermined systems, LAPACK ?gels plus layout/format/nm -- as one call
+ * that keeps each group of V matrices cache-resident from factorization to
+ * solution:
+ *
+ *     cqr_mkl_dgels_compact('N', ..., A, B, work);     // B := X, A := (H, R)
+ *
  * Conventions shared by all routines:
  *   - No argument checking (compact routines skip it for vectorization); the
  *     caller passes consistent parameters. Use the portable cqr_compact.h
@@ -38,11 +46,17 @@
  *     0 on success, -1 for an unrecognized `format`.
  *   - Workspace: ?geqrf and ?ormqr take work/lwork like their LAPACK namesakes;
  *     with lwork = -1 the call is a query returning the optimal lwork in
- *     work[0] -- 1, these kernels need no scratch. Size each routine's work
- *     from ITS OWN query and give each its own buffer: MKL's mkl_?geqrf_compact
- *     needs ~n*V, and because compact routines skip checking, an undersized or
- *     shared work array is undefined behavior (silent heap corruption on some
- *     MKL builds).
+ *     work[0] -- 1, these kernels need no scratch. Always size work from a
+ *     query of the routine you will call, and give each routine its own
+ *     buffer: lwork is not checked (no compact routine checks it, MKL's
+ *     included), so an undersized work array is a silent overrun. This matters
+ *     when mixing cqr and MKL routines: the two libraries' workspace needs
+ *     differ, and one routine's lwork says nothing about another's.
+ *   - ?gels's work is the exception: it is the routine's tau scratch, one slot
+ *     per group so the groups can run in parallel, so its query returns
+ *     max(1, min(m,n) * V * ceil(nm/V)) -- the size in scalars of a compact tau
+ *     buffer for the batch, mkl_?get_size_compact(min(m,n), 1, format, nm) /
+ *     sizeof(scalar). On exit it holds the tau of the factorization left in ap.
  *   - The reflector batch A of ?ormqr is dimensioned (ldap, k) as in LAPACK, so
  *     the compact buffer must be packed with exactly k columns (group stride
  *     ldap*k*V). Square and tall factors from ?geqrf_compact satisfy this as
@@ -57,7 +71,7 @@
  *     See the note in cqr_compact.h.
  *
  * Per-routine parameter references:
- * docs/cqr_mkl_d{geqrf,ormqr,potrf,sytrfnp,trsm}_compact_design.md.
+ * docs/cqr_mkl_d{geqrf,ormqr,potrf,sytrfnp,trsm,gels}_compact_design.md.
  *
  * Assisted-by: Claude:claude-opus-4.8
  */
@@ -164,6 +178,25 @@ void cqr_mkl_strsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
                            MKL_TRANSPOSE transa, MKL_DIAG diag, MKL_INT m, MKL_INT n,
                            float alpha, const float *ap, MKL_INT ldap, float *bp,
                            MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm);
+
+/* Least-squares (op(A) with more rows than columns) or minimum-norm (more
+ * columns than rows) solution of the full-rank systems op(A) X = B, op(A) = A
+ * ('N') or A^T ('T'/'C'), A m x n, B max(m,n) x nrhs: LAPACK ?gels plus layout,
+ * format and nm. On exit ap holds the QR (m >= n) or LQ (m < n) factorization
+ * of A, B's leading rows the solution (and, for least squares, its trailing
+ * m - n rows the residual), and work the reflector scalars tau. lwork = -1
+ * queries the workspace (see the workspace note above); min(m,n) = 0 sets
+ * B := 0. Rank deficiency is not detected (no info > 0): a zero diagonal of R
+ * divides through to Inf/NaN in that lane. */
+void cqr_mkl_dgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n,
+                           MKL_INT nrhs, double *ap, MKL_INT ldap, double *bp,
+                           MKL_INT ldbp, double *work, MKL_INT lwork, MKL_INT *info,
+                           MKL_COMPACT_PACK format, MKL_INT nm);
+
+void cqr_mkl_sgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n,
+                           MKL_INT nrhs, float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
+                           float *work, MKL_INT lwork, MKL_INT *info,
+                           MKL_COMPACT_PACK format, MKL_INT nm);
 
 #ifdef __cplusplus
 }
