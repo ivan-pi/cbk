@@ -171,7 +171,7 @@ unpivoted `mkl_?getrfnp_compact`. Status vs. the design document:
   saves only an `O(n^2)` sweep, so the fusion's gain scales with `nrhs`, not
   with `n`. What `gels` buys at `nrhs = 1` is the one-call interface, the
   rectangular cases, and library-side threading of the whole solve.
-- **Scoped out (design 6.7):** no rank-deficiency test (`?gels`'s `info > 0`;
+- **Scoped out (design 6.6):** no rank-deficiency test (`?gels`'s `info > 0`;
   a zero diagonal of `R` divides to `Inf`/`NaN` in that lane), no
   overflow/underflow rescaling of `A`/`B`, no pivoting.
 - **Open:** row-major goes through the strided kernels (column-major reaches
