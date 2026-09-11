@@ -6,10 +6,22 @@ MKL documentation leaves most of this unstated ("info is reserved", "no error
 checking"), so these were measured directly. Everything below is from small C
 probes against the installed library; nothing is inferred from documentation.
 
-Setup: Intel MKL 2020.4 (Debian `libmkl-dev` 2020.4.304), LP64 interface, on a
-4-core AVX-512 Xeon, gcc 13. Routines probed: `mkl_?potrf_compact`,
-`mkl_?getrfnp_compact`, `mkl_?geqrf_compact`, `mkl_?getrinp_compact`, plus
-`mkl_?trsm_compact` for threading only.
+**Checked against one MKL version only.** Everything here was measured on:
+
+    Intel(R) Math Kernel Library Version 2020.0.4 Product Build 20200917
+    (Debian/Ubuntu package libmkl-dev 2020.4.304-4, LP64 interface)
+
+on a 4-core AVX-512 Xeon with gcc 13, in September 2026. Newer oneMKL releases
+(2021 and later, which renamed and re-packaged the library) may change any of
+it: the workspace formula, whether `lwork` is checked, which arguments tolerate
+a null pointer, the threading behavior, and the exit-time crash with libgomp.
+Treat the findings as facts about 2020.0.4 and as *hypotheses* about any other
+version; section 6 describes how to re-run the probes, and
+`mkl_get_version_string()` reports the version actually linked.
+
+Routines probed: `mkl_?potrf_compact`, `mkl_?getrfnp_compact`,
+`mkl_?geqrf_compact`, `mkl_?getrinp_compact`, plus `mkl_?trsm_compact` for
+threading only.
 
 ## 1. Every pointer argument is mandatory
 
@@ -88,7 +100,7 @@ Consequences:
   internally threaded whole-batch throughput at 4 threads matches the per-group
   loop's (143k vs 147k matrices/s at n=64, 1.12M vs 1.06M at n=32). It only
   costs MKL at n~8, where per-call overhead is comparable to the work.
-- **`mkl_gnu_thread` + libgomp crashes at exit** on this MKL version: every
+- **`mkl_gnu_thread` + libgomp crashes at exit** on MKL 2020.0.4: every
   probe linked that way segfaulted in `_dl_fini` after `main` returned, with
   results already correct (stdout must be unbuffered to see them). Under ctest
   that is a failed test. Switching the build to the threaded layer would need
