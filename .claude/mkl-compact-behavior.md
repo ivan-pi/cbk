@@ -113,8 +113,8 @@ AVX-512 format, best of five:
   crashed the first threaded probe). Under `mkl_sequential`,
   `mkl_set_num_threads` is accepted and ignored, `mkl_get_max_threads()` stays
   1, and the query stays `n * V`.
-- **The repo currently links the sequential layer** (`BLA_VENDOR=Intel10_64lp_seq`
-  in CMake and CI) and the benchmarks thread over groups with their own OpenMP
+- **The repo currently links the sequential layer** (the default
+  `MKLCompact_THREADING=sequential`) and the benchmarks thread over groups with their own OpenMP
   loop, so every path (cqr, MKL compact, per-matrix LAPACK) runs on the same
   caller-controlled thread count. Measured against MKL's internal threading
   that loop is a fair proxy at n >= 16 (whole-batch at 4 threads: 143k vs 147k
@@ -124,7 +124,7 @@ AVX-512 format, best of five:
   stream the batch through each step separately and lose the per-group
   temporal locality that the per-group loop keeps.
 - **The threaded layer works with GCC and clang.** Built with
-  `-DMKLCompact_THREADING=gnu` (`mkl_gnu_thread` plus the compiler's own OpenMP
+  `-DMKLCompact_THREADING=threaded` (`mkl_gnu_thread` plus the compiler's own OpenMP
   library), the full test suite passes under g++ and clang++. "gnu" names the
   GOMP ABI, not libgomp: `libmkl_gnu_thread.so` declares no libgomp dependency
   and resolves its `GOMP_*`/`omp_*` calls from whatever the process provides.
@@ -183,9 +183,11 @@ outside any region: 69 ms per batch on 1 thread, 18 ms on 4. Identical on
 `cmake/FindMKLCompact.cmake` locates MKL directly (it no longer goes through
 FindBLAS, which only ever worked for `BLA_VENDOR=Intel10_*` and, on a C/C++
 project, paired `mkl_intel_thread` with an `iomp5` it could not find).
-`-DMKLCompact_THREADING=sequential|gnu|intel` picks the layer, `gnu` being the
-one to use with GCC or clang; `intel` needs an Intel compiler so that cqr's
-loops and MKL share `libiomp5`. See `.claude/mkl-install.md`.
+`-DMKLCompact_THREADING=threaded` links MKL's OpenMP layer for the compiler's
+own runtime: `mkl_gnu_thread` under GCC and clang (the GOMP ABI), and
+`mkl_intel_thread` with `libiomp5` under an Intel compiler, so the process
+never carries two OpenMP runtimes. Intel's `MKLConfig.cmake` is deliberately
+not used (its header comment says why). See `.claude/mkl-install.md`.
 
 ## 4. `geqrf` compared with cqr's
 

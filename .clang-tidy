@@ -1,7 +1,7 @@
 # clang-tidy, run by hand or in CI against the compile database of a
 # configured build tree:
 #
-#   CXX=clang++ cmake -S . -B build-tidy -DBLA_VENDOR=Intel10_64lp_seq
+#   CXX=clang++ cmake -S . -B build-tidy
 #   pre-commit run --hook-stage manual clang-tidy --all-files
 #
 # (a clang-configured tree: see the clang-tidy entry of

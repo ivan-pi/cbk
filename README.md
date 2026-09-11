@@ -58,7 +58,7 @@ every width. That is the project's central SIMD decision.
 MKL extension no other BLAS provides): the distro package is found on its own,
 and a oneAPI install is selected with `MKLROOT` or `-DMKLCompact_ROOT=<prefix>`
 (headers and libraries are taken from that one installation). The sequential
-MKL layer is the default; `-DMKLCompact_THREADING=gnu` links MKL's internally
+MKL layer is the default; `-DMKLCompact_THREADING=threaded` links MKL's internally
 threaded layer instead. See `.claude/mkl-install.md`.
 
 ```sh
