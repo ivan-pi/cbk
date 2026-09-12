@@ -19,9 +19,6 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
 - **Benchmarked:** `bench_geqrf_compact`.
 - **Scoped out (design 6.6):** `dlarfg` rescaling, column pivoting, blocked
   (`larft`/`larfb`) factorization at the target sizes.
-- **Done:** the one-pass `[A | B]` reduction, as `geqrf_panel_compact_group`
-  (see gels). The plain kernel's signature and generated code are unchanged: a
-  flag parameter, even compiled out, cost it 8-13% under GCC.
 - **Deferred:** a benchmark against `batmat`'s `geqrf` (same interleaved
   format).
 
@@ -191,8 +188,7 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **MKL Compact contract.** `.claude/mkl-compact-behavior.md` records what
   MKL's own compact routines were measured to do (`info` and `work` mandatory,
   `lwork` unchecked, `n*V` scratch per thread, internal threading only under
-  the threaded layer). The wrappers follow it; cbk's own workspace policy for
-  `gels` may still change.
+  the threaded layer). The wrappers follow it.
 - **No install/export.** No `install()`/package-config rules; the project is
   not consumable via `find_package(cbk)`.
 - **Alignment.** Compact buffers are correct at any `T` alignment on GCC and
