@@ -19,8 +19,6 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
 - **Benchmarked:** `bench_geqrf_compact`.
 - **Scoped out (design 6.6):** `dlarfg` rescaling, column pivoting, blocked
   (`larft`/`larfb`) factorization at the target sizes.
-- **Deferred:** a benchmark against `batmat`'s `geqrf` (same interleaved
-  format).
 
 ## ormqr
 
