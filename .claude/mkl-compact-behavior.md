@@ -141,7 +141,7 @@ AVX-512 format, best of five:
   section 2, surfacing as heap corruption at `exit()`. With correctly sized
   buffers the same programs exit cleanly. (Two OpenMP runtimes in one process,
   libgomp for cqr's loops and libiomp5 for `mkl_intel_thread`, remain invalid;
-  the find module warns when a non-Intel compiler selects `intel`.)
+  the find module picks MKL's layer from the compiler so that cannot happen.)
 
 ### 3a. Calls from inside an OpenMP parallel region
 

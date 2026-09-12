@@ -61,6 +61,17 @@ and a oneAPI install is selected with `MKLROOT` or `-DMKLCompact_ROOT=<prefix>`
 MKL layer is the default; `-DMKLCompact_THREADING=threaded` links MKL's internally
 threaded layer instead. See `.claude/mkl-install.md`.
 
+> **Workspace sizes under a threaded MKL.** Compact routines take their
+> workspace from the caller so that nothing is allocated on the hot path, and
+> none of them checks `lwork`: an undersized buffer is an out-of-bounds write,
+> not an error. With `MKLCompact_THREADING=threaded`, MKL's own `?geqrf_compact`
+> and `?getrinp_compact` size that workspace *per thread* -- their `lwork = -1`
+> query returns `n * V * mkl_get_max_threads()` -- so query and call under the
+> same thread count, and never reuse a buffer sized under fewer threads.
+> `cqr_mkl_?gels_compact` also uses `work` (as the `tau` scratch of its
+> factorization, `min(m,n) * V * ceil(nm/V)` scalars, independent of the thread
+> count); size it from its own query. The other cqr routines need no scratch.
+
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j

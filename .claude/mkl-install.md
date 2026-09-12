@@ -44,10 +44,10 @@ still no `mkl_?ormqr_compact`.
 
 ### Building the repo against it
 
-`cmake/FindMKLCompact.cmake` locates MKL directly and takes headers and
-libraries from one installation (the library dir is derived from where
-`mkl_compact.h` was found), so with `libmkl-dev` also installed there is no
-mixed build. Point it at oneAPI with either form:
+`cmake/FindMKLCompact.cmake` locates MKL directly and searches headers and
+libraries in the same prefix order (package root, `$MKLROOT`, default paths,
+`/opt/intel/oneapi/mkl/latest`), so with `libmkl-dev` also installed there is
+no mixed build. Point it at oneAPI with either form:
 
 ```sh
 MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCMAKE_BUILD_TYPE=Release
@@ -88,17 +88,27 @@ sequential-layer probes here also linked and ran fine without
 `-Wl,--no-as-needed`; `cmake/FindMKLCompact.cmake` links the same libraries by
 full path, which needs neither the flag nor the group.
 
-### Threading layer
+### Build options
 
-`-DMKLCompact_THREADING=sequential` (default) links `mkl_sequential`;
-`threaded` links MKL's OpenMP layer for the compiler's own OpenMP runtime:
-`mkl_gnu_thread` under g++ (libgomp) and under clang++ (LLVM's libomp, which
-exports the GOMP entry points, so no libgomp is loaded -- unlike Intel's
-`MKLConfig.cmake`, which links `-lgomp` for this layer), and `mkl_intel_thread`
-with `libiomp5` under an Intel compiler. The full test suite passes threaded
-under g++ and clang++. Under a threaded layer remember that MKL's workspace
-query scales with its thread count (see `.claude/mkl-compact-behavior.md`).
-`-DMKLCompact_INTERFACE=ilp64` selects the ILP64 interface (and defines
-`MKL_ILP64`). `BLA_VENDOR` is not read: no other BLAS has the compact API, and
-a stale `-DBLA_VENDOR=...` on the command line only draws CMake's
-"manually-specified variables were not used" warning.
+- **`-DMKLCompact_THREADING=sequential`** (default): links `mkl_sequential`.
+  MKL runs single-threaded inside each call; cqr's own group loops provide the
+  parallelism. This is what CI and the benchmarks use.
+- **`-DMKLCompact_THREADING=threaded`**: links MKL's OpenMP layer matched to
+  the compiler's own OpenMP runtime, so a process never carries two runtimes:
+  - g++: `mkl_gnu_thread` on libgomp.
+  - clang++: `mkl_gnu_thread` on LLVM's libomp, which exports the GOMP entry
+    points; no libgomp is loaded (Intel's `MKLConfig.cmake` would add `-lgomp`
+    here).
+  - Intel compilers: `mkl_intel_thread` on `libiomp5`.
+  The full test suite passes threaded under g++ and clang++. MKL's workspace
+  query then scales with its thread count, and `lwork` is never checked: size
+  every buffer from a query made under the thread count of the call (README,
+  "Build"; `.claude/mkl-compact-behavior.md`, section 2).
+- **`-DMKLCompact_INTERFACE=lp64`** (default) or **`ilp64`**: the integer
+  interface; `ilp64` also defines `MKL_ILP64` on the headers target.
+- **`-DMKLCompact_ROOT=<prefix>`** or **`MKLROOT`** in the environment: the
+  installation to use when more than one is present or none is on the default
+  paths.
+- **`BLA_VENDOR`** is not read. No other BLAS has the compact API, and a stale
+  `-DBLA_VENDOR=...` only draws CMake's "manually-specified variables were not
+  used" warning.
