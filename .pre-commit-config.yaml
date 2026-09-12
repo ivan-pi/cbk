@@ -32,7 +32,7 @@ repos:
   # clang-tidy needs the compile database of a configured build tree, so
   # it is not run on every commit:
   #
-  #   CXX=clang++ cmake -S . -B build-tidy -DBLA_VENDOR=Intel10_64lp_seq
+  #   CXX=clang++ cmake -S . -B build-tidy
   #   pre-commit run --hook-stage manual clang-tidy --all-files
   #
   # The tree is configured with clang, and the clang-tidy is the one from

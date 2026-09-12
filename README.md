@@ -54,12 +54,26 @@ every width. That is the project's central SIMD decision.
 
 ## Build
 
-The `*_compact` symbols are reached through the BLAS link line, so the BLAS is
-selected with CMake's standard `BLA_VENDOR` mechanism (only MKL provides the
-compact API; other vendors stop with a fatal error).
+`cmake/FindMKLCompact.cmake` locates Intel MKL directly (the compact API is an
+MKL extension no other BLAS provides): the distro package is found on its own,
+and a oneAPI install is selected with `MKLROOT` or `-DMKLCompact_ROOT=<prefix>`
+(headers and libraries are taken from that one installation). The sequential
+MKL layer is the default; `-DMKLCompact_THREADING=threaded` links MKL's internally
+threaded layer instead. See `.claude/mkl-install.md`.
+
+> **Workspace sizes under a threaded MKL.** Compact routines take their
+> workspace from the caller so that nothing is allocated on the hot path, and
+> none of them checks `lwork`: an undersized buffer is an out-of-bounds write,
+> not an error. With `MKLCompact_THREADING=threaded`, MKL's own `?geqrf_compact`
+> and `?getrinp_compact` size that workspace *per thread* -- their `lwork = -1`
+> query returns `n * V * mkl_get_max_threads()` -- so query and call under the
+> same thread count, and never reuse a buffer sized under fewer threads.
+> `cqr_mkl_?gels_compact` also uses `work` (as the `tau` scratch of its
+> factorization, `min(m,n) * V * ceil(nm/V)` scalars, independent of the thread
+> count); size it from its own query. The other cqr routines need no scratch.
 
 ```sh
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
@@ -69,8 +83,7 @@ For a performance build, pass host-tuned optimization flags through
 same AVX-512 MKL selects at runtime):
 
 ```sh
-cmake -S . -B build -DBLA_VENDOR=Intel10_64lp_seq -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
 Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL) and

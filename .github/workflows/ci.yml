@@ -42,7 +42,6 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCQR_WITH_MKL=${{ matrix.mkl }}
-          -DBLA_VENDOR=Intel10_64lp_seq
 
       - name: Build
         run: cmake --build build -j

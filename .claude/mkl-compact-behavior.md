@@ -19,9 +19,9 @@ measured on both of:
 LP64 interface, on a 4-core AVX-512 Xeon (1 MiB L2 per core, 33 MiB L3) with
 gcc 13, in September 2026. Every finding below -- the null-pointer crashes, the
 `info` values, the workspace formula and its thread scaling, the unchecked
-`lwork`, the leftover `work[0]`, zero internal allocation, internal threading,
-and the exit-time crash -- came out identical on the two versions, so this
-behavior has been stable across the MKL-to-oneMKL transition. It is still
+`lwork`, the leftover `work[0]`, zero internal allocation, and internal
+threading -- came out identical on the two versions, so this behavior has been
+stable across the MKL-to-oneMKL transition. It is still
 measured behavior, not a documented contract: re-run the probes of section 5
 on any other version before relying on it, and `mkl_get_version_string()`
 reports the version actually linked.
@@ -113,8 +113,8 @@ AVX-512 format, best of five:
   crashed the first threaded probe). Under `mkl_sequential`,
   `mkl_set_num_threads` is accepted and ignored, `mkl_get_max_threads()` stays
   1, and the query stays `n * V`.
-- **The repo currently links the sequential layer** (`BLA_VENDOR=Intel10_64lp_seq`
-  in CMake and CI) and the benchmarks thread over groups with their own OpenMP
+- **The repo currently links the sequential layer** (the default
+  `MKLCompact_THREADING=sequential`) and the benchmarks thread over groups with their own OpenMP
   loop, so every path (cqr, MKL compact, per-matrix LAPACK) runs on the same
   caller-controlled thread count. Measured against MKL's internal threading
   that loop is a fair proxy at n >= 16 (whole-batch at 4 threads: 143k vs 147k
@@ -123,14 +123,25 @@ AVX-512 format, best of five:
   (`bench_qr_compact`'s factor -> apply -> solve per group): whole-batch calls
   stream the batch through each step separately and lose the per-group
   temporal locality that the per-group loop keeps.
-- **Exit-time crash with `mkl_gnu_thread`.** A main program compiled with
-  `-fopenmp` (libgomp) and linked against `mkl_gnu_thread` segfaults in
-  `_dl_fini` after `main` returns, on both 2020.0.4 and 2026.1, with results
-  already correct (stdout must be unbuffered to see them). The same program
-  without `-fopenmp` exits cleanly. Under ctest that crash is a failed test.
-  (Loading two OpenMP runtimes in one process -- libgomp for cqr's launcher
-  and libiomp5 for `mkl_intel_thread` -- is never valid; a probe that did so
-  during this investigation is disregarded.)
+- **The threaded layer works with GCC and clang.** Built with
+  `-DMKLCompact_THREADING=threaded` (`mkl_gnu_thread` plus the compiler's own OpenMP
+  library), the full test suite passes under g++ and clang++. "gnu" names the
+  GOMP ABI, not libgomp: `libmkl_gnu_thread.so` declares no libgomp dependency
+  and resolves its `GOMP_*`/`omp_*` calls from whatever the process provides.
+  Under g++ that is libgomp; under clang++ it is LLVM's libomp, which exports
+  the `GOMP_*` entry points -- verified with `LD_DEBUG=bindings` on the geqrf
+  test: `GOMP_parallel_start`, `GOMP_barrier` and `omp_get_max_threads` bind
+  to `libomp.so.5`, and libgomp is never mapped. One runtime either way. (Intel's
+  `MKLConfig.cmake` links `-lgomp` for this layer, which under clang would load
+  a second runtime; the find module links `OpenMP_CXX_LIBRARIES` instead.) A
+  cautionary tale from this
+  investigation: the first threaded probes "crashed at exit" and were blamed on
+  libgomp; the real cause was the probe's own `work` buffer, sized for one
+  thread's `n*V` slice while MKL ran on four -- the out-of-bounds write of
+  section 2, surfacing as heap corruption at `exit()`. With correctly sized
+  buffers the same programs exit cleanly. (Two OpenMP runtimes in one process,
+  libgomp for cqr's loops and libiomp5 for `mkl_intel_thread`, remain invalid;
+  the find module picks MKL's layer from the compiler so that cannot happen.)
 
 ### 3a. Calls from inside an OpenMP parallel region
 
@@ -169,14 +180,14 @@ outside any region: 69 ms per batch on 1 thread, 18 ms on 4. Identical on
 
 ### 3b. Selecting the threaded layer
 
-With CMake, `-DBLA_VENDOR=Intel10_64lp` asks FindBLAS for the threaded layer.
-On a C/C++-only project FindBLAS 3.28 pairs `mkl_intel_thread` with `iomp5`
-(it picks `mkl_gnu_thread` + `gomp` only when a GNU Fortran compiler is
-enabled); if `libiomp5` is not on the library path the link still succeeds
-and the binary segfaults at startup. Any threaded build of this repo must
-settle on one OpenMP runtime for cqr's launcher and MKL alike. With Intel's
-compilers that is the `-qmkl=parallel` / `-qmkl=sequential` flag (per Intel's
-compiler documentation; not verified here, no Intel compiler is installed).
+`cmake/FindMKLCompact.cmake` locates MKL directly (it no longer goes through
+FindBLAS, which only ever worked for `BLA_VENDOR=Intel10_*` and, on a C/C++
+project, paired `mkl_intel_thread` with an `iomp5` it could not find).
+`-DMKLCompact_THREADING=threaded` links MKL's OpenMP layer for the compiler's
+own runtime: `mkl_gnu_thread` under GCC and clang (the GOMP ABI), and
+`mkl_intel_thread` with `libiomp5` under an Intel compiler, so the process
+never carries two OpenMP runtimes. Intel's `MKLConfig.cmake` is deliberately
+not used (its header comment says why). See `.claude/mkl-install.md`.
 
 ## 4. `geqrf` compared with cqr's
 
@@ -235,5 +246,6 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 - **Nesting**: call from inside a 2-thread region and compare
   `CLOCK_PROCESS_CPUTIME_ID` to wall time across the region; ~2 means the outer
   threads alone worked, ~4 means MKL spawned teams underneath.
-- Use `setvbuf(stdout, NULL, _IONBF, 0)` in any threaded-layer probe, or the
-  exit-time crash swallows the buffered output.
+- Use `setvbuf(stdout, NULL, _IONBF, 0)` in probes: a heap-corruption crash at
+  `exit()` (an undersized `work`, say) otherwise swallows the buffered output
+  and looks like a runtime problem.
