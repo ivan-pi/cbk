@@ -13,18 +13,18 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 
 | Program | Measures | Compares |
 |---------|----------|----------|
-| [`bench_geqrf_compact`](#bench_geqrf_compact) | QR *factorization* | `cqr_mkl_dgeqrf_compact` vs `mkl_dgeqrf_compact` vs `LAPACKE_dgeqrf` |
-| [`bench_potrf_compact`](#bench_potrf_compact) | Cholesky *factorization* (SPD) | `cqr_mkl_dpotrf_compact` vs `mkl_dpotrf_compact` vs `LAPACKE_dpotrf` |
+| [`bench_geqrf_compact`](#bench_geqrf_compact) | QR *factorization* | `cbk_dgeqrf_compact` vs `mkl_dgeqrf_compact` vs `LAPACKE_dgeqrf` |
+| [`bench_potrf_compact`](#bench_potrf_compact) | Cholesky *factorization* (SPD) | `cbk_dpotrf_compact` vs `mkl_dpotrf_compact` vs `LAPACKE_dpotrf` |
 | [`bench_qr_compact`](#bench_qr_compact) | end-to-end QR *solve* `AX = B` | fully-open compact pipeline (three steps, and the one-call `gels`) vs MKL's pipeline vs per-matrix LAPACK (the three-step chain, and `LAPACKE_dgels`) |
-| [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cqr_mkl_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
-| [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cqr_mkl_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
+| [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cbk_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
+| [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cbk_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
 the same folder; see [`docs/examples.md`](../docs/examples.md).
 
 ## Running them
 
-The benchmarks are built by the MKL build, `-DCQR_WITH_MKL=ON` (see
+The benchmarks are built by the MKL build, `-DCBK_WITH_MKL=ON` (see
 [`docs/building.md`](../docs/building.md)). From a configured tree:
 
 ```sh
@@ -42,11 +42,11 @@ compact kernels dispatch to the host's widest vectors (AVX-512) at runtime -- an
 unfair matchup. Pass host-tuned flags so the open kernels emit the full width:
 
 ```sh
-cmake -S . -B build -DCQR_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCBK_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
 Correctness (the gate each benchmark carries) is independent of these flags; only
-throughput changes. Threading: the factorization benchmarks' cqr paths hand the
+throughput changes. Threading: the factorization benchmarks' cbk paths hand the
 whole pool to one call and let the library thread its loop over groups
 ([`docs/threading.md`](../docs/threading.md)). The MKL compact paths link
 sequential MKL (no internal threading; `mkl_set_num_threads(1)` pins it
@@ -90,18 +90,18 @@ bench_potrf_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [
 Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR
 (`X = R^-1 Q^T B`, single RHS), five ways:
 
-* **MKL batched** -- `mkl_dgeqrf_compact` -> `cqr_mkl_dormqr_compact` -> `mkl_dtrsm_compact`
-* **cqr batched** -- `cqr_mkl_dgeqrf_compact` -> `cqr_mkl_dormqr_compact` -> `cqr_mkl_dtrsm_compact`
-* **cqr gels** -- `cqr_mkl_dgels_compact`, the three steps as one call per group
+* **MKL batched** -- `mkl_dgeqrf_compact` -> `cbk_dormqr_compact` -> `mkl_dtrsm_compact`
+* **cbk batched** -- `cbk_dgeqrf_compact` -> `cbk_dormqr_compact` -> `cbk_dtrsm_compact`
+* **cbk gels** -- `cbk_dgels_compact`, the three steps as one call per group
 * **unbatched** -- `LAPACKE_dgeqrf` -> `LAPACKE_dormqr` -> `cblas_dtrsm`
 * **dgels** -- `LAPACKE_dgels`, LAPACK's own one-call driver, per matrix
 
-The two three-step batched paths share `cqr_mkl_dormqr_compact` (MKL ships no
-compact `ormqr`), so the cqr path runs the whole solve with *no* MKL compute
-kernel and the cqr-vs-MKL ratio is the end-to-end open-vs-MKL comparison. The
+The two three-step batched paths share `cbk_dormqr_compact` (MKL ships no
+compact `ormqr`), so the cbk path runs the whole solve with *no* MKL compute
+kernel and the cbk-vs-MKL ratio is the end-to-end open-vs-MKL comparison. The
 gels path runs the same open kernels fused into one call -- the apply-`Q^T`
 folded into the factorization, no separate sweep over the reflectors -- between
-the same pack and unpack, so gels-vs-cqr-batch is what the fusion buys.
+the same pack and unpack, so gels-vs-cbk-batch is what the fusion buys.
 `LAPACKE_dgels` is the like-for-like baseline for the one-call routine (it runs
 the same three steps inside, blocked, plus its norm scaling and rank test), so
 gels-vs-dgels is the headline one-call-vs-one-call batched win; the unbatched
@@ -118,10 +118,10 @@ bench_qr_compact [nmat] [reps]
 Throughput of the end-to-end solve of many symmetric positive-definite systems
 `A_v X_v = B_v` via Cholesky, four ways:
 
-* **cqr fused** -- `cqr_mkl_dposv_compact`: the Cholesky factorization and its
+* **cbk fused** -- `cbk_dposv_compact`: the Cholesky factorization and its
   two-sweep solve, fused per group of `V` matrices, one call on the whole pool
   (the library threads the group loop).
-* **cqr 2-step** -- `cqr_mkl_dpotrf_compact` then `cqr_mkl_dpotrs_compact`: the
+* **cbk 2-step** -- `cbk_dpotrf_compact` then `cbk_dpotrs_compact`: the
   *same* group kernels (bit-identical result), but two whole-pool calls that
   stream the pool twice. fused-vs-2-step is what the fusion buys -- pure memory
   traffic, no arithmetic difference -- so grow the pool past the cache to see
@@ -164,7 +164,7 @@ to `~5e-15`.
 Throughput of the end-to-end solve of many symmetric *indefinite* systems
 `A_v X_v = B_v`, two ways:
 
-* **cqr fused** -- `cqr_mkl_dsysvnp_compact`: the unpivoted LDL^T factorization
+* **cbk fused** -- `cbk_dsysvnp_compact`: the unpivoted LDL^T factorization
   and its three-sweep solve, fused per group of `V` matrices, one call on the
   whole pool (the library threads the group loop).
 * **unbatched** -- `LAPACKE_dsysv`: Bunch-Kaufman LDL^T factor + solve, one
@@ -205,7 +205,7 @@ Both paths recovered the known solution to `~6e-15`.
   `bench_qr_compact`.
 * **Flags (factorization benchmarks).** `--simdlen=2|4|8` forces a narrower
   interleave width than the host default (a wider-than-native width is rejected);
-  `--size-sweep=nmin:nmax[:stride]` switches to a cqr-only throughput scan (no
+  `--size-sweep=nmin:nmax[:stride]` switches to a cbk-only throughput scan (no
   cross-check) to resolve the SIMD "staircase" finely.
 * **Size list.** The default deliberately mixes sizes that are *not* multiples of
   the interleave width `V` (30, 45, 60, 105, 168) with round powers, so the SIMD

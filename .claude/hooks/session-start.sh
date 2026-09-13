@@ -1,7 +1,7 @@
 #!/bin/bash
 # SessionStart hook for Claude Code on the web.
 #
-# Installs what the base image lacks for building, testing and linting cqr.
+# Installs what the base image lacks for building, testing and linting cbk.
 # The image already ships CMake, Ninja, g++, clang, clang-format and
 # clang-tidy.
 #
@@ -67,6 +67,6 @@ else
   echo "session-start: pip install pre-commit failed; format.sh will fall back to clang-format"
 fi
 
-echo "session-start: build with 'cmake -S . -B build -DCQR_WITH_MKL=ON && cmake --build build && ctest --test-dir build' (MKL is off by default)"
+echo "session-start: build with 'cmake -S . -B build -DCBK_WITH_MKL=ON && cmake --build build && ctest --test-dir build' (MKL is off by default)"
 echo "session-start: 'pre-commit run --all-files' checks the style; see .claude/CLAUDE.md"
 echo "session-start: for clang-tidy, 'CXX=clang++ cmake -S . -B build-tidy' then 'pre-commit run --hook-stage manual clang-tidy --all-files'"

@@ -10,10 +10,10 @@
 #ifndef TEST_COMPACT_UTIL_HPP
 #define TEST_COMPACT_UTIL_HPP
 
-#include "cqr_compact.h"
-#include "cqr_compact_common.hpp"
-#include "cqr_matrix_batch.hpp"
-#include "cqr_matrix_view.hpp"
+#include "cbk.h"
+#include "cbk_common.hpp"
+#include "cbk_matrix_batch.hpp"
+#include "cbk_matrix_view.hpp"
 
 #include <cstdio>
 
@@ -28,21 +28,21 @@
 #include <vector>
 #include <algorithm>
 
-namespace cqr::test {
+namespace cbk::test {
 
 // The dense strided view every suite addresses its host-side matrices through
-// (src/cqr_matrix_view.hpp), and the compact analogue the kernels use, which
+// (src/cbk_matrix_view.hpp), and the compact analogue the kernels use, which
 // the pack/unpack helpers below address the interleaved side through
-// (src/cqr_compact_common.hpp).
-using cqr::detail::ConstMatrixView;
-using cqr::detail::mat_view;
-using cqr::detail::MatrixBatch;
-using cqr::detail::MatrixView;
+// (src/cbk_common.hpp).
+using cbk::detail::ConstMatrixView;
+using cbk::detail::mat_view;
+using cbk::detail::MatrixBatch;
+using cbk::detail::MatrixView;
 
-using cqr::detail::for_vlen;
-using cqr::detail::group_stride;
-using cqr::detail::make_const_view;
-using cqr::detail::make_view;
+using cbk::detail::for_vlen;
+using cbk::detail::group_stride;
+using cbk::detail::make_const_view;
+using cbk::detail::make_view;
 
 // The scalar a view addresses. Helpers that only read take the view type
 // itself, so one signature serves MatrixView<T> and ConstMatrixView<T>. The
@@ -343,7 +343,7 @@ template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T
 
 // ----------------------- portable C API, by scalar type ------------
 // compact<T>::geqrf / ormqr / orgqr / potrf / potrs / posv / sytrfnp / sytrsnp
-// / sysvnp / trsm / gels forward to the d/s entry points of cqr_compact.h, so
+// / sysvnp / trsm / gels forward to the d/s entry points of cbk.h, so
 // the templated suites call one name for both precisions; compact<T>::name
 // labels their output.
 
@@ -351,7 +351,7 @@ template <class T> struct compact;
 
 // clang-format off
 // NOLINTBEGIN(bugprone-macro-parentheses): T is a type name, p a token to paste
-#define CQR_TEST_COMPACT_DISPATCH(T, p, label)                                             \
+#define CBK_TEST_COMPACT_DISPATCH(T, p, label)                                             \
 template <> struct compact<T> {                                                            \
     static constexpr const char *name = label;                                             \
     static int geqrf(char lay, int m, int n, T *a, int ld, T *tau, int V, int nm)          \
@@ -388,9 +388,9 @@ template <> struct compact<T> {                                                 
 // NOLINTEND(bugprone-macro-parentheses)
 // clang-format on
 
-CQR_TEST_COMPACT_DISPATCH(double, d, "double")
-CQR_TEST_COMPACT_DISPATCH(float, s, "float")
-#undef CQR_TEST_COMPACT_DISPATCH
+CBK_TEST_COMPACT_DISPATCH(double, d, "double")
+CBK_TEST_COMPACT_DISPATCH(float, s, "float")
+#undef CBK_TEST_COMPACT_DISPATCH
 
 // ----------------------- input generation ----------------------------
 
@@ -551,7 +551,7 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 }
 
 // ----------------------- dense batches and compact packing -----------
-// The dense batches are MatrixBatch (src/cqr_matrix_batch.hpp), shared with
+// The dense batches are MatrixBatch (src/cbk_matrix_batch.hpp), shared with
 // the benchmarks; the suites allocate with the default allocator.
 
 // Compact pack/unpack (matches mkl_?gepack_compact). group g = idx/V, slot
@@ -725,7 +725,7 @@ inline int report_api_checks(const ApiCheck *t, std::size_t n)
 }
 
 // The suites table-test two shared entry-point signatures, each validated by
-// one helper in src/cqr_compact.cpp, so each is one contract with one table:
+// one helper in src/cbk.cpp, so each is one contract with one table:
 //   factor  (layout, uplo, n, ap, ldap, V, nm)            -- ?potrf, ?sytrfnp
 //   solve   (layout, uplo, n, nrhs, ap, ldap, bp, ldbp, V, nm)
 //                                     -- ?potrs, ?posv, ?sytrsnp, ?sysvnp
@@ -817,6 +817,6 @@ inline int finish(int fails)
     return 0;
 }
 
-} // namespace cqr::test
+} // namespace cbk::test
 
 #endif // TEST_COMPACT_UTIL_HPP

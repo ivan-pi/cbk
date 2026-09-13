@@ -3,9 +3,9 @@
  * Throughput benchmark of the end-to-end SPD *solve* A X = B over pools of many
  * small symmetric positive-definite matrices, four ways:
  *
- *   cqr fused    cqr_mkl_dposv_compact     (Cholesky factor + solve fused per
+ *   cbk fused    cbk_dposv_compact     (Cholesky factor + solve fused per
  *                                           group, one call on the pool)
- *   cqr 2-step   cqr_mkl_dpotrf_compact -> cqr_mkl_dpotrs_compact
+ *   cbk 2-step   cbk_dpotrf_compact -> cbk_dpotrs_compact
  *                                          (the same group kernels, but two
  *                                           whole-pool calls streaming the
  *                                           pool twice)
@@ -21,12 +21,12 @@
  * memory traffic differs (each group's factor solved with while cache-resident
  * vs the pool streamed once for the factorization and again for the solve), so
  * the ratio isolates the design decision of the fused driver -- grow the pool
- * past the cache to see it. cqr vs mkl-compact is the open-vs-MKL comparison of
- * the same batched pipeline; cqr vs LAPACK the batched-vs-conventional headline.
+ * past the cache to see it. cbk vs mkl-compact is the open-vs-MKL comparison of
+ * the same batched pipeline; cbk vs LAPACK the batched-vs-conventional headline.
  *
  * To measure the solvers rather than data movement, the pool is packed into
  * compact form once, up front (A and B); only the solve is timed, and the
- * destroyed input is restored (untimed) before each pass. The cqr calls thread
+ * destroyed input is restored (untimed) before each pass. The cbk calls thread
  * their own loop over groups; MKL's compact kernels are not threaded here
  * (sequential MKL), so its pipeline and the per-matrix LAPACK path are driven
  * from an OpenMP loop of the same thread count. Every path is checked against
@@ -36,13 +36,13 @@
  *                            [--simdlen=2|4|8] [nmat] [reps]
  *         (defaults: 1 right-hand side, 512 matrices, 3 reps)
  *
- * With no --size-sweep it runs the 4-way comparison; with it, a cqr-only
+ * With no --size-sweep it runs the 4-way comparison; with it, a cbk-only
  * (fused) throughput scan over the size range. --simdlen forces the interleave
  * width (2/4/8) instead of the host's widest.
  *
- * Build: needs Intel MKL plus this repo's cqr_mkl_ext; wired up by CMakeLists.txt
+ * Build: needs Intel MKL plus this repo's MKL-style API; wired up by CMakeLists.txt
  * as the `bench_posv_compact` target. OpenMP is used when available. For a fair
- * cqr-vs-MKL comparison, build with host-tuned flags (e.g.
+ * cbk-vs-MKL comparison, build with host-tuned flags (e.g.
  * `-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the open compact kernels emit the
  * full vector width, matching MKL's AVX-512 runtime dispatch.
  *
@@ -60,7 +60,7 @@
 
 namespace {
 
-using namespace cqr::bench;
+using namespace cbk::bench;
 
 /* Flop count of the Cholesky solve in GFLOP: the factorization (chol_gflop)
  * plus the 2 n^2 nrhs of the two triangular sweeps. */
@@ -89,8 +89,7 @@ struct Systems {
 void solve_fused(double *ap, double *bp, int n, int nrhs, int nmat, MKL_COMPACT_PACK fmt)
 {
     MKL_INT info;
-    cqr_mkl_dposv_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt,
-                          nmat);
+    cbk_dposv_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt, nmat);
 }
 
 /* The same kernels as two whole-pool calls: the pool is streamed once for the
@@ -100,14 +99,13 @@ void solve_twostep(double *ap, double *bp, int n, int nrhs, int nmat,
                    MKL_COMPACT_PACK fmt)
 {
     MKL_INT info;
-    cqr_mkl_dpotrf_compact(MKL_COL_MAJOR, MKL_LOWER, n, ap, n, &info, fmt, nmat);
-    cqr_mkl_dpotrs_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt,
-                           nmat);
+    cbk_dpotrf_compact(MKL_COL_MAJOR, MKL_LOWER, n, ap, n, &info, fmt, nmat);
+    cbk_dpotrs_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt, nmat);
 }
 
 /* MKL's native compact pipeline: potrf, then the forward and back trsm sweeps
  * (MKL has no compact potrs/posv). Kept per group of V from an OpenMP loop --
- * the same cache-resident structure as the fused cqr path, and the layout
+ * the same cache-resident structure as the fused cbk path, and the layout
  * bench_qr_compact measured 15-55% faster than whole-pool passes -- since
  * MKL's compact kernels are not threaded in this build (sequential MKL). A
  * padded last group is processed at full V; its identity padding is safe in
@@ -148,12 +146,12 @@ void solve_unbatched(double *a, double *b, int n, int nrhs, int nmat)
 void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
                MKL_COMPACT_PACK fmt, int V, int nthreads)
 {
-    std::printf("SPD solve size sweep: cqr_mkl_dposv_compact only (throughput, "
+    std::printf("SPD solve size sweep: cbk_dposv_compact only (throughput, "
                 "no cross-check)\n");
     std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
                 "(SPD, col-major lower, pre-packed)\n\n",
                 nmat, nrhs, reps, V, compact_format_name(fmt), nthreads);
-    std::printf("   n |  total (s) | cqr GFLOP/s |   cqr mat/s\n");
+    std::printf("   n |  total (s) | cbk GFLOP/s |   cbk mat/s\n");
     std::printf("-----+------------+-------------+-------------\n");
 
     for (int n = nmin; n <= nmax; n += stride) {
@@ -196,8 +194,8 @@ int main(int argc, char **argv)
     constexpr std::array sizes = {8,  16,  24,  30,  32,  45,  48,  60, 64,
                                   96, 105, 128, 168, 170, 256, 384, 500};
 
-    std::printf("SPD solve throughput: cqr_mkl_dposv_compact (fused Cholesky factor + "
-                "solve) vs cqr two-step vs MKL compact pipeline vs per-matrix "
+    std::printf("SPD solve throughput: cbk_dposv_compact (fused Cholesky factor + "
+                "solve) vs cbk two-step vs MKL compact pipeline vs per-matrix "
                 "LAPACKE_dposv\n");
     std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
                 "(SPD, col-major lower, pre-packed)\n\n",
@@ -207,8 +205,8 @@ int main(int argc, char **argv)
      * (fused vs the same kernels unfused, vs MKL's pipeline, vs LAPACK). The
      * error column is the fused path's forward error against the known
      * solution; the MKL and LAPACK paths are gated at the same tolerance. */
-    std::printf("   n | cqr GFLOP/s |   cqr mat/s | 2step mat/s |   mkl mat/s | "
-                "lapack mat/s | fus/2st | cqr/mkl | cqr/lap | fwderr(cqr)\n");
+    std::printf("   n | cbk GFLOP/s |   cbk mat/s | 2step mat/s |   mkl mat/s | "
+                "lapack mat/s | fus/2st | cbk/mkl | cbk/lap | fwderr(cbk)\n");
     std::printf("-----+-------------+-------------+-------------+-------------+"
                 "--------------+---------+---------+---------+------------\n");
 
@@ -236,10 +234,10 @@ int main(int argc, char **argv)
          * fused error is taken before the next path's restore overwrites bp
          * (the 2-step path needs no gate of its own -- it is bit-identical to
          * the fused one by construction, which the test suites gate). */
-        double t_cqr = best_time(reps, restore_compact, [&] {
+        double t_cbk = best_time(reps, restore_compact, [&] {
             solve_fused(ap.get(), bp.get(), n, nrhs, nmat, fmt);
         });
-        const double err_cqr = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
+        const double err_cbk = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
         double t_2st = best_time(reps, restore_compact, [&] {
             solve_twostep(ap.get(), bp.get(), n, nrhs, nmat, fmt);
         });
@@ -251,21 +249,21 @@ int main(int argc, char **argv)
             solve_unbatched(a_work.data(), b_work.data(), n, nrhs, nmat);
         });
         const double err_lap = forward_error(b_work.data(), n, nrhs, nmat);
-        check(err_cqr <= 1e-9, "fused compact solve recovers the known solution");
+        check(err_cbk <= 1e-9, "fused compact solve recovers the known solution");
         check(err_mkl <= 1e-9, "MKL compact pipeline recovers the known solution");
         check(err_lap <= 1e-9, "LAPACK solve recovers the known solution");
 
-        const double sp_lap = t_lap / t_cqr;
-        const double sp_2st = t_2st / t_cqr;
-        const double sp_mkl = t_mkl / t_cqr;
-        const double gflops_cqr = nmat * posv_gflop(n, nrhs) / t_cqr;
+        const double sp_lap = t_lap / t_cbk;
+        const double sp_2st = t_2st / t_cbk;
+        const double sp_mkl = t_mkl / t_cbk;
+        const double gflops_cbk = nmat * posv_gflop(n, nrhs) / t_cbk;
         log_speed_vs_lapack += std::log(sp_lap);
         log_speed_vs_2step += std::log(sp_2st);
         log_speed_vs_mkl += std::log(sp_mkl);
         std::printf("%4d | %11.2f | %11.2e | %11.2e | %11.2e | %12.2e | %6.2fx | "
                     "%6.2fx | %6.2fx | %10.2e\n",
-                    n, gflops_cqr, nmat / t_cqr, nmat / t_2st, nmat / t_mkl, nmat / t_lap,
-                    sp_2st, sp_mkl, sp_lap, err_cqr);
+                    n, gflops_cbk, nmat / t_cbk, nmat / t_2st, nmat / t_mkl, nmat / t_lap,
+                    sp_2st, sp_mkl, sp_lap, err_cbk);
     }
 
     std::printf("-----+-------------+-------------+-------------+-------------+"

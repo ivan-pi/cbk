@@ -41,7 +41,7 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCQR_WITH_MKL=${{ matrix.mkl }}
+          -DCBK_WITH_MKL=${{ matrix.mkl }}
 
       - name: Build
         run: cmake --build build -j

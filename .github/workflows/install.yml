@@ -3,8 +3,8 @@ name: Install
 # The install target: configure, build and `cmake --install` into a scratch
 # prefix, static and shared, then .github/check_install.sh verifies the
 # tree (the library and the headers of what was built, the MKL headers only
-# with CQR_WITH_MKL=ON) and builds a downstream project against it with
-# find_package(cqr). One job per MKL setting, so MKL is installed once.
+# with CBK_WITH_MKL=ON) and builds a downstream project against it with
+# find_package(cbk). One job per MKL setting, so MKL is installed once.
 on:
   push:
     branches: [main]
@@ -37,12 +37,12 @@ jobs:
           for shared in OFF ON; do
             cmake -S . -B "build-$shared" -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
-              -DCQR_WITH_MKL=${{ matrix.mkl }} \
+              -DCBK_WITH_MKL=${{ matrix.mkl }} \
               -DBUILD_SHARED_LIBS="$shared" \
-              -DCQR_BUILD_TESTS=OFF
+              -DCBK_BUILD_TESTS=OFF
             cmake --build "build-$shared" -j
             cmake --install "build-$shared" --prefix "$RUNNER_TEMP/prefix-$shared"
-            CQR_CONSUMER_BUILD_DIR="$RUNNER_TEMP/consumer-$shared" \
+            CBK_CONSUMER_BUILD_DIR="$RUNNER_TEMP/consumer-$shared" \
               .github/check_install.sh "$RUNNER_TEMP/prefix-$shared" \
               ${{ matrix.mkl }} "$shared"
           done

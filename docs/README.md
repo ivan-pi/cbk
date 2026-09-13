@@ -30,10 +30,10 @@ SIMD kernel, validation, and the scoped-out extensions:
 
 | Routine | Document |
 |---------|----------|
-| `?geqrf_compact` - QR factorization | [cqr_mkl_dgeqrf_compact_design.md](cqr_mkl_dgeqrf_compact_design.md) |
-| `?ormqr_compact` - apply `Q` / `Q^T` | [cqr_mkl_dormqr_compact_design.md](cqr_mkl_dormqr_compact_design.md) |
-| `?orgqr_compact` - form `Q` | [cqr_mkl_dorgqr_compact_design.md](cqr_mkl_dorgqr_compact_design.md) |
-| `?potrf_compact` / `?potrs_compact` / `?posv_compact` - Cholesky | [cqr_mkl_dpotrf_compact_design.md](cqr_mkl_dpotrf_compact_design.md) |
-| `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` - unpivoted LDL^T | [cqr_mkl_dsytrfnp_compact_design.md](cqr_mkl_dsytrfnp_compact_design.md) |
-| `?trsm_compact` - triangular solve | [cqr_mkl_dtrsm_compact_design.md](cqr_mkl_dtrsm_compact_design.md) |
-| `?gels_compact` - least-squares / minimum-norm solve | [cqr_mkl_dgels_compact_design.md](cqr_mkl_dgels_compact_design.md) |
+| `?geqrf_compact` - QR factorization | [cbk_dgeqrf_compact_design.md](cbk_dgeqrf_compact_design.md) |
+| `?ormqr_compact` - apply `Q` / `Q^T` | [cbk_dormqr_compact_design.md](cbk_dormqr_compact_design.md) |
+| `?orgqr_compact` - form `Q` | [cbk_dorgqr_compact_design.md](cbk_dorgqr_compact_design.md) |
+| `?potrf_compact` / `?potrs_compact` / `?posv_compact` - Cholesky | [cbk_dpotrf_compact_design.md](cbk_dpotrf_compact_design.md) |
+| `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` - unpivoted LDL^T | [cbk_dsytrfnp_compact_design.md](cbk_dsytrfnp_compact_design.md) |
+| `?trsm_compact` - triangular solve | [cbk_dtrsm_compact_design.md](cbk_dtrsm_compact_design.md) |
+| `?gels_compact` - least-squares / minimum-norm solve | [cbk_dgels_compact_design.md](cbk_dgels_compact_design.md) |

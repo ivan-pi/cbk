@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-Working notes for contributors (human or agent) to **cqr**, a library of
+Working notes for contributors (human or agent) to **cbk** (Compact Batch
+Kernels, libcbk; named **cqr** until September 2026), a library of
 batched QR, Cholesky and LDL^T factorizations for many small matrices in the
 compact (interleaved) format: a portable C API over SIMD kernels, plus an
 optional Intel MKL-style API that drops into MKL's compact ecosystem.
@@ -16,16 +17,16 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-`-DCQR_WITH_MKL=ON` adds the MKL-style API, the MKL-backed suites (validated
+`-DCBK_WITH_MKL=ON` adds the MKL-style API, the MKL-backed suites (validated
 against MKL's compact kernels and LAPACK/LAPACKE), the example and the
 benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
 Debian/Ubuntu). Run that build too before pushing changes to the kernels or
 the wrappers: it is the one that cross-checks against MKL.
 
-Both APIs are one library target, `cqr` (`cqr::cqr`); `-DBUILD_SHARED_LIBS=ON`
+Both APIs are one library target, `cbk` (`cbk::cbk`); `-DBUILD_SHARED_LIBS=ON`
 builds it shared. `cmake --install build --prefix <p>` installs it, the
 headers of what was built (the two MKL headers only with the extension), and a
-`find_package(cqr CONFIG)` package (`cmake/cqrConfig.cmake.in`).
+`find_package(cbk CONFIG)` package (`cmake/cbkConfig.cmake.in`).
 CI verifies an install tree and builds the consumer project in
 `tests/install/` against it for every combination (`.github/workflows/install.yml`
 and its `.github/check_install.sh`).
@@ -49,20 +50,20 @@ Correctness is independent of these flags; only throughput changes.
 ## Tree
 
 ```
-include/   public headers: cqr_compact.h (portable C API), cqr_mkl_ext.h
-           (MKL-style API), cqr_mkl_alloc.h (optional RAII mkl_malloc helpers)
-src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
-           shared cqr_compact_common.hpp; posv's and sysvnp's are drivers over
+include/   public headers: cbk.h (portable C API), cbk_compat.h
+           (MKL-style API), cbk_mkl_alloc.h (optional RAII mkl_malloc helpers)
+src/       the templated kernels (cbk_*_compact.hpp, one per routine, on the
+           shared cbk_common.hpp; posv's and sysvnp's are drivers over
            the potrf/potrs and sytrfnp/sytrsnp group kernels), the two adapter
            sources that implement
-           the public headers (cqr_compact.cpp, cqr_mkl_ext.cpp), and
-           cqr_matrix_view.hpp and cqr_matrix_batch.hpp, the dense MatrixView
+           the public headers (cbk.cpp, cbk_compat.cpp), and
+           cbk_matrix_view.hpp and cbk_matrix_batch.hpp, the dense MatrixView
            and the owning MatrixBatch the tests, benchmarks and examples share
            (internal: src/ is on their include path, but the public API stays
            include/)
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
-           the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
+           the compact<T> / compat<T> / mkl<T> / lapack<T> dispatch structs
            (tests/install/: the install check's consumer project and script)
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine, plus the guides README.md indexes
@@ -101,8 +102,8 @@ pushing changes to the kernels.
 
 Hand-aligned tables and compact one-liners that clang-format would expand are
 fenced with `// clang-format off` / `// clang-format on`; leave those fences in
-place. The dispatch macros (`CQR_TEST_*_DISPATCH` in the test headers,
-`CQR_DEFINE_*_ENTRY_POINTS` in the two adapter sources) take a type name as an
+place. The dispatch macros (`CBK_TEST_*_DISPATCH` in the test headers,
+`CBK_DEFINE_*_ENTRY_POINTS` in the two adapter sources) take a type name as an
 argument, which cannot be parenthesized, so they also sit between
 `// NOLINTBEGIN(bugprone-macro-parentheses)` and the matching `NOLINTEND`.
 
@@ -151,7 +152,7 @@ workspace contract, or the benchmarks' threading.
   first written that way (the pivot `d` passed by reference from the caller's
   local) and segfaulted on a `movapd` under clang in the plain Release
   configuration CI uses, while the same source passed every test under gcc.
-  Passing by value is no escape (`-Wpsabi`, see `cqr_compact_common.hpp`).
+  Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
   Instead give the helper the view and the indices and let it load what it
   needs (`potrf_update_block` / `sytrfnp_update_block` do exactly that), or
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
@@ -167,15 +168,15 @@ workspace contract, or the benchmarks' threading.
   ```
 
 - **Threading over groups.** Every all-groups driver is a call to
-  `for_each_group<V>(nm, flops_per_group, body)` (`cqr_compact_common.hpp`):
+  `for_each_group<V>(nm, flops_per_group, body)` (`cbk_common.hpp`):
   a static-schedule `omp parallel for` on at most one thread per group, gated
   by an if-clause. Keep new drivers on it; do not add threading inside a group
   kernel. The gate refuses when nesting is exhausted (that is what makes the
   library compose with a caller's outer parallel loop), when there is a single
   group, or below `parallel_min_flops`.
 - **Two views, one idea.** Compact (packed) operands are addressed through
-  `BatchView` (`src/cqr_compact_common.hpp`), dense host-side ones through
-  `MatrixView` (`src/cqr_matrix_view.hpp`). Both carry the layout as runtime
+  `BatchView` (`src/cbk_common.hpp`), dense host-side ones through
+  `MatrixView` (`src/cbk_matrix_view.hpp`). Both carry the layout as runtime
   strides `(si, sj)`, so one body serves column-major and row-major and a
   transpose is a stride swap. Do not hand-write `A[i + (size_t)j * lda]` in
   new tests, benchmarks or examples -- take a view. `MatrixView` asserts its
@@ -195,7 +196,7 @@ workspace contract, or the benchmarks' threading.
   exception by construction -- it carries strides, not extents, so a kernel
   cannot self-check; the kernels' dimension contract is the portable C API's
   argument validation.
-  Dense batches everywhere are `MatrixBatch` (`src/cqr_matrix_batch.hpp`):
+  Dense batches everywhere are `MatrixBatch` (`src/cbk_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`
   (`examples/bench_util.hpp`) with 64-byte-aligned storage and pair it with
@@ -214,9 +215,9 @@ workspace contract, or the benchmarks' threading.
   own kernel, as `geqrf_panel_compact_group` does. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
-- **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
+- **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
-  API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th
+  API (`cbk.h`) validates LAPACK-style, returning `-j` for a bad j-th
   argument.
 - **Workspace (`lwork`).** Size each routine's `work` from *its own* `lwork = -1`
   query, and give each routine its own buffer. The compact kernels here need no
