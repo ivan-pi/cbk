@@ -49,7 +49,9 @@
  *   - Workspace: ?geqrf, ?ormqr and ?orgqr take work/lwork like their LAPACK
  *     namesakes;
  *     with lwork = -1 the call is a query returning the optimal lwork in
- *     work[0] -- 1, these kernels need no scratch. Always size work from a
+ *     work[0]. Today that is 1 -- the current kernels need no scratch -- but
+ *     that is an implementation detail, not a contract, so never hard-code
+ *     it. Always size work from a
  *     query of the routine you will call, and give each routine its own
  *     buffer: lwork is not checked (no compact routine checks it, MKL's
  *     included), so an undersized work array is a silent overrun. This matters

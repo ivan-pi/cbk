@@ -14,7 +14,9 @@
  *   rounding differently), plus the invariants formed independently --
  *   orthogonality ||Q^T Q - I||_1 <= 100 n eps and reconstruction
  *   ||Q(:,0:k-1) R - A||_1 / ||A||_1 <= 100 m eps. Also checks the
- *   workspace query (work[0] = 1). Runs in both layouts.
+ *   workspace query protocol (work[0] >= 1, and the returned size is what
+ *   the call is given -- the value itself is an implementation detail).
+ *   Runs in both layouts.
  *
  * Suite 2 (vs cqr_mkl_?ormqr_compact on a packed identity, n = k):
  *   The two routes to Q -- orgqr in place over (H, tau), and ormqr('L','N')
@@ -82,16 +84,19 @@ template <class T> int suite1(int nm, int m, int n, int k, bool rowmajor = false
 
     int fails = 0;
 
-    /* workspace query, then the call */
+    /* workspace query (the size is the query's to choose, >= 1), then the
+     * call with a buffer of exactly that size */
     MKL_INT info = 99;
     T wq = T(0);
     cqr_mkl<T>::orgqr(lay, m, n, k, ap, ld, taup, &wq, -1, &info, fmt, nm);
-    if (info != 0 || wq != T(1)) {
+    if (info != 0 || wq < T(1)) {
         ++fails;
-        std::printf("    query: info = %ld, work[0] = %g (expected 0, 1)\n", (long)info,
-                    (double)wq);
+        std::printf("    query: info = %ld, work[0] = %g (expected 0, >= 1)\n",
+                    (long)info, (double)wq);
     }
-    cqr_mkl<T>::orgqr(lay, m, n, k, ap, ld, taup, &wq, (MKL_INT)wq, &info, fmt, nm);
+    std::vector<T> work((size_t)std::max<MKL_INT>((MKL_INT)wq, 1));
+    cqr_mkl<T>::orgqr(lay, m, n, k, ap, ld, taup, work.data(), (MKL_INT)work.size(),
+                      &info, fmt, nm);
     if (info != 0) {
         ++fails;
         std::printf("    info = %ld (expected 0)\n", (long)info);
