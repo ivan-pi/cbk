@@ -21,6 +21,7 @@
 #include <vector>
 #include <limits>
 #include <algorithm>
+#include <type_traits>
 
 #include "test_compact_util.hpp" // compact<T>, scalar references, MatrixBatch, pack/unpack
 
@@ -107,6 +108,71 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     return (info != 0) + !ok_h + !ok_t + !ok_r + !ok_s;
 }
 
+// ------------------------ underflow scope (design 6.6) ---------------
+
+// A column whose sub-diagonal entries are so small that their squares
+// underflow to zero (below the square root of the smallest subnormal, ~1.5e-162
+// in FP64 and ~3.7e-23 in FP32) reads as already triangular: tau = 0, the
+// diagonal stays, and the reflector body below it is scaled by 0 (so the
+// storage holds zeros, which ormqr/orgqr ignore under tau = 0 anyway), rather
+// than taking dlarfg's rescaled path. That is the documented scope, and the
+// factorization it returns is still exact to working precision (the dropped
+// tail is below eps * ||A|| by many orders). This case checks that contract
+// directly -- the scalar reference (std::hypot) does not underflow, so it is
+// not the yardstick here -- and that no lane turns NaN.
+template <class T, int V> static int test_underflow()
+{
+    const int nm = V, m = 6, n = 4, tiny_col = 0; /* no earlier reflector touches it */
+    const T tiny = std::is_same<T, double>::value ? T(1e-170) : T(1e-25);
+    const T eps = std::numeric_limits<T>::epsilon();
+
+    MatrixBatch<T> A(nm, m, n);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_boosted(A.view(idx));
+        for (int i = tiny_col + 1; i < m; ++i)
+            A(idx, i, tiny_col) = tiny * T(i); /* tail of column 0: underflows squared */
+    }
+    std::vector<T> ap = pack_compact(A, m, V);
+    std::vector<T> tp = compact_buffer<T>(nm, n, 1, n, V);
+    int info = compact<T>::geqrf('C', m, n, ap.data(), m, tp.data(), V, nm);
+
+    MatrixBatch<T> Aout(nm, m, n), tau(nm, n, 1);
+    unpack_compact(Aout, ap.data(), m, V);
+    unpack_tau(tau, tp.data(), V);
+
+    int fails = (info != 0);
+    double e_rec = 0;
+    for (int idx = 0; idx < nm; ++idx) {
+        /* column 0 is the first reflector's, so nothing reduces it first: its
+         * tail underflows squared, tau = 0, the diagonal is kept, the body
+         * below it is zeroed */
+        if (tau(idx, tiny_col, 0) != T(0)) ++fails;
+        if (Aout(idx, tiny_col, tiny_col) != A(idx, tiny_col, tiny_col)) ++fails;
+        for (int i = tiny_col + 1; i < m; ++i)
+            if (Aout(idx, i, tiny_col) != T(0)) ++fails;
+        bool finite = true;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < m; ++i)
+                finite = finite && std::isfinite(Aout(idx, i, j));
+        if (!finite) ++fails;
+
+        std::vector<T> Recs((size_t)m * n, T(0));
+        const auto Rec = mat_view(Recs.data(), m, n);
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i <= std::min(j, n - 1); ++i)
+                Rec(i, j) = Aout(idx, i, j);
+        ref_orm2r('N', n, Aout.view(idx), tau[idx], Rec);
+        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
+    }
+    const double tol_rec = 200.0 * eps * m;
+    fails += !(e_rec <= tol_rec);
+    std::printf("T=%-6s V=%-2d underflow column: tau=0, diag kept, body 0, finite %s | "
+                "rec:%.1e %s\n",
+                compact<T>::name, V, fails ? "FAIL" : "OK", e_rec,
+                e_rec <= tol_rec ? "OK" : "FAIL");
+    return fails;
+}
+
 // --------------------- C API argument validation --------------------
 
 static int test_validation()
@@ -139,6 +205,11 @@ int main()
 {
     int fails = 0;
     fails += test_validation();
+    if (cbk_get_version() != CBK_VERSION) {
+        std::printf("cbk_get_version() = %d, header CBK_VERSION = %d FAIL\n",
+                    cbk_get_version(), CBK_VERSION);
+        ++fails;
+    }
 
     // square (the emphasis)
     fails += run_case<double, 2>(4, 30, 30);
@@ -153,6 +224,9 @@ int main()
     // float
     fails += run_case<float, 8>(16, 30, 30);
     fails += run_case<float, 16>(32, 43, 17);
+    // numerical scope: an underflowing column reads as already triangular
+    fails += test_underflow<double, 4>();
+    fails += test_underflow<float, 8>();
 
     return finish(fails);
 }

@@ -184,16 +184,20 @@ The column norm is the direct `sqrt(sum of squares)` -- fast and vectorizable,
 and accurate to working precision across the target range. Rank-deficient and
 already-triangular columns degrade gracefully through the `has` mask (`tau = 0`,
 diagonal preserved). A wide dynamic range across columns is handled to the
-extent the unscaled sum of squares allows: once a column's entries fall below
-roughly `1e-154` (FP64), the squares underflow, the below-diagonal norm reads
-zero, and the column is treated as already triangular (`tau = 0`) instead of
-taking the rescaled slow path LAPACK's `dlarfg` would.
-
-<!-- TODO: review: the paragraph above softens an earlier claim ("down to the
-     FP64 exponent limits ... handled correctly"). The test suites only exercise
-     column scaling to cond = 4 (1e-4); nothing probes the ~1e-154 underflow
-     boundary. Decide whether this wording is the intended scope statement, and
-     whether a targeted extreme-scaling test is worth adding. -->
+extent the unscaled sum of squares allows. Once a column's sub-diagonal entries
+fall below the square root of the smallest subnormal (about `1.5e-162` in FP64,
+`3.7e-23` in FP32), their squares underflow to zero, the below-diagonal norm
+reads zero, and the column is treated as already triangular: `tau = 0`, the
+diagonal is kept, and the reflector body below it is scaled by zero (the
+storage holds zeros, which `?ormqr`/`?orgqr` ignore under `tau = 0` anyway)
+instead of taking the rescaled slow path LAPACK's `dlarfg` would. Between there
+and the square root of the smallest normal (`1.5e-154` FP64) the squares are
+subnormal and the norm carries fewer correct digits. This is a deliberate scope
+limit, not a defect: the factorization returned is still exact to working
+precision (the dropped tail is far below `eps * ||A||`), and the portable
+self-test (7.4) pins the behavior down with a column of `1e-170` (FP64) /
+`1e-25` (FP32) entries. The suites otherwise exercise column scaling to
+`cond = 4` (`1e-4`), the range the target applications span.
 
 Two of Intel's stated [numerical limitations for Compact BLAS and Compact LAPACK
 routines](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/numerical-limits-compact-blas-compact-lapack.html)
@@ -227,19 +231,21 @@ contract:
   `|| R - Q^T A ||_1 / ||A||_1 <= 20 * n * eps`. Because `R` is the strict upper
   triangle, this simultaneously gates lower-triangular leakage (triangularity).
 * **Orthogonality.** Gate `|| Q^T Q - I ||_1 <= 100 * n * eps`.
-* **Elementwise vs LAPACK (diagnostic).** For well-conditioned inputs the
-  reflectors are essentially unique, so the elementwise difference of `(H, tau)`
-  vs `LAPACKE_dgeqrf` is additionally *printed* as a diagnostic -- a sharper
-  regression signal than the residual alone -- but not gated: for rank-deficient
-  inputs the reflectors are not unique and the elementwise difference is
-  meaningless (the backward-stable gates above still hold there).
+* **Elementwise vs LAPACK.** For the dense inputs the reflectors are
+  essentially unique, so the elementwise difference of `(H, tau)` vs
+  `LAPACKE_dgeqrf` (relative to `||A||_1`) is gated at `100 * n * eps` -- a
+  sharper regression signal than the residual alone, and the one that catches a
+  sign-convention slip (observed `~n * eps`). For rank-deficient and
+  near-collinear inputs the reflectors are not unique and the elementwise
+  difference is meaningless, so there it is only printed (the backward-stable
+  gates above still hold).
 
 ### 7.2 Suite 2 -- Cross-check vs `mkl_dgeqrf_compact`
 
 The same packed batch is factored by both `cbk_dgeqrf_compact` and the
 native `mkl_dgeqrf_compact`; the two compact `ap`/`taup` buffers are compared
-elementwise at a small fixed tolerance (`1e-9`; the agreement observed on these
-well-conditioned inputs is at the `1e-14` level). This confirms the two
+elementwise at `100 * n * eps` (the agreement observed on these
+well-conditioned, `O(1)` inputs is a few `eps`). This confirms the two
 implementations match far beyond the backward-error gates -- same sign
 convention, same unblocked math -- without requiring bit-identical arithmetic.
 
@@ -255,8 +261,11 @@ must recover `X`. Gate the forward error `Xhat - X` and the residual
 
 A self-contained test validates the templated kernel directly against a scalar
 reference (`ref_geqr2` / `ref_larfg`) across `(T, V)` combinations and partial
-(padded) final packs, plus the LAPACK-style argument validation of the portable
-C API. It needs no external libraries at all; only the suites above require an
+(padded) final packs, the underflow scope of 6.6 (a column whose tail
+underflows squared comes back with `tau = 0`, its diagonal kept and its body
+zeroed, every lane finite, and the factorization still exact to working
+precision), plus the
+LAPACK-style argument validation of the portable C API. It needs no external libraries at all; only the suites above require an
 MKL installation (for the Compact API). BLAS and LAPACK themselves are assumed
 available, as they are on most platforms -- it is the MKL Compact extension that
 must be installed separately.

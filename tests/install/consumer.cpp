@@ -50,6 +50,11 @@ int main()
     std::vector<double> ap = identity3(V), taup(n * V);
     const int info = dgeqrf_compact('C', n, n, ap.data(), n, taup.data(), V, nm);
     const bool ok_compact = report("cbk.h", info, ap, V);
+    /* The header seen at compile time and the library linked are one version. */
+    const int version = cbk_get_version();
+    const bool ok_version = version == CBK_VERSION;
+    std::printf("cbk_get_version() = %d (header %d), %s\n", version, CBK_VERSION,
+                ok_version ? "ok" : "FAILED");
 
 #ifdef CBK_CONSUMER_WITH_MKL
     const MKL_COMPACT_PACK format = mkl_get_format_compact();
@@ -64,5 +69,5 @@ int main()
     const bool ok_mkl = true;
 #endif
 
-    return ok_compact && ok_mkl ? 0 : 1;
+    return ok_compact && ok_version && ok_mkl ? 0 : 1;
 }

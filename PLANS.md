@@ -17,7 +17,8 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   (`100 n eps`), cross-checking `mkl_dgeqrf_compact` in both layouts, closing
   `AX = B`, and covering rank-deficient / near-collinear inputs.
 - **Benchmarked:** `bench_geqrf_compact`.
-- **Scoped out (design 6.6):** `dlarfg` rescaling, column pivoting, blocked
+- **Scoped out (design 6.6):** `dlarfg` rescaling (the portable test pins the
+  underflow behavior: `tau = 0`, diagonal kept, body zeroed), column pivoting, blocked
   (`larft`/`larfb`) factorization at the target sizes.
 - **Done:** the one-pass `[A | B]` reduction, as `geqrf_panel_compact_group`
   (see gels). The plain kernel's signature and generated code are unchanged: a

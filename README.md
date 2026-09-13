@@ -43,7 +43,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-march=native` lets the kernels use the host's widest vectors; drop it for a
-generic build. Link the `cbk::cbk` target and include `cbk.h`.
+generic build. Link the `cbk::cbk` target and include `cbk.h`; `cbk_get_version()`
+reports the linked library's version (`major * 10000 + minor * 100 + patch`),
+and [CHANGELOG.md](CHANGELOG.md) what each release changed.
 `cmake --install build --prefix <dir>` installs the library, the headers and a
 CMake package (`find_package(cbk CONFIG)`); see [Building](docs/building.md).
 

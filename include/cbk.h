@@ -56,9 +56,21 @@
  * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
  */
 
+/* Version. The macros describe the header; cbk_get_version() the library
+ * linked, as CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 +
+ * CBK_VERSION_PATCH (0.1.0 -> 100), so a consumer can check the two agree. */
+#define CBK_VERSION_MAJOR 0
+#define CBK_VERSION_MINOR 1
+#define CBK_VERSION_PATCH 0
+#define CBK_VERSION                                                                      \
+    (CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 + CBK_VERSION_PATCH)
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* The version of the linked library, encoded as CBK_VERSION is. */
+int cbk_get_version(void);
 
 /* QR factorization: on exit ap holds R (on/above the diagonal) and the
  * Householder vectors (below), taup holds the k = min(m,n) reflector scalars --
