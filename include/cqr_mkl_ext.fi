@@ -36,10 +36,7 @@
 ! so a call to a specific name accepts an array of any rank (or a
 ! starting array element), while the generics need rank-1 actuals --
 ! a rank-1 buffer, or a rank-1 pointer view of a shaped one,
-! p(1:size(a)) => a. (V travels in the format argument, not as a
-! dummy, so these dummies stay assumed-size rank-1 -- unlike the
-! portable cqr_compact.fi, whose dummies carry the compact
-! strides, (v, ldap, *).)
+! p(1:size(a)) => a.
 !
 ! Like MKL's own compact routines these skip argument checking, and
 ! info is a scalar output: 0 on success, -1 for an unrecognized

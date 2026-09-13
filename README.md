@@ -186,17 +186,13 @@ and has no variant). Each routine comes under its two specific names
 interface blocks group each `d`/`s` pair under the generic, and the kind of
 the real arguments selects the specific. One caveat: generic resolution matches
 rank exactly (sequence association applies only once a specific has been
-chosen). The portable interfaces declare their dummies the way LAPACK
-declares `A(LDA,*)`, lifted by the lane dimension: matrices `ap(v, ldap, *)`
-with the columns of every group assumed (pad `nm` up to a multiple of `V`),
-tau `taup(v, min(m, n), *)` with the groups assumed. Only the strides are
-named, so every named extent is exact for every layout and side choice, and
-the generics take rank-3 actuals -- a rank-4 `(V, ld, ncols, ngroups)` batch
-goes through a rank-3 pointer view, `p(1:v, 1:ld, 1:nc*ng) => a`. The
-MKL-style dummies stay rank-1 assumed-size (`V` travels in the `format`
-enumerator, not as a dummy), so those generics take a flat buffer or a
-rank-1 pointer view, `p(1:size(a)) => a`. The specific names of both APIs
-accept an array of any rank, or a starting array element, by sequence
+chosen), and both APIs declare the compact buffers rank-1 assumed-size --
+their in-memory extents depend on the layout and side flags (and on the
+`format` enumerator, for the MKL-style API), so no fixed shape is right for
+every call; LAPACK's `TRSM` declares `A(LDA,*)` for the same reason. The
+generic names therefore take rank-1 actuals: a flat buffer, or a rank-1
+pointer view of a naturally shaped one, `p(1:size(a)) => a`. The specific
+names accept an array of any rank, or a starting array element, by sequence
 association. Compile fixed-form includers at the standard 72-column line
 length.
 `tests/test_cqr_fortran_*` show complete calls of every routine from both

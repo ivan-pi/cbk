@@ -234,18 +234,13 @@ workspace contract, or the benchmarks' threading.
   which `CQR_SINGLE` sets to `c_float`; CMake builds each source as a `_d`
   and an `_s` executable. Generic resolution matches rank exactly --
   sequence association (any rank, or a starting array element) applies only
-  to a call to a specific name, never to choosing one. The portable
-  `cqr_compact.fi` declares its dummies LAPACK-style (`A(LDA,*)` lifted by
-  the lane dimension): matrices `ap(v, ldap, *)` with the columns of every
-  group assumed, tau `taup(v, min(m, n), *)` with the groups assumed. Only
-  the strides are named, and strides do not move with the layout or side
-  flags, so every named extent is exact for every flag choice. Its generics
-  take rank-3 actuals -- a rank-4 `(V, ld, cols, groups)` batch goes
-  through a rank-3 pointer view, `p(1:v, 1:ld, 1:nc*ng) => a`, as the
-  portable test does. The MKL-style files keep rank-1 assumed-size dummies
-  (`V` is a function of `format`, not a dummy), so their generics take
-  rank-1 actuals: a flat buffer, or a rank-1 pointer view
-  (`p(1:size(a)) => a`) as the MKL test uses. Packing is one `reshape(dense, shape(packed),
+  to a call to a specific name, never to choosing one. Both APIs declare the compact
+  buffers rank-1 assumed-size: their in-memory extents depend on the
+  layout/side flags (and on `format`, for the MKL-style API), so no fixed
+  shape is right for every call, and a partial shape would be honest for
+  some calls only. The generics therefore take rank-1 actuals -- a flat
+  buffer, or a rank-1 pointer view of a shaped one (`p(1:size(a)) => a`),
+  as the tests use. Packing is one `reshape(dense, shape(packed),
   pad=..., order=[2,3,1,4])`: ORDER interleaves the lanes and PAD's copies
   fill the padding lanes along the same permuted walk.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
