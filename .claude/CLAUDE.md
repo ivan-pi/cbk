@@ -55,7 +55,9 @@ tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            test_cqr_fortran_* are the Fortran-interface tests: the free-form
            .F90 sources are precision-generic (they call the .fi files'
            generic names; CQR_SINGLE picks wp) and built once per precision,
-           the fixed-form .f/.F includers prove the dual-form layout
+           sharing their scaffolding through test_cqr_fortran_util.inc;
+           the fixed-form .f/.F includers prove the dual-form layout, and
+           check_fi_twins.py keeps the lp64/ilp64 interface twins in step
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine
 ```
@@ -225,8 +227,11 @@ workspace contract, or the benchmarks' threading.
   (MKL's `_lp64`/`_ilp64` interface-file convention; the includer picks the
   one matching the library's `MKLCompact_INTERFACE`): `MKL_INT` dummies and
   `info` are `integer(c_long_long)` there, the enums stay `integer(c_int)`
-  (a C enum does not widen under ILP64), and *nothing else* may differ --
-  edit the two files in step. The MKL Fortran tests are preprocessed
+  (a C enum does not widen under ILP64; one transcription from mkl_types.h
+  lives in `cqr_mkl_enums.fi`, which both twins pull in through a nested
+  INCLUDE), and *nothing else* may differ -- `tests/check_fi_twins.py`
+  (the `fortran_fi_twins` CTest) enforces that, and CMake pins the
+  fixed-form test targets at the 72-column line length the layout needs. The MKL Fortran tests are preprocessed
   (`.F90`/`.F`) and switch include file and integer kind on `CQR_ILP64`,
   which CMake defines under an ilp64 build; CI's ilp64 leg runs them.
   The free-form test programs are precision-generic: they call through the

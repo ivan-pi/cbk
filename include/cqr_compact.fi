@@ -192,8 +192,7 @@
      &    bind(c, name='dtrsm_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
       implicit none
-      character(kind=c_char), value :: layout, side, uplo, transa
-      character(kind=c_char), value :: diag
+      character(kind=c_char), value :: layout, side, uplo, transa, diag
       integer(c_int), value :: m, n, ldap, ldbp, v, nm
       real(c_double), value :: alpha
       real(c_double), intent(in) :: ap(*)
@@ -206,8 +205,7 @@
      &    bind(c, name='strsm_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
       implicit none
-      character(kind=c_char), value :: layout, side, uplo, transa
-      character(kind=c_char), value :: diag
+      character(kind=c_char), value :: layout, side, uplo, transa, diag
       integer(c_int), value :: m, n, ldap, ldbp, v, nm
       real(c_float), value :: alpha
       real(c_float), intent(in) :: ap(*)

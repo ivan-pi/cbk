@@ -2,29 +2,14 @@
 ! compiled as free-form source; the fixed-form twin of this file is
 ! test_cqr_fortran_compact_fixed.f, and compiling both is what verifies the
 ! include file's dual-form layout. Every entry point is called through its
-! bind(c) interface on a small batch and each solve is checked against the
-! exact x the right-hand sides were built from -- the point is that the
-! interface blocks match the C signatures and the link line closes, not the
-! numerics (the C++ suites own those).
-!
-! The test body is precision-generic: it calls through the include file's
-! generic names (geqrf_compact, ...), which resolve against the work
-! precision wp -- set to c_float by the CQR_SINGLE preprocessor guard,
-! default c_double. CMake compiles this source once per precision, so both
-! sets of specifics stay covered.
-!
-! Each compact (interleaved) buffer keeps its natural shape,
-! (V, rows, cols, ngroups), and is built with a single RESHAPE: ORDER
-! walks the result lane-innermost -- which *is* the compact layout -- and
-! PAD's copies complete the partial final group along that same walk,
-! identity matrices for an A operand, zero columns for a B operand.
-! nmat = 3 at V = 2 leaves one padding lane, so the padded-group
-! convention is exercised, not just prepared; its lanes solve identity
-! systems with zero right-hand sides, so the computed solutions compare
-! directly against pack_c of the exact x, padding included. The
-! interfaces declare the compact buffers assumed-size, ap(*), and
-! generic resolution matches rank, so the shaped buffers reach the
-! generic calls through rank-1 pointer views, p(1:size(a)) => a.
+! bind(c) generic name on a small batch and each solve is checked against
+! the exact x the right-hand sides were built from -- the point is that
+! the interface blocks match the C signatures and the link line closes,
+! not the numerics (the C++ suites own those). CMake compiles this source
+! once per work precision wp (CQR_SINGLE selects c_float), and nmat = 3 at
+! V = 2 leaves one padding lane, so the padded-group convention is
+! exercised, not just prepared. The scaffolding (check, fill, pack_c) is
+! shared with the MKL-style test: test_cqr_fortran_util.inc.
 !
 ! Assisted-by: Claude:claude-fable-5
 
@@ -50,47 +35,7 @@ program test_cqr_fortran_compact
 
 contains
 
-   subroutine check(ok, what)
-      logical, intent(in) :: ok
-      character(*), intent(in) :: what
-      if (.not. ok) then
-         print '(2a)', 'FAILED: ', what
-         error stop 1
-      end if
-   end subroutine check
-
-   ! Diagonally dominant symmetric test matrices (usable by every routine:
-   ! QR, Cholesky, LDL^T), lane-dependent so no two matrices are equal, and
-   ! right-hand sides built from a known x.
-   subroutine fill(a, x, b)
-      real(wp), intent(out) :: a(n, n, nmat), x(n, nrhs, nmat)
-      real(wp), intent(out) :: b(n, nrhs, nmat)
-      integer :: i, j, r, im
-      do im = 1, nmat
-         do j = 1, n
-            do i = 1, n
-               a(i, j, im) = 1.0_wp / real(i + j - 1, wp)
-               if (i == j) a(i, j, im) = a(i, j, im) + real(n + im, wp)
-            end do
-         end do
-         do r = 1, nrhs
-            do i = 1, n
-               x(i, r, im) = real(i + n * (r - 1), wp) &
-                             + 0.25_wp * real(im, wp)
-            end do
-         end do
-         b(:, :, im) = matmul(a(:, :, im), x(:, :, im))
-      end do
-   end subroutine fill
-
-   ! Dense (i, j, matrix) -> compact (lane, i, j, group), in one reshape:
-   ! ORDER interleaves the lanes, PAD completes the final group.
-   function pack_c(dense, ncol, pad) result(packed)
-      integer, intent(in) :: ncol
-      real(wp), intent(in) :: dense(n, ncol, nmat), pad(n, ncol)
-      real(wp) :: packed(vw, n, ncol, ng)
-      packed = reshape(dense, shape(packed), pad=pad, order=[2, 3, 1, 4])
-   end function pack_c
+   include 'test_cqr_fortran_util.inc'
 
    subroutine run_tests()
       real(wp) :: a(n, n, nmat), x(n, nrhs, nmat), b(n, nrhs, nmat)
@@ -101,27 +46,22 @@ contains
       real(wp) :: af(vw, n, n, ng), xf(vw, n, nrhs, ng)
       real(wp), pointer :: ap1(:), bp1(:), taup1(:)
       integer(c_int) :: info
-      integer :: i
 
-      call fill(a, x, b)
-      eye = 0.0_wp
-      do i = 1, n
-         eye(i, i) = 1.0_wp
-      end do
-      zed = 0.0_wp
+      call fill(a, x, b, eye, zed)
 
-      ! Rank-1 views for the generic calls (see the header note).
+      ! Rank-1 views for the generic calls: the interfaces declare the
+      ! compact buffers assumed-size, and generic resolution matches rank.
       ap1(1:size(ap)) => ap
       bp1(1:size(bp)) => bp
       taup1(1:size(taup)) => taup
 
       ! The expected compact solution: x in the real lanes, zero in the
       ! padding lanes (identity system, zero right-hand side).
-      xp = pack_c(x, nrhs, zed)
+      xp = pack_c(x, zed)
 
       ! QR chain: geqrf -> ormqr (Q^T) -> trsm (R)
-      ap = pack_c(a, n, eye)
-      bp = pack_c(b, nrhs, zed)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
       info = geqrf_compact('C', n, n, ap1, n, taup1, vw, nmat)
       call check(info == 0, 'geqrf_compact info')
       info = ormqr_compact('T', n, nrhs, n, ap1, n, taup1, bp1, n, vw, nmat)
@@ -132,16 +72,16 @@ contains
       call check(maxval(abs(bp - xp)) < tol, 'QR chain solution')
 
       ! gels: the same square solve in one call
-      ap = pack_c(a, n, eye)
-      bp = pack_c(b, nrhs, zed)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
       info = gels_compact('C', 'N', n, n, nrhs, ap1, n, bp1, n, taup1, &
                           vw, nmat)
       call check(info == 0, 'gels_compact info')
       call check(maxval(abs(bp - xp)) < tol, 'gels solution')
 
       ! Cholesky: potrf, then two triangular solves close A x = b
-      ap = pack_c(a, n, eye)
-      bp = pack_c(b, nrhs, zed)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
       info = potrf_compact('C', 'L', n, ap1, n, vw, nmat)
       call check(info == 0, 'potrf_compact info')
       info = trsm_compact('C', 'L', 'L', 'N', 'N', n, nrhs, &
@@ -153,8 +93,8 @@ contains
       call check(maxval(abs(bp - xp)) < tol, 'potrf + trsm')
 
       ! LDL^T: sytrfnp + sytrsnp, then the fused sysvnp (bit-identical)
-      ap = pack_c(a, n, eye)
-      bp = pack_c(b, nrhs, zed)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
       info = sytrfnp_compact('C', 'L', n, ap1, n, vw, nmat)
       call check(info == 0, 'sytrfnp_compact info')
       info = sytrsnp_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
@@ -162,8 +102,8 @@ contains
       call check(maxval(abs(bp - xp)) < tol, 'sytrfnp + sytrsnp solution')
       af = ap
       xf = bp
-      ap = pack_c(a, n, eye)
-      bp = pack_c(b, nrhs, zed)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
       info = sysvnp_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
       call check(info == 0, 'sysvnp_compact info')
       call check(all(ap == af) .and. all(bp == xf), &

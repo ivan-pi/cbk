@@ -125,7 +125,7 @@ if(CQR_BUILD_TESTS)
   endif()
 
   # Fortran interface tests: the dual-form include files (include/*.fi)
-  # compiled from free-form (.f90) and fixed-form (.f) sources -- compiling
+  # compiled from free-form (.F90) and fixed-form (.f/.F) sources -- compiling
   # both is what verifies the dual-form layout -- then run against the same
   # libraries the C callers link. Opt-in, since they need a Fortran compiler.
   if(CQR_BUILD_FORTRAN_TESTS)
@@ -135,40 +135,62 @@ if(CQR_BUILD_TESTS)
     # libraries, outranks Fortran in linker preference) and adds the Fortran
     # runtime itself, so both languages' runtimes arrive without extra flags.
     #
-    # The free-form sources (.F90) are precision-generic -- generic interfaces
-    # over the .fi files' specific names resolve every call against the work
-    # precision wp -- and are compiled once per precision: CQR_SINGLE sets wp
-    # to c_float (default c_double). The fixed-form includers (.f/.F) exist
-    # to prove the .fi files read as fixed-form source; one precision there
-    # suffices.
-    set(fortran_tests test_cqr_fortran_compact_d test_cqr_fortran_compact_s
-                      test_cqr_fortran_compact_fixed)
+    # The free-form sources are precision-generic -- the .fi files' generic
+    # names resolve every call against the work precision wp -- and are
+    # compiled once per precision: CQR_SINGLE sets wp to c_float (default
+    # c_double). The fixed-form includers exist to prove the .fi files read
+    # as fixed-form source; one precision there suffices, but they must
+    # compile at the standard 72-column line length -- extended 132-column
+    # fixed form would read the .fi files' column-73 '&' as code.
+    set(fortran_fixed_form_72
+        $<$<COMPILE_LANG_AND_ID:Fortran,GNU>:-ffixed-line-length-72>
+        $<$<COMPILE_LANG_AND_ID:Fortran,Intel,IntelLLVM>:-72>
+        $<$<COMPILE_LANG_AND_ID:Fortran,LLVMFlang>:-ffixed-line-length=72>)
+
+    set(fortran_tests)
     foreach(prec d s)
       add_executable(test_cqr_fortran_compact_${prec} tests/test_cqr_fortran_compact.F90)
-      target_link_libraries(test_cqr_fortran_compact_${prec} PRIVATE cqr_compact)
+      list(APPEND fortran_tests test_cqr_fortran_compact_${prec})
     endforeach()
     target_compile_definitions(test_cqr_fortran_compact_s PRIVATE CQR_SINGLE)
     add_executable(test_cqr_fortran_compact_fixed tests/test_cqr_fortran_compact_fixed.f)
-    target_link_libraries(test_cqr_fortran_compact_fixed PRIVATE cqr_compact)
+    target_compile_options(test_cqr_fortran_compact_fixed PRIVATE ${fortran_fixed_form_72})
+    list(APPEND fortran_tests test_cqr_fortran_compact_fixed)
+    foreach(t IN LISTS fortran_tests)
+      target_link_libraries(${t} PRIVATE cqr_compact)
+    endforeach()
 
     if(CQR_WITH_MKL)
       # The MKL-style tests pack their compact buffers by hand, so they link
       # only cqr_mkl_ext (no MKL: like the header, the .fi needs none). Under
       # an ilp64 library build CQR_ILP64 switches them to cqr_mkl_ext_ilp64.fi
       # and 64-bit MKL_INT actual arguments.
-      list(APPEND fortran_tests test_cqr_fortran_mkl_d test_cqr_fortran_mkl_s
-                                test_cqr_fortran_mkl_fixed)
+      set(fortran_mkl_tests)
       foreach(prec d s)
         add_executable(test_cqr_fortran_mkl_${prec} tests/test_cqr_fortran_mkl.F90)
+        list(APPEND fortran_mkl_tests test_cqr_fortran_mkl_${prec})
       endforeach()
       target_compile_definitions(test_cqr_fortran_mkl_s PRIVATE CQR_SINGLE)
       add_executable(test_cqr_fortran_mkl_fixed tests/test_cqr_fortran_mkl_fixed.F)
-      foreach(t test_cqr_fortran_mkl_d test_cqr_fortran_mkl_s test_cqr_fortran_mkl_fixed)
+      target_compile_options(test_cqr_fortran_mkl_fixed PRIVATE ${fortran_fixed_form_72})
+      list(APPEND fortran_mkl_tests test_cqr_fortran_mkl_fixed)
+      foreach(t IN LISTS fortran_mkl_tests)
         target_link_libraries(${t} PRIVATE cqr_mkl_ext)
         if(MKLCompact_INTERFACE STREQUAL "ilp64")
           target_compile_definitions(${t} PRIVATE CQR_ILP64)
         endif()
       endforeach()
+      list(APPEND fortran_tests ${fortran_mkl_tests})
+
+      # The lp64/ilp64 interface twins must differ only in their MKL_INT
+      # integer kinds; tests/check_fi_twins.py verifies exactly that.
+      find_package(Python3 QUIET COMPONENTS Interpreter)
+      if(Python3_FOUND)
+        add_test(NAME fortran_fi_twins COMMAND Python3::Interpreter
+                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_fi_twins.py"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/include")
+        set_tests_properties(fortran_fi_twins PROPERTIES LABELS "fortran")
+      endif()
     endif()
 
     foreach(t IN LISTS fortran_tests)

@@ -170,6 +170,7 @@ The headers under `include/` are the project's API, the only files users need:
 | `include/cqr_compact.fi` | Fortran interfaces (`bind(c)` interface blocks) for the portable C API. |
 | `include/cqr_mkl_ext.fi` | Fortran interfaces for the MKL-style API, with the `MKL_LAYOUT` / `MKL_UPLO` / `MKL_SIDE` / `MKL_TRANSPOSE` / `MKL_DIAG` / `MKL_COMPACT_PACK` enumerators transcribed from `mkl_types.h` as `enum, bind(c)` (LP64 `MKL_INT`, the default build). |
 | `include/cqr_mkl_ext_ilp64.fi` | The ILP64 variant of `cqr_mkl_ext.fi`, matching a library built with `-DMKLCompact_INTERFACE=ilp64`: `MKL_INT` arguments and `info` are `integer(c_long_long)`; the enums stay `integer(c_int)` (a C enum does not widen under ILP64). |
+| `include/cqr_mkl_enums.fi` | The `mkl_types.h` enumerators, transcribed once and pulled into both MKL-style interface files through a nested `INCLUDE` -- includers never name it themselves, but it must sit next to them. |
 
 The `.fi` files are Fortran `INCLUDE` files, written so the same file reads
 as **fixed-form and free-form** source (statements in columns 7-72, continuations

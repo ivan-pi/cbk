@@ -1,8 +1,11 @@
 ! Fixed-form includer of cqr_mkl_ext.fi: compiling this file is what
 ! proves the interface file reads as fixed-form source too (its twin,
-! test_cqr_fortran_mkl.f90, includes the same file as free form and owns
+! test_cqr_fortran_mkl.F90, includes the same file as free form and owns
 ! the real numerics). Cholesky of identity matrices leaves the factor
-! exactly the identity; an unrecognized pack format reports info = -1.
+! the identity to rounding; an unrecognized pack format reports
+! info = -1. The buffer keeps its compact shape (lane, row, column) and
+! passes to the specific name as it is: a call to a specific accepts
+! any rank by sequence association.
 ! Compiled with CQR_ILP64 defined (an ilp64 library build) the same
 ! test runs through cqr_mkl_ext_ilp64.fi, with integer kind ik for
 ! every MKL_INT actual argument.
@@ -21,8 +24,8 @@
       integer, parameter :: ik = c_int
 #endif
       integer(ik), parameter :: vw = 2, nmat = 2, n = 2
-      real(c_double) :: ap(n*n*nmat)
-      real(c_double), parameter :: tol = 1.0e-14_c_double
+      real(c_double) :: ap(vw, n, n)
+      real(c_double), parameter :: tol = 10*epsilon(1.0_c_double)
       integer(ik) :: info
       integer i, im
 
@@ -31,7 +34,7 @@
       ap = 0.0_c_double
       do im = 1, nmat
          do i = 1, n
-            ap(((i-1)*n + (i-1))*vw + im) = 1.0_c_double
+            ap(im, i, i) = 1.0_c_double
          end do
       end do
 
@@ -40,8 +43,7 @@
       if (info .ne. 0) stop 1
       do im = 1, nmat
          do i = 1, n
-            if (abs(ap(((i-1)*n + (i-1))*vw + im) - 1.0_c_double)
-     &          .gt. tol) stop 2
+            if (abs(ap(im, i, i) - 1.0_c_double) .gt. tol) stop 2
          end do
       end do
 

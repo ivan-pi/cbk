@@ -31,12 +31,10 @@
 !
 ! Each d/s pair is grouped under a precision-generic name as well
 ! (cqr_mkl_geqrf_compact, ...): the kind of the real actual arguments
-! selects the specific. Generic resolution matches rank exactly:
-! sequence association applies only once a specific has been chosen,
-! so a call to a specific name accepts an array of any rank (or a
-! starting array element), while the generics need rank-1 actuals --
-! a rank-1 buffer, or a rank-1 pointer view of a shaped one,
-! p(1:size(a)) => a.
+! selects the specific. As in cqr_compact.fi (which carries the full
+! rationale), the generics need rank-1 actuals -- a flat buffer, or a
+! rank-1 pointer view, p(1:size(a)) => a -- while a call to a
+! specific name accepts any rank by sequence association.
 !
 ! Like MKL's own compact routines these skip argument checking, and
 ! info is a scalar output: 0 on success, -1 for an unrecognized
@@ -46,33 +44,10 @@
 ! documents the workspace contract; ?gels's work is its tau scratch
 ! and holds tau on exit).
 
-! Enumerators transcribed from mkl_types.h
-      enum, bind(c)
-      enumerator :: MKL_ROW_MAJOR = 101
-      enumerator :: MKL_COL_MAJOR = 102
-      end enum
-      enum, bind(c)
-      enumerator :: MKL_NOTRANS = 111
-      enumerator :: MKL_TRANS = 112
-      enumerator :: MKL_CONJTRANS = 113
-      end enum
-      enum, bind(c)
-      enumerator :: MKL_UPPER = 121
-      enumerator :: MKL_LOWER = 122
-      end enum
-      enum, bind(c)
-      enumerator :: MKL_NONUNIT = 131
-      enumerator :: MKL_UNIT = 132
-      end enum
-      enum, bind(c)
-      enumerator :: MKL_LEFT = 141
-      enumerator :: MKL_RIGHT = 142
-      end enum
-      enum, bind(c)
-      enumerator :: MKL_COMPACT_SSE = 181
-      enumerator :: MKL_COMPACT_AVX = 182
-      enumerator :: MKL_COMPACT_AVX512 = 183
-      end enum
+! The MKL_LAYOUT / MKL_UPLO / MKL_SIDE / MKL_TRANSPOSE / MKL_DIAG /
+! MKL_COMPACT_PACK enumerators, transcribed from mkl_types.h once for
+! this file and its ILP64 twin (enums stay int-sized either way):
+      include 'cqr_mkl_enums.fi'
 
 
 ! QR factorization: ap -> (R, Householder vectors), taup -> tau
@@ -83,9 +58,8 @@
       use, intrinsic :: iso_c_binding, only: c_int, c_double
       implicit none
       integer(c_int), value :: layout, m, n, ldap, lwork, format, nm
-      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(inout) :: ap(*), work(*)
       real(c_double), intent(out) :: taup(*)
-      real(c_double), intent(inout) :: work(*)
       integer(c_int), intent(out) :: info
       end subroutine cqr_mkl_dgeqrf_compact
 
@@ -95,9 +69,8 @@
       use, intrinsic :: iso_c_binding, only: c_int, c_float
       implicit none
       integer(c_int), value :: layout, m, n, ldap, lwork, format, nm
-      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(inout) :: ap(*), work(*)
       real(c_float), intent(out) :: taup(*)
-      real(c_float), intent(inout) :: work(*)
       integer(c_int), intent(out) :: info
       end subroutine cqr_mkl_sgeqrf_compact
       end interface cqr_mkl_geqrf_compact
