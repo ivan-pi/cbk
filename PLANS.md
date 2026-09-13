@@ -198,7 +198,5 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   MKL's own compact routines were measured to do (`info` and `work` mandatory,
   `lwork` unchecked, `n*V` scratch per thread, internal threading only under
   the threaded layer). The wrappers follow it.
-- **No install/export.** No `install()`/package-config rules; the project is
-  not consumable via `find_package(cbk)`.
 - **Alignment.** Compact buffers are correct at any `T` alignment on GCC and
   clang (issue #34); pack-width alignment is a performance recommendation only.
