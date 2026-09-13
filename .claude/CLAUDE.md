@@ -235,14 +235,17 @@ workspace contract, or the benchmarks' threading.
   and an `_s` executable. Generic resolution matches rank exactly --
   sequence association (any rank, or a starting array element) applies only
   to a call to a specific name, never to choosing one. The portable
-  `cqr_compact.fi` declares its dummies in the compact shape --
-  `ap(v, ldap, ncols, *)`, `taup(v, min(m, n), *)`, group count assumed;
-  the extents document the column-major, side='L' case and never have to
-  agree with the actual's -- so naturally shaped `(V, rows, cols, ngroups)`
-  arrays go through its generics as they are. The MKL-style files keep
-  rank-1 assumed-size dummies (`V` is a function of `format`, not a dummy),
-  so their generics take rank-1 actuals: a flat buffer, or a rank-1 pointer
-  view (`p(1:size(a)) => a`) as the MKL test uses. Packing is one `reshape(dense, shape(packed),
+  `cqr_compact.fi` declares its dummies LAPACK-style (`A(LDA,*)` lifted by
+  the lane dimension): matrices `ap(v, ldap, *)` with the columns of every
+  group assumed, tau `taup(v, min(m, n), *)` with the groups assumed. Only
+  the strides are named, and strides do not move with the layout or side
+  flags, so every named extent is exact for every flag choice. Its generics
+  take rank-3 actuals -- a rank-4 `(V, ld, cols, groups)` batch goes
+  through a rank-3 pointer view, `p(1:v, 1:ld, 1:nc*ng) => a`, as the
+  portable test does. The MKL-style files keep rank-1 assumed-size dummies
+  (`V` is a function of `format`, not a dummy), so their generics take
+  rank-1 actuals: a flat buffer, or a rank-1 pointer view
+  (`p(1:size(a)) => a`) as the MKL test uses. Packing is one `reshape(dense, shape(packed),
   pad=..., order=[2,3,1,4])`: ORDER interleaves the lanes and PAD's copies
   fill the padding lanes along the same permuted walk.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
