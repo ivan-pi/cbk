@@ -38,6 +38,8 @@ void posv_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap, T
 
     const std::size_t str_a = group_stride(rowmajor, ldap, n, n, V);
     const std::size_t str_b = group_stride(rowmajor, ldbp, n, nrhs, V);
+    /* the work estimate for_each_group's threading gate weighs: both fused steps */
+    const double flops_per_group = potrf_flops(n, V) + potrs_flops(n, nrhs, V);
 
     for_each_group<V>(
         nm,
@@ -48,7 +50,7 @@ void posv_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap, T
             potrs_compact_group<T, V, Int>(rowmajor, upper, n, nrhs, a, ldap,
                                            bp + g * str_b, ldbp);
         },
-        potrf_flops(n, V) + potrs_flops(n, nrhs, V));
+        flops_per_group);
 }
 
 } /* namespace cqr::detail */
