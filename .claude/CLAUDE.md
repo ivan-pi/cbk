@@ -15,6 +15,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-DCQR_WITH_MKL=OFF` builds only the portable kernels (no MKL, no MKL tests).
+`-DCQR_BUILD_FORTRAN_TESTS=ON` adds the Fortran-interface tests (needs a
+Fortran compiler; the `fortran` CTest label selects them).
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
 Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's
@@ -36,7 +38,9 @@ Correctness is independent of these flags; only throughput changes.
 
 ```
 include/   public headers: cqr_compact.h (portable C API), cqr_mkl_ext.h
-           (MKL-style API), cqr_mkl_alloc.h (optional RAII mkl_malloc helpers)
+           (MKL-style API), cqr_mkl_alloc.h (optional RAII mkl_malloc helpers),
+           and their Fortran interfaces cqr_compact.fi / cqr_mkl_ext.fi
+           (dual-form include files, see the convention below)
 src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
            shared cqr_compact_common.hpp; posv's and sysvnp's are drivers over
            the potrf/potrs and sytrfnp/sytrsnp group kernels), the two adapter
@@ -48,7 +52,13 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
            include/)
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
-           the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
+           the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs;
+           test_cqr_fortran_* are the Fortran-interface tests: the free-form
+           .F90 sources are precision-generic (they call the .fi files'
+           generic names; CQR_SINGLE picks wp) and built once per precision,
+           sharing their scaffolding through test_cqr_fortran_util.inc;
+           the fixed-form .f/.F includers prove the dual-form layout, and
+           check_fi_twins.py keeps the lp64/ilp64 interface twins in step
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine
 ```
@@ -95,8 +105,9 @@ argument, which cannot be parenthesized, so they also sit between
 `.claude/settings.json` wires up two hooks:
 
 - `.claude/hooks/session-start.sh` provisions a fresh remote session: Intel MKL,
-  clang's OpenMP runtime, and pre-commit with its hook environments. It does
-  nothing on a developer's own machine.
+  clang's OpenMP runtime, gfortran (for the Fortran-interface tests), and
+  pre-commit with its hook environments. It does nothing on a developer's own
+  machine.
 - `.claude/hooks/format.sh` runs after every `Edit` or `Write`: the pre-commit
   hooks on that one file, so Claude's edits come out the way a commit would.
   clang-format fixes silently; a finding the hooks cannot fix is fed back to
@@ -198,6 +209,46 @@ workspace contract, or the benchmarks' threading.
   own kernel, as `geqrf_panel_compact_group` does. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
+- **Fortran interfaces are dual-form include files.** `include/cqr_compact.fi`
+  and `include/cqr_mkl_ext.fi` hold `bind(c)` interface blocks for the two C
+  APIs (each `d`/`s` pair grouped under a precision-generic name, so both the
+  specifics and `geqrf_compact`-style generics are declared; the MKL enums
+  transcribed as `enum, bind(c)`; `integer(c_int)` for LP64 `MKL_INT`),
+  written so one file
+  INCLUDEs from both fixed-form and free-form sources: statements in columns
+  7-72, a continued line ends with `&` in column 73 (past fixed form's field,
+  a continuation in free form) and its continuation carries `&` in column 6
+  (a continuation in fixed form, stripped in free form), comments start with
+  `!` in column 1. Keep those columns when editing -- CI compiles each file
+  both ways (`tests/test_cqr_fortran_*` in free and fixed form,
+  `-DCQR_BUILD_FORTRAN_TESTS=ON`), which is what enforces the discipline.
+  Every dummy argument is declared under `use, intrinsic :: iso_c_binding`
+  plus `implicit none` inside each interface body.
+  `include/cqr_mkl_ext_ilp64.fi` is the ILP64 twin of `cqr_mkl_ext.fi`
+  (MKL's `_lp64`/`_ilp64` interface-file convention; the includer picks the
+  one matching the library's `MKLCompact_INTERFACE`): `MKL_INT` dummies and
+  `info` are `integer(c_long_long)` there, the enums stay `integer(c_int)`
+  (a C enum does not widen under ILP64; one transcription from mkl_types.h
+  lives in `cqr_mkl_enums.fi`, which both twins pull in through a nested
+  INCLUDE), and *nothing else* may differ -- `tests/check_fi_twins.py`
+  (the `fortran_fi_twins` CTest) enforces that, and CMake pins the
+  fixed-form test targets at the 72-column line length the layout needs. The MKL Fortran tests are preprocessed
+  (`.F90`/`.F`) and switch include file and integer kind on `CQR_ILP64`,
+  which CMake defines under an ilp64 build; CI's ilp64 leg runs them.
+  The free-form test programs are precision-generic: they call through the
+  `.fi` files' generic names and write one body in the work precision `wp`,
+  which `CQR_SINGLE` sets to `c_float`; CMake builds each source as a `_d`
+  and an `_s` executable. Generic resolution matches rank exactly --
+  sequence association (any rank, or a starting array element) applies only
+  to a call to a specific name, never to choosing one. Both APIs declare the compact
+  buffers rank-1 assumed-size: their in-memory extents depend on the
+  layout/side flags (and on `format`, for the MKL-style API), so no fixed
+  shape is right for every call, and a partial shape would be honest for
+  some calls only. The generics therefore take rank-1 actuals -- a flat
+  buffer, or a rank-1 pointer view of a shaped one (`p(1:size(a)) => a`),
+  as the tests use. Packing is one `reshape(dense, shape(packed),
+  pad=..., order=[2,3,1,4])`: ORDER interleaves the lanes and PAD's copies
+  fill the padding lanes along the same permuted walk.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th

@@ -1,0 +1,32 @@
+! cqr_mkl_enums.fi -- the C enums of Intel MKL's mkl_types.h that the
+! MKL-style API takes, transcribed as Fortran enumerators (identical
+! values in MKL 2020.0.4 and oneMKL 2026.1). One transcription, shared
+! by cqr_mkl_ext.fi and cqr_mkl_ext_ilp64.fi through a nested INCLUDE;
+! includers never name this file themselves. Dual-form layout as in
+! cqr_compact.fi: statements in columns 7-72.
+      enum, bind(c)
+      enumerator :: MKL_ROW_MAJOR = 101
+      enumerator :: MKL_COL_MAJOR = 102
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_NOTRANS = 111
+      enumerator :: MKL_TRANS = 112
+      enumerator :: MKL_CONJTRANS = 113
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_UPPER = 121
+      enumerator :: MKL_LOWER = 122
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_NONUNIT = 131
+      enumerator :: MKL_UNIT = 132
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_LEFT = 141
+      enumerator :: MKL_RIGHT = 142
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_COMPACT_SSE = 181
+      enumerator :: MKL_COMPACT_AVX = 182
+      enumerator :: MKL_COMPACT_AVX512 = 183
+      end enum

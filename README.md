@@ -94,8 +94,10 @@ same AVX-512 MKL selects at runtime):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
-Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL) and
-`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below).
+Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL),
+`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below), and
+`-DCQR_BUILD_FORTRAN_TESTS=ON` (build and run the Fortran-interface tests;
+needs a Fortran compiler).
 
 ## Threading
 
@@ -182,6 +184,39 @@ The headers under `include/` are the project's API, the only files users need:
 | `include/cqr_mkl_ext.h` | The MKL-style API: `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?orgqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?potrs_compact`, `cqr_mkl_?posv_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
 | `include/cqr_compact.h` | The portable C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. |
 | `include/cqr_mkl_alloc.h` | Optional RAII buffer helpers (`mkl_alloc_bytes`, `mkl_buffer`) wrapping `mkl_malloc`/`mkl_free`. |
+| `include/cqr_compact.fi` | Fortran interfaces (`bind(c)` interface blocks) for the portable C API. |
+| `include/cqr_mkl_ext.fi` | Fortran interfaces for the MKL-style API, with the `MKL_LAYOUT` / `MKL_UPLO` / `MKL_SIDE` / `MKL_TRANSPOSE` / `MKL_DIAG` / `MKL_COMPACT_PACK` enumerators transcribed from `mkl_types.h` as `enum, bind(c)` (LP64 `MKL_INT`, the default build). |
+| `include/cqr_mkl_ext_ilp64.fi` | The ILP64 variant of `cqr_mkl_ext.fi`, matching a library built with `-DMKLCompact_INTERFACE=ilp64`: `MKL_INT` arguments and `info` are `integer(c_long_long)`; the enums stay `integer(c_int)` (a C enum does not widen under ILP64). |
+| `include/cqr_mkl_enums.fi` | The `mkl_types.h` enumerators, transcribed once and pulled into both MKL-style interface files through a nested `INCLUDE` -- includers never name it themselves, but it must sit next to them. |
+
+The `.fi` files are Fortran `INCLUDE` files, written so the same file reads
+as **fixed-form and free-form** source (statements in columns 7-72, continuations
+with `&` in column 73 carried on by `&` in column 6): put
+`include 'cqr_compact.fi'` (or `cqr_mkl_ext.fi`) in the specification part of
+any program unit, after its `implicit none`, and add `include/` to the
+compiler's include path. Following MKL's own `_lp64`/`_ilp64` interface-file
+convention, include exactly one of `cqr_mkl_ext.fi` and `cqr_mkl_ext_ilp64.fi`,
+whichever matches the library build's `MKLCompact_INTERFACE` -- guarding that
+choice is the includer's job (the portable `cqr_compact.fi` uses plain C `int`
+and has no variant). Each routine comes under its two specific names
+(`dgeqrf_compact`, `sgeqrf_compact`) and a precision-generic one
+(`geqrf_compact`; `cqr_mkl_geqrf_compact` for the MKL-style API): the
+interface blocks group each `d`/`s` pair under the generic, and the kind of
+the real arguments selects the specific. One caveat: generic resolution matches
+rank exactly (sequence association applies only once a specific has been
+chosen), and both APIs declare the compact buffers rank-1 assumed-size --
+their in-memory extents depend on the layout and side flags (and on the
+`format` enumerator, for the MKL-style API), so no fixed shape is right for
+every call; LAPACK's `TRSM` declares `A(LDA,*)` for the same reason. The
+generic names therefore take rank-1 actuals: a flat buffer, or a rank-1
+pointer view of a naturally shaped one, `p(1:size(a)) => a`. The specific
+names accept an array of any rank, or a starting array element, by sequence
+association. Compile fixed-form includers at the standard 72-column line
+length.
+`tests/test_cqr_fortran_*` show complete calls of every routine from both
+source forms: the free-form programs are written once in a work precision
+`wp` and built per precision (`CQR_SINGLE`), and under an ilp64 build
+(`CQR_ILP64`) they run through the ILP64 interfaces.
 
 ### Internals
 
