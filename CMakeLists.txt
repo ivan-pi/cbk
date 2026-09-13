@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.28)
 
 project(cqr
   VERSION 0.1.0
@@ -16,12 +16,7 @@ option(CQR_WITH_OPENMP "Thread each routine's loop over compact groups with Open
 option(CQR_BUILD_TESTS "Build tests and register them with CTest"                     ON)
 # The install rules belong to cqr's own build, not to a project that
 # add_subdirectory()s it.
-if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
-  set(_cqr_top_level ON)
-else()
-  set(_cqr_top_level OFF)
-endif()
-option(CQR_INSTALL     "Generate the install target"                                  ${_cqr_top_level})
+option(CQR_INSTALL     "Generate the install target"                     ${PROJECT_IS_TOP_LEVEL})
 
 include(GNUInstallDirs) # the install layout; the targets' install interface uses it
 

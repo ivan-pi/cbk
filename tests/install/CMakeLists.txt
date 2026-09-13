@@ -10,7 +10,7 @@
 # cqr was installed with the MKL extension, one of the MKL-style API next to
 # MKL's own compact API (linked through the FindMKLCompact module the
 # package installs).
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.28)
 project(cqr_install_check LANGUAGES CXX)
 
 option(CQR_WITH_MKL "The installed cqr carries the MKL-style API" OFF)

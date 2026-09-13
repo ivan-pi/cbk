@@ -2,7 +2,7 @@
 
 ## The portable library (default)
 
-Requires **CMake >= 3.18**, a **C++17 compiler** (GCC/Clang) and a build tool
+Requires **CMake >= 3.28**, a **C++17 compiler** (GCC/Clang) and a build tool
 (Make/Ninja). Nothing else: the default configure builds the `cqr::cqr`
 library (the C API of `include/cqr_compact.h`) and its BLAS-free test suites,
 which check every kernel against a scalar reference of the same algorithm.
