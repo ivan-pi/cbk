@@ -21,10 +21,10 @@
 ! nmat = 3 at V = 2 leaves one padding lane, so the padded-group
 ! convention is exercised, not just prepared; its lanes solve identity
 ! systems with zero right-hand sides, so the computed solutions compare
-! directly against pack_c of the exact x, padding included. The calls go
-! through rank-1 pointer views of the buffers (p(1:size(a)) => a):
-! generic resolution matches rank exactly against the assumed-size
-! dummies -- sequence association applies only once a specific is chosen.
+! directly against pack_c of the exact x, padding included. The buffers
+! pass to the generic calls as they are: the portable interfaces declare
+! their array dummies in the same compact shape (rank-4 matrices, rank-3
+! tau), which is what generic resolution matches.
 !
 ! Assisted-by: Claude:claude-fable-5
 
@@ -95,11 +95,9 @@ contains
    subroutine run_tests()
       real(wp) :: a(n, n, nmat), x(n, nrhs, nmat), b(n, nrhs, nmat)
       real(wp) :: eye(n, n), zed(n, nrhs)
-      real(wp), target :: ap(vw, n, n, ng), bp(vw, n, nrhs, ng)
-      real(wp), target :: taup(vw, n, ng)
-      real(wp) :: xp(vw, n, nrhs, ng)
+      real(wp) :: ap(vw, n, n, ng), bp(vw, n, nrhs, ng)
+      real(wp) :: taup(vw, n, ng), xp(vw, n, nrhs, ng)
       real(wp) :: af(vw, n, n, ng), xf(vw, n, nrhs, ng)
-      real(wp), pointer :: ap1(:), bp1(:), taup1(:)
       integer(c_int) :: info
       integer :: i
 
@@ -110,11 +108,6 @@ contains
       end do
       zed = 0.0_wp
 
-      ! Rank-1 views for the generic calls (see the header note).
-      ap1(1:size(ap)) => ap
-      bp1(1:size(bp)) => bp
-      taup1(1:size(taup)) => taup
-
       ! The expected compact solution: x in the real lanes, zero in the
       ! padding lanes (identity system, zero right-hand side).
       xp = pack_c(x, nrhs, zed)
@@ -122,19 +115,19 @@ contains
       ! QR chain: geqrf -> ormqr (Q^T) -> trsm (R)
       ap = pack_c(a, n, eye)
       bp = pack_c(b, nrhs, zed)
-      info = geqrf_compact('C', n, n, ap1, n, taup1, vw, nmat)
+      info = geqrf_compact('C', n, n, ap, n, taup, vw, nmat)
       call check(info == 0, 'geqrf_compact info')
-      info = ormqr_compact('T', n, nrhs, n, ap1, n, taup1, bp1, n, vw, nmat)
+      info = ormqr_compact('T', n, nrhs, n, ap, n, taup, bp, n, vw, nmat)
       call check(info == 0, 'ormqr_compact info')
       info = trsm_compact('C', 'L', 'U', 'N', 'N', n, nrhs, &
-                          1.0_wp, ap1, n, bp1, n, vw, nmat)
+                          1.0_wp, ap, n, bp, n, vw, nmat)
       call check(info == 0, 'trsm_compact info')
       call check(maxval(abs(bp - xp)) < tol, 'QR chain solution')
 
       ! gels: the same square solve in one call
       ap = pack_c(a, n, eye)
       bp = pack_c(b, nrhs, zed)
-      info = gels_compact('C', 'N', n, n, nrhs, ap1, n, bp1, n, taup1, &
+      info = gels_compact('C', 'N', n, n, nrhs, ap, n, bp, n, taup, &
                           vw, nmat)
       call check(info == 0, 'gels_compact info')
       call check(maxval(abs(bp - xp)) < tol, 'gels solution')
@@ -142,29 +135,29 @@ contains
       ! Cholesky: potrf, then two triangular solves close A x = b
       ap = pack_c(a, n, eye)
       bp = pack_c(b, nrhs, zed)
-      info = potrf_compact('C', 'L', n, ap1, n, vw, nmat)
+      info = potrf_compact('C', 'L', n, ap, n, vw, nmat)
       call check(info == 0, 'potrf_compact info')
       info = trsm_compact('C', 'L', 'L', 'N', 'N', n, nrhs, &
-                          1.0_wp, ap1, n, bp1, n, vw, nmat)
+                          1.0_wp, ap, n, bp, n, vw, nmat)
       call check(info == 0, 'trsm_compact (L) info')
       info = trsm_compact('C', 'L', 'L', 'T', 'N', n, nrhs, &
-                          1.0_wp, ap1, n, bp1, n, vw, nmat)
+                          1.0_wp, ap, n, bp, n, vw, nmat)
       call check(info == 0, 'trsm_compact (L^T) info')
       call check(maxval(abs(bp - xp)) < tol, 'potrf + trsm')
 
       ! LDL^T: sytrfnp + sytrsnp, then the fused sysvnp (bit-identical)
       ap = pack_c(a, n, eye)
       bp = pack_c(b, nrhs, zed)
-      info = sytrfnp_compact('C', 'L', n, ap1, n, vw, nmat)
+      info = sytrfnp_compact('C', 'L', n, ap, n, vw, nmat)
       call check(info == 0, 'sytrfnp_compact info')
-      info = sytrsnp_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
+      info = sytrsnp_compact('C', 'L', n, nrhs, ap, n, bp, n, vw, nmat)
       call check(info == 0, 'sytrsnp_compact info')
       call check(maxval(abs(bp - xp)) < tol, 'sytrfnp + sytrsnp solution')
       af = ap
       xf = bp
       ap = pack_c(a, n, eye)
       bp = pack_c(b, nrhs, zed)
-      info = sysvnp_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
+      info = sysvnp_compact('C', 'L', n, nrhs, ap, n, bp, n, vw, nmat)
       call check(info == 0, 'sysvnp_compact info')
       call check(all(ap == af) .and. all(bp == xf), &
                  'sysvnp_compact == sytrfnp + sytrsnp')
@@ -172,7 +165,7 @@ contains
 
    ! The portable API's LAPACK-style validation: -j for a bad j-th argument.
    subroutine test_validation()
-      real(wp) :: da(1), dt(1)
+      real(wp) :: da(1, 1, 1, 1), dt(1, 1, 1)
       integer(c_int) :: info
       info = geqrf_compact('C', -1, 1, da, 1, dt, vw, 0)
       call check(info == -2, 'geqrf_compact rejects m < 0')

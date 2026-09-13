@@ -23,17 +23,25 @@
 ! compact layout. All routines are integer(c_int) functions returning
 ! 0 on success or -j for an illegal j-th argument (LAPACK convention).
 ! Option flags (layout, uplo, side, trans, diag) are single characters
-! passed by value; ap/bp/taup are the compact interleaved buffers,
-! declared assumed-size.
+! passed by value. The compact buffers are declared in the layout's
+! own shape -- matrices as ap(v, ldap, ncols, *), tau as
+! taup(v, min(m, n), *) -- with the group count ceil(nm/v) left
+! assumed-size, since the caller pads a partial final group up to a
+! multiple of v (identities in A, zeros in B). The named extents
+! document the tuned column-major (and side = 'L') case; other layout
+! or side choices swap in-matrix extents of the caller's array, which
+! is harmless: an assumed-size dummy's extents never have to agree
+! with the actual's -- only the rank (for generic resolution) and the
+! storage size matter.
 !
 ! Each d/s pair is grouped under a precision-generic name as well
 ! (geqrf_compact, ormqr_compact, ...): the kind of the real actual
-! arguments selects the specific. Generic resolution matches rank
-! exactly: sequence association applies only once a specific has been
-! chosen, so a call to a specific name accepts an array of any rank
-! (or a starting array element), while the generics need rank-1
-! actuals -- a rank-1 buffer, or a rank-1 pointer view of a shaped
-! one, p(1:size(a)) => a.
+! arguments selects the specific. Generic resolution matches rank, so
+! the generics take rank-4 matrix and rank-3 tau actuals (of any
+! extents), or a shaped pointer view of a flat buffer,
+! p(1:v, 1:ld, 1:nc, 1:ng) => buf. A call to a specific name is
+! freer: sequence association there accepts an array of any rank, or
+! a starting array element.
 
 
 ! QR factorization A = Q R: ap -> (R, Householder vectors), taup -> tau
@@ -44,8 +52,8 @@
       implicit none
       character(kind=c_char), value :: layout
       integer(c_int), value :: m, n, ldap, v, nm
-      real(c_double), intent(inout) :: ap(*)
-      real(c_double), intent(out) :: taup(*)
+      real(c_double), intent(inout) :: ap(v, ldap, n, *)
+      real(c_double), intent(out) :: taup(v, min(m, n), *)
       integer(c_int) :: info
       end function dgeqrf_compact
 
@@ -55,8 +63,8 @@
       implicit none
       character(kind=c_char), value :: layout
       integer(c_int), value :: m, n, ldap, v, nm
-      real(c_float), intent(inout) :: ap(*)
-      real(c_float), intent(out) :: taup(*)
+      real(c_float), intent(inout) :: ap(v, ldap, n, *)
+      real(c_float), intent(out) :: taup(v, min(m, n), *)
       integer(c_int) :: info
       end function sgeqrf_compact
       end interface geqrf_compact
@@ -69,8 +77,9 @@
       implicit none
       character(kind=c_char), value :: trans
       integer(c_int), value :: m, nrhs, k, ldap, ldbp, v, nm
-      real(c_double), intent(in) :: ap(*), taup(*)
-      real(c_double), intent(inout) :: bp(*)
+      real(c_double), intent(in) :: ap(v, ldap, k, *)
+      real(c_double), intent(in) :: taup(v, k, *)
+      real(c_double), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function dormqr_compact
 
@@ -80,8 +89,9 @@
       implicit none
       character(kind=c_char), value :: trans
       integer(c_int), value :: m, nrhs, k, ldap, ldbp, v, nm
-      real(c_float), intent(in) :: ap(*), taup(*)
-      real(c_float), intent(inout) :: bp(*)
+      real(c_float), intent(in) :: ap(v, ldap, k, *)
+      real(c_float), intent(in) :: taup(v, k, *)
+      real(c_float), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function sormqr_compact
       end interface ormqr_compact
@@ -94,7 +104,7 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, ldap, v, nm
-      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(inout) :: ap(v, ldap, n, *)
       integer(c_int) :: info
       end function dpotrf_compact
 
@@ -104,7 +114,7 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, ldap, v, nm
-      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(inout) :: ap(v, ldap, n, *)
       integer(c_int) :: info
       end function spotrf_compact
       end interface potrf_compact
@@ -117,7 +127,7 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, ldap, v, nm
-      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(inout) :: ap(v, ldap, n, *)
       integer(c_int) :: info
       end function dsytrfnp_compact
 
@@ -127,7 +137,7 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, ldap, v, nm
-      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(inout) :: ap(v, ldap, n, *)
       integer(c_int) :: info
       end function ssytrfnp_compact
       end interface sytrfnp_compact
@@ -140,8 +150,8 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
-      real(c_double), intent(in) :: ap(*)
-      real(c_double), intent(inout) :: bp(*)
+      real(c_double), intent(in) :: ap(v, ldap, n, *)
+      real(c_double), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function dsytrsnp_compact
 
@@ -151,8 +161,8 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
-      real(c_float), intent(in) :: ap(*)
-      real(c_float), intent(inout) :: bp(*)
+      real(c_float), intent(in) :: ap(v, ldap, n, *)
+      real(c_float), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function ssytrsnp_compact
       end interface sytrsnp_compact
@@ -165,7 +175,8 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
-      real(c_double), intent(inout) :: ap(*), bp(*)
+      real(c_double), intent(inout) :: ap(v, ldap, n, *)
+      real(c_double), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function dsysvnp_compact
 
@@ -175,7 +186,8 @@
       implicit none
       character(kind=c_char), value :: layout, uplo
       integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
-      real(c_float), intent(inout) :: ap(*), bp(*)
+      real(c_float), intent(inout) :: ap(v, ldap, n, *)
+      real(c_float), intent(inout) :: bp(v, ldbp, nrhs, *)
       integer(c_int) :: info
       end function ssysvnp_compact
       end interface sysvnp_compact
@@ -191,8 +203,8 @@
       character(kind=c_char), value :: diag
       integer(c_int), value :: m, n, ldap, ldbp, v, nm
       real(c_double), value :: alpha
-      real(c_double), intent(in) :: ap(*)
-      real(c_double), intent(inout) :: bp(*)
+      real(c_double), intent(in) :: ap(v, ldap, m, *)
+      real(c_double), intent(inout) :: bp(v, ldbp, n, *)
       integer(c_int) :: info
       end function dtrsm_compact
 
@@ -205,8 +217,8 @@
       character(kind=c_char), value :: diag
       integer(c_int), value :: m, n, ldap, ldbp, v, nm
       real(c_float), value :: alpha
-      real(c_float), intent(in) :: ap(*)
-      real(c_float), intent(inout) :: bp(*)
+      real(c_float), intent(in) :: ap(v, ldap, m, *)
+      real(c_float), intent(inout) :: bp(v, ldbp, n, *)
       integer(c_int) :: info
       end function strsm_compact
       end interface trsm_compact
@@ -221,8 +233,9 @@
       implicit none
       character(kind=c_char), value :: layout, trans
       integer(c_int), value :: m, n, nrhs, ldap, ldbp, v, nm
-      real(c_double), intent(inout) :: ap(*), bp(*)
-      real(c_double), intent(out) :: taup(*)
+      real(c_double), intent(inout) :: ap(v, ldap, n, *)
+      real(c_double), intent(inout) :: bp(v, ldbp, nrhs, *)
+      real(c_double), intent(out) :: taup(v, min(m, n), *)
       integer(c_int) :: info
       end function dgels_compact
 
@@ -233,8 +246,9 @@
       implicit none
       character(kind=c_char), value :: layout, trans
       integer(c_int), value :: m, n, nrhs, ldap, ldbp, v, nm
-      real(c_float), intent(inout) :: ap(*), bp(*)
-      real(c_float), intent(out) :: taup(*)
+      real(c_float), intent(inout) :: ap(v, ldap, n, *)
+      real(c_float), intent(inout) :: bp(v, ldbp, nrhs, *)
+      real(c_float), intent(out) :: taup(v, min(m, n), *)
       integer(c_int) :: info
       end function sgels_compact
       end interface gels_compact

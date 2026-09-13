@@ -234,10 +234,15 @@ workspace contract, or the benchmarks' threading.
   which `CQR_SINGLE` sets to `c_float`; CMake builds each source as a `_d`
   and an `_s` executable. Generic resolution matches rank exactly --
   sequence association (any rank, or a starting array element) applies only
-  to a call to a specific name, never to choosing one -- so the generics
-  take rank-1 actuals: the tests keep their buffers naturally shaped,
-  `(V, rows, cols, ngroups)`, and call through rank-1 pointer views
-  (`p(1:size(a)) => a`). Packing is one `reshape(dense, shape(packed),
+  to a call to a specific name, never to choosing one. The portable
+  `cqr_compact.fi` declares its dummies in the compact shape --
+  `ap(v, ldap, ncols, *)`, `taup(v, min(m, n), *)`, group count assumed;
+  the extents document the column-major, side='L' case and never have to
+  agree with the actual's -- so naturally shaped `(V, rows, cols, ngroups)`
+  arrays go through its generics as they are. The MKL-style files keep
+  rank-1 assumed-size dummies (`V` is a function of `format`, not a dummy),
+  so their generics take rank-1 actuals: a flat buffer, or a rank-1 pointer
+  view (`p(1:size(a)) => a`) as the MKL test uses. Packing is one `reshape(dense, shape(packed),
   pad=..., order=[2,3,1,4])`: ORDER interleaves the lanes and PAD's copies
   fill the padding lanes along the same permuted walk.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
