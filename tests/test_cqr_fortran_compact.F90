@@ -42,9 +42,11 @@ contains
       real(wp) :: eye(n, n), zed(n, nrhs)
       real(wp), target :: ap(vw, n, n, ng), bp(vw, n, nrhs, ng)
       real(wp), target :: taup(vw, n, ng)
+      real(wp), target :: aq(vw, n, n, ng), bq(vw, n, n, ng)
       real(wp) :: xp(vw, n, nrhs, ng)
       real(wp) :: af(vw, n, n, ng), xf(vw, n, nrhs, ng)
       real(wp), pointer :: ap1(:), bp1(:), taup1(:)
+      real(wp), pointer :: aq1(:), bq1(:)
       integer(c_int) :: info
 
       call fill(a, x, b, eye, zed)
@@ -54,6 +56,8 @@ contains
       ap1(1:size(ap)) => ap
       bp1(1:size(bp)) => bp
       taup1(1:size(taup)) => taup
+      aq1(1:size(aq)) => aq
+      bq1(1:size(bq)) => bq
 
       ! The expected compact solution: x in the real lanes, zero in the
       ! padding lanes (identity system, zero right-hand side).
@@ -79,6 +83,18 @@ contains
       call check(info == 0, 'gels_compact info')
       call check(maxval(abs(bp - xp)) < tol, 'gels solution')
 
+      ! orgqr: the explicit Q must equal Q applied to the identity
+      ap = pack_c(a, eye)
+      info = geqrf_compact('C', n, n, ap1, n, taup1, vw, nmat)
+      call check(info == 0, 'geqrf_compact info (for orgqr)')
+      aq = ap
+      info = orgqr_compact('C', n, n, n, aq1, n, taup1, vw, nmat)
+      call check(info == 0, 'orgqr_compact info')
+      bq = pack_c(spread(eye, 3, int(nmat)), eye)
+      info = ormqr_compact('N', n, n, n, ap1, n, taup1, bq1, n, vw, nmat)
+      call check(info == 0, 'ormqr_compact (N) info')
+      call check(maxval(abs(aq - bq)) < tol, 'orgqr == ormqr on identity')
+
       ! Cholesky: potrf, then two triangular solves close A x = b
       ap = pack_c(a, eye)
       bp = pack_c(b, zed)
@@ -91,6 +107,23 @@ contains
                           1.0_wp, ap1, n, bp1, n, vw, nmat)
       call check(info == 0, 'trsm_compact (L^T) info')
       call check(maxval(abs(bp - xp)) < tol, 'potrf + trsm')
+
+      ! Cholesky solve: potrf + potrs, then the fused posv (bit-identical)
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
+      info = potrf_compact('C', 'L', n, ap1, n, vw, nmat)
+      call check(info == 0, 'potrf_compact info (for potrs)')
+      info = potrs_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
+      call check(info == 0, 'potrs_compact info')
+      call check(maxval(abs(bp - xp)) < tol, 'potrf + potrs solution')
+      af = ap
+      xf = bp
+      ap = pack_c(a, eye)
+      bp = pack_c(b, zed)
+      info = posv_compact('C', 'L', n, nrhs, ap1, n, bp1, n, vw, nmat)
+      call check(info == 0, 'posv_compact info')
+      call check(all(ap == af) .and. all(bp == xf), &
+                 'posv_compact == potrf + potrs')
 
       ! LDL^T: sytrfnp + sytrsnp, then the fused sysvnp (bit-identical)
       ap = pack_c(a, eye)

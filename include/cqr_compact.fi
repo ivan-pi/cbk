@@ -91,6 +91,31 @@
       end function sormqr_compact
       end interface ormqr_compact
 
+! Form the explicit (thin) Q of a compact QR in place: ap := Q
+      interface orgqr_compact
+      function dorgqr_compact(layout, m, n, k, ap, ldap, taup, v, nm)   &
+     &    result(info) bind(c, name='dorgqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout
+      integer(c_int), value :: m, n, k, ldap, v, nm
+      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(in) :: taup(*)
+      integer(c_int) :: info
+      end function dorgqr_compact
+
+      function sorgqr_compact(layout, m, n, k, ap, ldap, taup, v, nm)   &
+     &    result(info) bind(c, name='sorgqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout
+      integer(c_int), value :: m, n, k, ldap, v, nm
+      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(in) :: taup(*)
+      integer(c_int) :: info
+      end function sorgqr_compact
+      end interface orgqr_compact
+
 ! Cholesky factorization of an SPD batch: A = L L^T ('L'), U^T U ('U')
       interface potrf_compact
       function dpotrf_compact(layout, uplo, n, ap, ldap, v, nm)         &
@@ -113,6 +138,54 @@
       integer(c_int) :: info
       end function spotrf_compact
       end interface potrf_compact
+
+! Solve A X = B from the ?potrf_compact factor: bp := X
+      interface potrs_compact
+      function dpotrs_compact(layout, uplo, n, nrhs, ap, ldap, bp,      &
+     &    ldbp, v, nm) result(info) bind(c, name='dpotrs_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function dpotrs_compact
+
+      function spotrs_compact(layout, uplo, n, nrhs, ap, ldap, bp,      &
+     &    ldbp, v, nm) result(info) bind(c, name='spotrs_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function spotrs_compact
+      end interface potrs_compact
+
+! SPD solve in one pass: ap -> Cholesky factor, bp := X
+      interface posv_compact
+      function dposv_compact(layout, uplo, n, nrhs, ap, ldap, bp,       &
+     &    ldbp, v, nm) result(info) bind(c, name='dposv_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_double), intent(inout) :: ap(*), bp(*)
+      integer(c_int) :: info
+      end function dposv_compact
+
+      function sposv_compact(layout, uplo, n, nrhs, ap, ldap, bp,       &
+     &    ldbp, v, nm) result(info) bind(c, name='sposv_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_float), intent(inout) :: ap(*), bp(*)
+      integer(c_int) :: info
+      end function sposv_compact
+      end interface posv_compact
 
 ! Unpivoted LDL^T: A = L D L^T ('L') or U^T D U ('U'), D on the diag
       interface sytrfnp_compact

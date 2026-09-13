@@ -104,6 +104,31 @@
       end subroutine cqr_mkl_sormqr_compact
       end interface cqr_mkl_ormqr_compact
 
+! Form the explicit (thin) Q of a compact QR in place: ap := Q
+      interface cqr_mkl_orgqr_compact
+      subroutine cqr_mkl_dorgqr_compact(layout, m, n, k, ap, ldap,      &
+     &    taup, work, lwork, info, format, nm)                          &
+     &    bind(c, name='cqr_mkl_dorgqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, m, n, k, ldap, lwork, format, nm
+      real(c_double), intent(inout) :: ap(*), work(*)
+      real(c_double), intent(in) :: taup(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dorgqr_compact
+
+      subroutine cqr_mkl_sorgqr_compact(layout, m, n, k, ap, ldap,      &
+     &    taup, work, lwork, info, format, nm)                          &
+     &    bind(c, name='cqr_mkl_sorgqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, m, n, k, ldap, lwork, format, nm
+      real(c_float), intent(inout) :: ap(*), work(*)
+      real(c_float), intent(in) :: taup(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_sorgqr_compact
+      end interface cqr_mkl_orgqr_compact
+
 ! Cholesky factorization of an SPD batch: A = L L^T or U^T U
       interface cqr_mkl_potrf_compact
       subroutine cqr_mkl_dpotrf_compact(layout, uplo, n, ap, ldap,      &
@@ -124,6 +149,58 @@
       integer(c_int), intent(out) :: info
       end subroutine cqr_mkl_spotrf_compact
       end interface cqr_mkl_potrf_compact
+
+! Solve A X = B from the cqr_mkl_?potrf_compact factor: bp := X
+      interface cqr_mkl_potrs_compact
+      subroutine cqr_mkl_dpotrs_compact(layout, uplo, n, nrhs, ap,      &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_dpotrs_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dpotrs_compact
+
+      subroutine cqr_mkl_spotrs_compact(layout, uplo, n, nrhs, ap,      &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_spotrs_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_spotrs_compact
+      end interface cqr_mkl_potrs_compact
+
+! SPD solve in one pass: ap -> Cholesky factor, bp := X
+      interface cqr_mkl_posv_compact
+      subroutine cqr_mkl_dposv_compact(layout, uplo, n, nrhs, ap,       &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_dposv_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_double), intent(inout) :: ap(*), bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dposv_compact
+
+      subroutine cqr_mkl_sposv_compact(layout, uplo, n, nrhs, ap,       &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_sposv_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_float), intent(inout) :: ap(*), bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_sposv_compact
+      end interface cqr_mkl_posv_compact
 
 ! Unpivoted LDL^T: A = L D L^T (MKL_LOWER) or U^T D U (MKL_UPPER)
       interface cqr_mkl_sytrfnp_compact
