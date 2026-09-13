@@ -101,6 +101,22 @@ template <class Mv> double norm1(Mv M)
     return mx;
 }
 
+// Deviation of Q's columns from orthonormality, max |(Q^T Q - I)(i,j)| over
+// the upper triangle (Q^T Q is symmetric), accumulated in double so the gate
+// does not inherit float rounding. BLAS-free; shared by the orgqr suites.
+template <class Qv> double orth_error(Qv Q)
+{
+    double e = 0;
+    for (int j = 0; j < Q.cols; ++j)
+        for (int i = 0; i <= j; ++i) {
+            double s = 0;
+            for (int l = 0; l < Q.rows; ++l)
+                s += (double)Q(l, i) * Q(l, j);
+            e = std::max(e, std::abs(s - (i == j ? 1.0 : 0.0)));
+        }
+    return e;
+}
+
 // C (m x n) := A (m x k) * B (k x n) -- the plain triple loop, for forming
 // right-hand sides and residuals. The shapes come from the views, which also
 // carry the layout, so the three operands need not share one.

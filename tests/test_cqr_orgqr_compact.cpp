@@ -73,10 +73,10 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     const double tol_rec = 100.0 * eps * m;
 
     const int ld = rowmajor ? n : m;
-    const int kf = std::max(k, 1); /* batch extents must be positive */
 
-    /* factor a random m x k batch; stage its reflectors into m x n */
-    MatrixBatch<T> A0(nm, m, kf), Afac(nm, m, kf), tau(nm, kf, 1), Hn(nm, m, n),
+    /* factor a random m x k batch (empty at k = 0); stage its reflectors
+     * into m x n */
+    MatrixBatch<T> A0(nm, m, k), Afac(nm, m, k), tau(nm, k, 1), Hn(nm, m, n),
         Qref(nm, m, n), Qout(nm, m, n);
     for (int kk = 0; kk < nm; ++kk) {
         gen_boosted(A0.view(kk)); /* diagonal boost tames cond for float */
@@ -93,7 +93,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     }
 
     std::vector<T> ap = pack_compact(Hn, ld, V, rowmajor);
-    std::vector<T> tp = pack_tau(tau, V); /* k slots read; kf packed is harmless */
+    std::vector<T> tp = pack_tau(tau, V); /* empty at k = 0, never read then */
 
     const int info =
         compact<T>::orgqr(rowmajor ? 'R' : 'C', m, n, k, ap.data(), ld, tp.data(), V, nm);
@@ -111,16 +111,8 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
 
     /* check 2: Q^T Q = I, formed densely */
     double e2 = 0;
-    for (int kk = 0; kk < nm; ++kk) {
-        const auto Q = Qout.view(kk);
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i <= j; ++i) {
-                double s = 0;
-                for (int l = 0; l < m; ++l)
-                    s += (double)Q(l, i) * Q(l, j);
-                e2 = std::max(e2, std::abs(s - (i == j ? 1.0 : 0.0)));
-            }
-    }
+    for (int kk = 0; kk < nm; ++kk)
+        e2 = std::max(e2, orth_error(Qout.view(kk)));
 
     /* check 3: Q(:, 0:k-1) R = A0, R = triu of the factorization */
     double e3 = 0;
@@ -143,16 +135,13 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     if (nm % V) {
         const int ng = (nm + V - 1) / V;
         const std::size_t gstride = group_stride(rowmajor, ld, m, n, V);
-        for_vlen(V, [&](auto vw) {
-            constexpr int VV = decltype(vw)::value;
-            const auto P = make_const_view<T, VV>(
-                ap.data() + (std::size_t)(ng - 1) * gstride, rowmajor, ld);
-            for (int v = nm % VV; v < VV; ++v)
-                for (int j = 0; j < n; ++j)
-                    for (int i = 0; i < m; ++i)
-                        e4 = std::max(
-                            e4, (double)std::abs(P(i, j)[v] - (i == j ? T(1) : T(0))));
-        });
+        const auto P = make_const_view<T, V>(ap.data() + (std::size_t)(ng - 1) * gstride,
+                                             rowmajor, ld);
+        for (int v = nm % V; v < V; ++v)
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < m; ++i)
+                    e4 = std::max(e4,
+                                  (double)std::abs(P(i, j)[v] - (i == j ? T(1) : T(0))));
     }
 
     bool ok1 = e1 <= tol_exact, ok2 = e2 <= tol_orth, ok3 = e3 <= tol_rec, ok4 = e4 == 0;

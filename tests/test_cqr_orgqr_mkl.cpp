@@ -49,7 +49,11 @@ template <class T> int suite1(int nm, int m, int n, int k, bool rowmajor = false
     const int V = mkl<T>::vlen(fmt);
     const MKL_LAYOUT lay = rowmajor ? MKL_ROW_MAJOR : MKL_COL_MAJOR;
     const MKL_INT ld = rowmajor ? n : m;
-    const int kf = std::max(k, 1); /* batch extents must be positive */
+    /* MKL's pack routines dereference every pointer unconditionally (see
+     * .claude/mkl-compact-behavior.md), so keep the extents they see positive
+     * even at k = 0; the phantom column is never read by the routine under
+     * test. The portable suite needs no such guard. */
+    const int kf = std::max(k, 1);
 
     /* factor a random m x k batch densely; Qd = LAPACKE_?orgqr reference */
     MatrixBatch<T> A0(nm, m, kf), Hk(nm, m, kf), tau(nm, kf, 1), Hn(nm, m, n),
@@ -119,13 +123,7 @@ template <class T> int suite1(int nm, int m, int n, int k, bool rowmajor = false
                 worst_el = std::max(worst_el, (double)std::abs(Q(i, j) - Qref(i, j)));
 
         /* orthogonality Q^T Q - I */
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i <= j; ++i) {
-                double s = 0;
-                for (int l = 0; l < m; ++l)
-                    s += (double)Q(l, i) * Q(l, j);
-                worst_orth = std::max(worst_orth, std::abs(s - (i == j ? 1.0 : 0.0)));
-            }
+        worst_orth = std::max(worst_orth, orth_error(Q));
 
         /* reconstruction Q(:, 0:k-1) R = A0, R = triu of the factorization */
         if (k > 0) {
@@ -134,12 +132,10 @@ template <class T> int suite1(int nm, int m, int n, int k, bool rowmajor = false
                     R(i, j) = (i <= j) ? Hk(v, i, j) : T(0);
             matmul(leading(Qc.view(v, rowmajor), m, k), leading(R, k, k),
                    leading(Rec, m, k));
-            double rec = 0;
-            for (int j = 0; j < k; ++j)
-                for (int i = 0; i < m; ++i)
-                    rec = std::max(rec, std::abs((double)Rec(i, j) - A0(v, i, j)));
+            /* Recs and A0[v] are both contiguous column-major m x k here */
             worst_rec =
-                std::max(worst_rec, rec / std::max(norm1(A0.view(v)), norm_floor));
+                std::max(worst_rec, max_abs_diff(Recs.data(), A0[v], (size_t)m * k) /
+                                        std::max(norm1(A0.view(v)), norm_floor));
         }
     }
 

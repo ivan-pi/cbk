@@ -64,8 +64,7 @@ void orgqr_compact_group(Int m, Int n, Int k, BatchView<T, V, Int> A, const T *t
         A(j, j) = one;
     }
 
-    for (Int s = 0; s < k; ++s) {
-        const Int kk = k - 1 - s; /* backward: H(k-1) first, H(0) last */
+    for (Int kk = k - 1; kk >= 0; --kk) { /* backward: H(k-1) first, H(0) last */
         const VT t = tau[kk];
         /* apply H(kk) to the trailing columns kk+1 .. n-1 (rows above kk of
          * those columns are still zero and stay untouched: larf reads and
@@ -95,9 +94,12 @@ void orgqr_compact(bool rowmajor, Int m, Int n, Int k, T *ap, Int ldap, const T 
     const std::size_t str_a = group_stride(rowmajor, ldap, m, n, V);
     const std::size_t str_t = (std::size_t)k * V;
 
-    /* ~org2r flops per group: sum_j 4(m-j)(n-j) in closed form */
-    const double flops =
-        (4.0 * m * n * k - 2.0 * (m + n) * (double)k * k + (4.0 / 3.0) * k * k * k) * V;
+    /* ~org2r flops per group: sum_j 4(m-j)(n-j) in closed form, plus the
+     * unit-seed stores so a k = 0 (or tiny-k) identity fill still gates the
+     * threading like zero_compact's does */
+    const double flops = (4.0 * m * n * k - 2.0 * (m + n) * (double)k * k +
+                          (4.0 / 3.0) * k * k * k + (double)m * (n - k)) *
+                         V;
 
     for_each_group<V>(
         nm,

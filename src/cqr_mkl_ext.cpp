@@ -13,8 +13,7 @@
  * required output, written unconditionally, and `work` a required buffer, as
  * for MKL's own compact routines (which crash on a null info or work). ?geqrf,
  * ?ormqr and ?orgqr answer the lwork = -1 workspace query with 1: the current
- * kernels need no scratch (an implementation detail -- callers size from the
- * query, per the header). ?trsm has no
+ * kernels need no scratch. ?trsm has no
  * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?sytrfnp,
  * ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
  * the tau scratch of its factorization, one slot per group -- so its query
