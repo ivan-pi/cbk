@@ -173,6 +173,17 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   in FP64 and FP32 through the `compat<T>` / `mkl<T>` / `lapack<T>` dispatch
   of `tests/test_mkl_util.hpp`; FP32 cross-checks agree with `mkl_s*_compact`
   to ~1e-6, gated at 1e-4.
+- **Planned: test against a real BLAS/LAPACK (issue #27).** The portable
+  suites hand-roll their scalar reference routines. Instead, assume a library
+  is present for testing -- `find_package(LAPACK REQUIRED)` -- and validate
+  against it, rather than maintaining our own reference versions. This also
+  opens the dense cross-checks (today MKL-only) to any BLAS/LAPACK stack.
+- **Planned: LAPACK-style test coverage.** Adopt the testing approaches of the
+  reference LAPACK repository (its `TESTING/LIN` drivers): `?latms`-style
+  generators with prescribed condition number and spectral distribution, and
+  the standard scaled residual gates, extending the ad-hoc generators of
+  `test_compact_util.hpp`. Would close ormqr's design-7.3 stress-structure
+  gap along the way.
 - **Threading.** Each routine's group loop is an OpenMP `parallel for`
   (static, at most one thread per group), active for two or more groups and a
   work estimate above `CBK_OMP_MIN_FLOPS` (`5e4`, a compromise between two
