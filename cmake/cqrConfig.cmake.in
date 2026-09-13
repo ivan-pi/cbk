@@ -1,0 +1,45 @@
+# cqrConfig.cmake -- find_package(cqr CONFIG) for an installed cqr.
+#
+# Imported target:
+#   cqr::cqr       the library: the portable C API (cqr_compact.h, no BLAS)
+#                  and, when cqr was installed with CQR_WITH_MKL=ON, the
+#                  MKL-style API too (cqr_mkl_ext.h, cqr_mkl_alloc.h)
+#
+# Variables:
+#   cqr_FOUND, cqr_VERSION
+#   cqr_WITH_MKL   whether the MKL-style API (and the MKL headers) are installed
+#   cqr_MKL_INTERFACE  the MKL integer interface cqr was built with, lp64 or
+#                  ilp64 (part of its ABI: MKL_INT in every prototype)
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+set(cqr_WITH_MKL @CQR_WITH_MKL@)
+set(cqr_MKL_INTERFACE "@MKLCompact_INTERFACE@")
+
+# A static cqr built with OpenMP exports the runtime as a link-only dependency
+# of cqr::cqr, so OpenMP::OpenMP_CXX has to exist here (the consumer needs the
+# CXX language enabled, as it does anyway to link a C++ static library).
+if(@CQR_OPENMP_LINK_ONLY@)
+  find_dependency(OpenMP COMPONENTS CXX)
+endif()
+
+# With the MKL-style API, cqr::cqr uses MKL's types (its own MKL_ILP64 when
+# built ilp64) but no MKL link line, so only the headers are re-found, with
+# the find module installed beside this file. A consumer that calls MKL itself
+# finds MKL::Compact with that module (list(APPEND CMAKE_MODULE_PATH
+# "${cqr_DIR}")) or with its own; the module's interface default is seeded to
+# cqr's before it first runs, so the two agree unless the consumer overrides it.
+if(cqr_WITH_MKL)
+  set(MKLCompact_INTERFACE "${cqr_MKL_INTERFACE}" CACHE STRING
+      "MKL integer interface: lp64 | ilp64")
+  set(_cqr_module_path "${CMAKE_MODULE_PATH}")
+  list(INSERT CMAKE_MODULE_PATH 0 "${CMAKE_CURRENT_LIST_DIR}")
+  find_dependency(MKLCompact COMPONENTS Headers)
+  set(CMAKE_MODULE_PATH "${_cqr_module_path}")
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/cqrTargets.cmake")
+
+check_required_components(cqr)

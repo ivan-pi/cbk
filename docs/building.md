@@ -3,7 +3,7 @@
 ## The portable library (default)
 
 Requires **CMake >= 3.18**, a **C++17 compiler** (GCC/Clang) and a build tool
-(Make/Ninja). Nothing else: the default configure builds the `cqr::compact`
+(Make/Ninja). Nothing else: the default configure builds the `cqr::cqr`
 library (the C API of `include/cqr_compact.h`) and its BLAS-free test suites,
 which check every kernel against a scalar reference of the same algorithm.
 
@@ -15,8 +15,9 @@ ctest --test-dir build --output-on-failure
 
 ## The Intel MKL extension (`-DCQR_WITH_MKL=ON`)
 
-`-DCQR_WITH_MKL=ON` adds the MKL-style API (`cqr::mkl_ext`, the
-`cqr_mkl_?*_compact` entry points of `include/cqr_mkl_ext.h`), the MKL-backed
+`-DCQR_WITH_MKL=ON` adds the MKL-style API (the `cqr_mkl_?*_compact` entry
+points of `include/cqr_mkl_ext.h`, compiled into the same `cqr::cqr` library),
+the MKL-backed
 test suites (cross-checked against MKL's own compact kernels and dense
 LAPACK/LAPACKE), the worked example and the benchmarks. It needs **Intel MKL**,
 which provides the Compact-format API (`mkl_compact.h`, `mkl_?gepack_compact`,
@@ -71,6 +72,36 @@ Correctness is independent of these flags; only throughput changes. The
 benchmarks in particular need them for a fair comparison against MKL (see
 [`examples/BENCHMARKS.md`](../examples/BENCHMARKS.md)).
 
+## Installing
+
+```sh
+cmake --install build --prefix /opt/cqr
+```
+
+installs the library (`libcqr.a`, or `libcqr.so` with `-DBUILD_SHARED_LIBS=ON`),
+the public headers of what was built (`cqr_compact.h` always; `cqr_mkl_ext.h`
+and `cqr_mkl_alloc.h` only with `CQR_WITH_MKL=ON`), and a CMake package under
+`lib/cmake/cqr/`. A downstream project finds it with
+
+```cmake
+find_package(cqr CONFIG REQUIRED)            # -DCMAKE_PREFIX_PATH=/opt/cqr
+target_link_libraries(app PRIVATE cqr::cqr)  # both APIs, as installed
+```
+
+The package reports `cqr_WITH_MKL` and, when set, re-finds MKL's headers (all
+the exported target needs) through the `FindMKLCompact.cmake` installed beside
+it; a consumer that also calls MKL itself finds `MKL::Compact` with that module
+(`list(APPEND CMAKE_MODULE_PATH "${cqr_DIR}")`) or its own. A static cqr built
+with OpenMP needs the CXX language enabled in the consumer, as linking a C++
+static library does anyway. `tests/install/` holds a downstream consumer
+project and `check_install.sh`, the check CI runs against a fresh install for
+every MKL / static / shared combination (`.github/workflows/install.yml`):
+
+```sh
+cmake --install build --prefix /tmp/cqr-prefix
+tests/install/check_install.sh /tmp/cqr-prefix OFF OFF   # <prefix> <mkl> <shared>
+```
+
 ## Options
 
 | Option | Default | Effect |
@@ -78,6 +109,8 @@ benchmarks in particular need them for a fair comparison against MKL (see
 | `CQR_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CQR_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
 | `CQR_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
+| `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcqr` shared instead of static. |
+| `CQR_INSTALL` | `ON` when top-level | Generate the install rules; off by default under a parent project's `add_subdirectory`. |
 | `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set (MKL build only). |
 | `MKLCompact_THREADING` | `sequential` | `threaded` links MKL's internally threaded layer (MKL build only). |
 | `MKLCompact_INTERFACE` | `lp64` | `ilp64` selects MKL's 64-bit integer interface and defines `MKL_ILP64` (MKL build only). |
