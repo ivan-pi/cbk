@@ -28,6 +28,10 @@
  *   the same 100 n eps gates as suite 3; and cqr_mkl<T>::posv on the same
  *   packed input must reproduce the two-step factor and X bit-for-bit.
  *
+ * Suite 5 -- nrhs = 0: cqr_mkl<T>::posv must still factor (LAPACK ?posv calls
+ *   ?potrf unconditionally; the nrhs quick return is ?potrs's), bit-identical
+ *   to cqr_mkl<T>::potrf, with a null bp.
+ *
  * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
  *
  * Assisted-by: Claude:claude-opus-4.8 Claude
@@ -311,6 +315,39 @@ template <class T> int suite4(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, i
     return fails;
 }
 
+/* ------ Suite 5: nrhs = 0 still factors (LAPACK ?posv contract) --------- */
+
+template <class T> int suite5(int nm, int n)
+{
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+
+    MatrixBatch<T> A(nm, n, n);
+    for (int v = 0; v < nm; ++v)
+        gen_spd(A.view(v), 0.0);
+    auto Ap = A.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
+    auto ap1 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
+    auto ap2 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
+    mkl<T>::gepack(MKL_COL_MAJOR, n, n, Ap.data(), n, ap1.get(), n, fmt, nm);
+    mkl<T>::gepack(MKL_COL_MAJOR, n, n, Ap.data(), n, ap2.get(), n, fmt, nm);
+
+    MKL_INT info_f = 99, info_v = 99;
+    cqr_mkl<T>::potrf(MKL_COL_MAJOR, MKL_LOWER, n, ap1.get(), n, &info_f, fmt, nm);
+    cqr_mkl<T>::posv(MKL_COL_MAJOR, MKL_LOWER, n, /*nrhs=*/0, ap2.get(), n,
+                     /*bp=*/nullptr, n, &info_v, fmt, nm);
+
+    const size_t na = (size_t)sz_a / sizeof(T);
+    const bool same = std::equal(ap1.get(), ap1.get() + na, ap2.get());
+    bool ok = (info_f == 0) && (info_v == 0) && same;
+    std::printf("  [suite5] nrhs=0 V=%-2d nm=%-2d n=%-3d | posv==potrf:%s info=%ld/%ld "
+                "%s\n",
+                V, nm, n, same ? "yes" : "NO", (long)info_f, (long)info_v,
+                ok ? "OK" : "FAIL");
+    return !ok;
+}
+
 } /* anonymous namespace */
 
 template <class T> int run_suites()
@@ -353,6 +390,10 @@ template <class T> int run_suites()
     fails += suite4<T>(MKL_COL_MAJOR, MKL_LOWER, 16, 60, 4);
     fails += suite4<T>(MKL_COL_MAJOR, MKL_LOWER, 7, 32, 6); /* padded partial group */
     fails += suite4<T>(MKL_COL_MAJOR, MKL_UPPER, 6, 25, 1); /* single RHS */
+
+    /* Suite 5: nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to
+     * potrf, with a null bp */
+    fails += suite5<T>(8, 30);
 
     return fails;
 }

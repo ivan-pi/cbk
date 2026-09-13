@@ -109,7 +109,11 @@ Both sweeps are the compact `trsm` with a non-unit diagonal (section 6.7).
 `cqr_mkl_?posv_compact` performs the factorization and the solve for each group
 of `V` matrices before moving to the next group (section 6.8). On exit `ap`
 holds the factor exactly as `cqr_mkl_?potrf_compact` leaves it and `bp` holds
-`X`; the result is bit-identical to the two separate calls.
+`X`; the result is bit-identical to the two separate calls. As in LAPACK
+`?posv` -- which calls `?potrf` unconditionally; the `nrhs = 0` quick return
+belongs to `?potrs` (measured against MKL's LAPACK, not just read from the
+reference source) -- `nrhs = 0` still factors `ap`, and `bp` is then never
+referenced and may be null.
 
 **Constraint note.** As with all Compact routines, every matrix in the call
 shares the same order `n`, leading dimension `ldap`, storage `layout`, and
@@ -397,7 +401,9 @@ error and system residual gated at `100 * n * eps`, as in suite 3), including
 padded partial groups and RHS counts that exercise `trsm`'s 4/2/1 column
 blocks. On the same packed input `cqr_mkl_?posv_compact` must reproduce the
 two-step factor and `X` **bit-for-bit** over the whole compact buffers, padded
-lanes included (section 6.8).
+lanes included (section 6.8). Both suites also gate the `nrhs = 0` contract of
+section 3: `?posv` must factor `ap` bit-identically to `?potrf`, with a null
+`bp`.
 
 ## 8. Implementation Strategy
 

@@ -192,8 +192,11 @@ int posv(char layout, char uplo, int n, int nrhs, T *ap, int ldap, T *bp, int ld
     bool row, up;
     if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
         return e;
-    if (n == 0 || nrhs == 0 || nm == 0) return 0;
-    assert(ap != nullptr && bp != nullptr);
+    /* nrhs == 0 still factors ap (LAPACK ?posv); bp is then never referenced
+     * and may be null */
+    if (n == 0 || nm == 0) return 0;
+    assert(ap != nullptr);
+    assert(nrhs == 0 || bp != nullptr);
 
     for_vlen(V, [&](auto v) {
         cqr::detail::posv_compact<T, decltype(v)::value>(row, up, n, nrhs, ap, ldap, bp,
@@ -226,8 +229,11 @@ int sysvnp(char layout, char uplo, int n, int nrhs, T *ap, int ldap, T *bp, int 
     bool row, up;
     if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
         return e;
-    if (n == 0 || nrhs == 0 || nm == 0) return 0;
-    assert(ap != nullptr && bp != nullptr);
+    /* nrhs == 0 still factors ap (LAPACK ?sysv); bp is then never referenced
+     * and may be null */
+    if (n == 0 || nm == 0) return 0;
+    assert(ap != nullptr);
+    assert(nrhs == 0 || bp != nullptr);
 
     for_vlen(V, [&](auto v) {
         cqr::detail::sysvnp_compact<T, decltype(v)::value>(row, up, n, nrhs, ap, ldap, bp,

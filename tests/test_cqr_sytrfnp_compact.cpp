@@ -15,6 +15,8 @@
 //      unchanged from the input (the routine must not reference or write it)
 //   4. end-to-end solve: factor + ?sytrsnp_compact recovers a known X, and
 //      ?sysvnp_compact reproduces that factor and X bit-for-bit
+//   5. nrhs = 0: ?sysvnp_compact still factors (LAPACK ?sysv), bit-identical
+//      to ?sytrfnp_compact, with a null bp
 // plus:
 //   - a zero on the *input* diagonal with nonsingular leading minors factors
 //     fine (the pivots are the updated Schur-complement entries),
@@ -175,6 +177,33 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
                 compact<T>::name, V, uplo, layout, nm, n, nrhs, e_fwd, rtol_fwd, e_res,
                 rtol_res, fused_same ? "yes" : "NO", info_f, info_s, info_v,
                 ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// ------------- nrhs = 0: the fused driver still factors --------------
+// LAPACK ?sysv calls ?sytrf unconditionally -- the nrhs = 0 quick return is
+// ?sytrs's -- so the fused driver must factor ap even with no right-hand
+// sides, bit-identically to ?sytrfnp_compact, without referencing bp (null
+// here).
+
+template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    MatrixBatch<T> A(nm, n, n);
+    for (int idx = 0; idx < nm; ++idx)
+        gen_sym_ldlt(A.view(idx));
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> ap2 = ap;
+
+    int info_f = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
+    int info_v = compact<T>::sysvnp(layout, uplo, n, 0, ap2.data(), n, nullptr, n, V, nm);
+
+    const bool same = (ap == ap2);
+    bool ok = (info_f == 0) && (info_v == 0) && same;
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=0 | sysv==trf:%s "
+                "info=%d/%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, same ? "yes" : "NO", info_f,
+                info_v, ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -358,6 +387,11 @@ int main()
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
         }
+
+    // nrhs = 0 must factor anyway (LAPACK ?sysv), bit-identical to sytrfnp,
+    // with a null bp.
+    fails += run_nrhs0<double, 4>(6, 20, 'L', 'C');
+    fails += run_nrhs0<float, 8>(9, 16, 'U', 'R');
 
     // Zero on the input diagonal (nonsingular minors): must factor cleanly.
     for (char u : uplos)

@@ -141,7 +141,9 @@ void posv(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap, MKL_
           T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
     *info = 0;
-    if (n == 0 || nrhs == 0 || nm == 0) return;
+    /* nrhs == 0 is NOT empty -- LAPACK ?posv still factors ap (the kernel
+     * skips the solve and never references bp) -- so it flows through. */
+    if (n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
@@ -188,7 +190,9 @@ void sysvnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,
             MKL_INT nm)
 {
     *info = 0;
-    if (n == 0 || nrhs == 0 || nm == 0) return;
+    /* nrhs == 0 is NOT empty -- LAPACK ?sysv still factors ap (the kernel
+     * skips the solve and never references bp) -- so it flows through. */
+    if (n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
