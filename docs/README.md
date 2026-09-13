@@ -8,7 +8,6 @@
 | [threading.md](threading.md) | How the routines thread their loop over groups, and how they compose with a caller's parallel loop. |
 | [layout.md](layout.md) | The source tree: the public headers, the kernels, the test and benchmark helpers. |
 | [examples.md](examples.md) | The worked solve and the benchmarks, and their CTest registration. |
-| [related_work.md](related_work.md) | Other batched / interleaved small-matrix linear algebra libraries and interfaces. |
 
 Also:
 

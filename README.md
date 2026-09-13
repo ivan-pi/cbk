@@ -15,20 +15,21 @@ into MKL's Compact ecosystem on Intel CPUs.
 > direction and review. Each design document and benchmark page records the
 > models that assisted it, and the commit history records the rest.
 
-| Routine (`s`/`d`) | What it does | Design |
-|-------------------|--------------|--------|
-| `?geqrf_compact` | QR factorization | [doc](docs/cqr_mkl_dgeqrf_compact_design.md) |
-| `?ormqr_compact` | apply `Q` or `Q^T` to a batch | [doc](docs/cqr_mkl_dormqr_compact_design.md) |
-| `?orgqr_compact` | form the explicit (thin) `Q` | [doc](docs/cqr_mkl_dorgqr_compact_design.md) |
-| `?potrf` / `?potrs` / `?posv_compact` | Cholesky factorization, solve, fused factor-and-solve | [doc](docs/cqr_mkl_dpotrf_compact_design.md) |
-| `?sytrfnp` / `?sytrsnp` / `?sysvnp_compact` | unpivoted LDL^T factorization, solve, fused factor-and-solve | [doc](docs/cqr_mkl_dsytrfnp_compact_design.md) |
-| `?trsm_compact` | triangular solve | [doc](docs/cqr_mkl_dtrsm_compact_design.md) |
-| `?gels_compact` | least-squares / minimum-norm solve `op(A) X = B` in one call | [doc](docs/cqr_mkl_dgels_compact_design.md) |
+| Routine (`s`/`d`) | What it does |
+|-------------------|--------------|
+| [`?geqrf_compact`](docs/cqr_mkl_dgeqrf_compact_design.md) | QR factorization |
+| [`?ormqr_compact`](docs/cqr_mkl_dormqr_compact_design.md) | apply `Q` or `Q^T` to a batch |
+| [`?orgqr_compact`](docs/cqr_mkl_dorgqr_compact_design.md) | form the explicit (thin) `Q` |
+| [`?potrf` / `?potrs` / `?posv_compact`](docs/cqr_mkl_dpotrf_compact_design.md) | Cholesky factorization, solve, fused factor-and-solve |
+| [`?sytrfnp` / `?sytrsnp` / `?sysvnp_compact`](docs/cqr_mkl_dsytrfnp_compact_design.md) | unpivoted LDL^T factorization, solve, fused factor-and-solve |
+| [`?trsm_compact`](docs/cqr_mkl_dtrsm_compact_design.md) | triangular solve |
+| [`?gels_compact`](docs/cqr_mkl_dgels_compact_design.md) | least-squares / minimum-norm solve `op(A) X = B` in one call |
+
+Each routine links to its design document.
 
 The C API (`include/cqr_compact.h`) takes the interleave width `V` explicitly
 and validates its arguments LAPACK-style. Every routine threads its loop over
-groups of `V` matrices with OpenMP, and composes with a caller's own parallel
-loop.
+groups of `V` matrices with OpenMP (`-DCQR_WITH_OPENMP=OFF` disables it).
 
 ## Getting started
 
@@ -51,19 +52,35 @@ to apply or form `Q`, no Cholesky or LDL^T solve, and no `gels`. That API
 survives as an optional layer, `-DCQR_WITH_MKL=ON`: `cqr_mkl_?*_compact` entry
 points (`include/cqr_mkl_ext.h`) that take MKL's `MKL_LAYOUT` and
 `MKL_COMPACT_PACK` arguments, so they mix freely with MKL's own compact routines,
-its pack/unpack helpers, and `mkl_?gemm_compact`. The same option builds the
-MKL-backed test suites, the worked example `examples/solve_qr_compact.cpp`, and
+its pack/unpack helpers, and `mkl_?gemm_compact`.
+
+The same option builds the MKL-backed test suites, the worked example `examples/solve_qr_compact.cpp`, and
 the benchmarks against MKL's compact kernels and per-matrix LAPACK. It needs
 Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
 
 ## Documentation
 
-[`docs/README.md`](docs/README.md) indexes the rest: [building](docs/building.md)
-(the MKL build, locating MKL, the workspace contract, CMake options),
-[threading](docs/threading.md), the [source layout](docs/layout.md), the
-[examples and benchmarks](docs/examples.md) (measured results in
-[`examples/BENCHMARKS.md`](examples/BENCHMARKS.md)), [related work](docs/related_work.md),
-and one design document per routine.
+[`docs/README.md`](docs/README.md) indexes the rest:
+
+* [Building](docs/building.md) - the MKL build, locating MKL, the workspace
+  contract, CMake options.
+* [Threading](docs/threading.md) - the loop over groups and how it composes
+  with a caller's own parallel loop.
+* [Source layout](docs/layout.md) - the public headers, the kernels, the test
+  and benchmark helpers.
+* [Examples and benchmarks](docs/examples.md) - the worked solve and the five
+  benchmarks; measured results in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
+* One design document per routine, linked from the table above.
+
+## Related work
+
+Batched / compact dense linear algebra for many small matrices:
+
+* [Batched BLAS (BBLAS)](https://icl.utk.edu/bblas/) - the proposed standard interface for batched BLAS.
+* [Intel oneMKL Compact BLAS and LAPACK functions](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/compact-blas-and-lapack-functions.html) - the compact (interleaved) format this project builds on.
+* [Arm Performance Libraries interleave-batch functions](https://developer.arm.com/documentation/101004/2507/Interleave-batch-functions/Interleave-batch-introduction?lang=en) - Arm's equivalent interleaved-batch API.
+* [Kokkos Kernels batched API](https://kokkos.org/kokkos-kernels/docs/API/batched-index.html) - portable batched kernels.
+* [batmat](https://github.com/tttapa/batmat) - batched small-matrix linear algebra.
 
 ## Contributing
 
