@@ -10,7 +10,7 @@
  * the same data), but each group's factor is solved with while it is still
  * cache-resident, instead of the batch being streamed once for the
  * factorization and once more for the solve -- the penalty the solve benchmark
- * measured for whole-pool pipelines (PLANS.md) -- and the whole solve threads
+ * measured for whole-pool pipelines (docs/PLANS.md) -- and the whole solve threads
  * as one group loop. On exit ap holds the factor (L or U in the named
  * triangle, the opposite triangle untouched) and bp holds X. As in LAPACK
  * ?posv -- which calls ?potrf unconditionally; the nrhs = 0 quick return is

@@ -12,16 +12,21 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.cxx }} / MKL ${{ matrix.mkl }}
+    name: ${{ matrix.cxx }} / MKL ${{ matrix.mkl }}${{ matrix.interface == 'ilp64' && ' (ilp64)' || '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
         mkl: ["ON", "OFF"]
+        interface: [lp64]
         include:
           - { cc: gcc,   cxx: g++ }
           - { cc: clang, cxx: clang++ }
+          # MKL's 64-bit integer interface: MKL_INT is part of the MKL-style
+          # API's ABI, so the wrappers and their suites must build and pass
+          # against it too (libmkl-dev ships both interface layers).
+          - { cc: gcc,   cxx: g++, mkl: "ON", interface: ilp64 }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
@@ -42,6 +47,7 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCBK_WITH_MKL=${{ matrix.mkl }}
+          -DMKLCompact_INTERFACE=${{ matrix.interface }}
 
       - name: Build
         run: cmake --build build -j

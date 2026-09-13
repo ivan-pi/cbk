@@ -5,7 +5,7 @@ All notable changes to cbk are recorded here. The format follows
 numbers [Semantic Versioning](https://semver.org/): until 1.0.0, a minor
 release may change the API.
 
-## [0.1.0] - unreleased
+## [0.1.0] - 2026-09-13
 
 The first release: batched QR, Cholesky and unpivoted LDL^T factorizations,
 and the solves built on them, for many small matrices in the compact
@@ -40,6 +40,6 @@ and the solves built on them, for many small matrices in the compact
   LDL^T (`?sytrfnp` requires a well-behaved factorization).
 - No overflow/underflow-safe scaling (LAPACK's `dlarfg` rescaling): inputs are
   assumed well conditioned and within range. Deferred to a later release.
-- Tested on x86-64 Linux with GCC and Clang.
+- Tested on x86-64 Linux with GCC and Clang, against Intel MKL 2020.4 (lp64 and ilp64).
 
 [0.1.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.1.0

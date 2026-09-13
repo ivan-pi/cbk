@@ -29,7 +29,7 @@
  * in-matrix index roles (i -> i*ldap + j).
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
- * AVX512 d=8/s=16; any of these also work on NEON/SVE as unrolled bursts).
+ * AVX512 d=8/s=16).
  * Pointer arguments are not inspected in release builds (LAPACK convention). An
  * empty problem is a valid no-op returning 0. The routines never abort the
  * calling process.
@@ -58,12 +58,16 @@
 
 /* Version. The macros describe the header; cbk_get_version() the library
  * linked, as CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 +
- * CBK_VERSION_PATCH (0.1.0 -> 100), so a consumer can check the two agree. */
+ * CBK_VERSION_PATCH (0.1.0 -> 100), so a consumer can check the two agree.
+ * Macros, not an enum: this is a C header, and a consumer must be able to
+ * test the version in the preprocessor (#if CBK_VERSION >= ...). */
+/* NOLINTBEGIN(modernize-macro-to-enum) */
 #define CBK_VERSION_MAJOR 0
 #define CBK_VERSION_MINOR 1
 #define CBK_VERSION_PATCH 0
 #define CBK_VERSION                                                                      \
     (CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 + CBK_VERSION_PATCH)
+/* NOLINTEND(modernize-macro-to-enum) */
 
 #ifdef __cplusplus
 extern "C" {
