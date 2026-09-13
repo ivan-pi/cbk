@@ -159,12 +159,16 @@ int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
         worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
     }
 
-    // TODO: review: worst_el is printed as a diagnostic only (design doc 7.1). A
-    // loose gate (say 100*n*eps) restricted to the DENSE cases would also catch
-    // sign-convention regressions the residual gates cannot; rank-deficient cases
-    // must stay ungated (reflectors are not unique there, el ~ 1e-2 is expected).
+    /* The elementwise difference vs LAPACKE_?geqrf is gated on the dense
+     * inputs only, where the reflectors are essentially unique: it catches a
+     * sign-convention regression the residual gates cannot see (observed
+     * ~n*eps). Rank-deficient and near-collinear inputs stay ungated (their
+     * reflectors are not unique; el ~ 1e-2 is expected) and it is printed as a
+     * diagnostic there (design doc 7.1). */
     const double rtol_res = 20.0 * n * eps, rtol_orth = 100.0 * n * eps;
-    bool ok = (worst_res <= rtol_res) && (worst_orth <= rtol_orth);
+    const double rtol_el = (structure == DENSE) ? 100.0 * n * eps : HUGE_VAL;
+    bool ok =
+        (worst_res <= rtol_res) && (worst_orth <= rtol_orth) && (worst_el <= rtol_el);
     fails += !ok;
     const char *sname = structure == DENSE            ? "dense"
                         : structure == RANK_DEFICIENT ? "rankdef"
@@ -223,10 +227,12 @@ template <class T> int suite2(MKL_LAYOUT layout, int nm, int m, int n)
     /* compare the two compact buffers elementwise (same input, same convention) */
     double da = max_abs_diff(ap1.get(), ap2.get(), (size_t)sz_a / sizeof(double));
     double dt = max_abs_diff(tp1.get(), tp2.get(), (size_t)sz_t / sizeof(double));
-    // TODO: review: fixed cross-check tolerance (design doc 7.2). Observed
-    // agreement with MKL is ~1e-14 on these inputs; a tolerance scaled with n*eps
-    // would be a tighter regression signal than the flat 1e-9 if wanted.
-    const double tol = cross_tol<T>();
+    /* Same algorithm and sign convention, different arithmetic order: the two
+     * agree to a few eps on these O(1) entries (observed ~n*eps/10), so the
+     * gate scales with n*eps (design doc 7.2), tighter than the flat cross_tol
+     * the other suites use. */
+    const double eps = std::numeric_limits<T>::epsilon();
+    const double tol = 100.0 * n * eps;
     bool ok = (da <= tol && dt <= tol);
     std::printf("  [suite2] %s V=%-2d nm=%-2d m=%-3d n=%-3d | max|ap-mkl| %.2e "
                 "max|tau-mkl| %.2e (tol %.0e) %s\n",

@@ -50,6 +50,12 @@ target_include_directories(cbk
 # A build requirement of the kernels, not of the public headers (C, and
 # C++-agnostic), so consumers of the installed package are not bound to it.
 target_compile_features(cbk PRIVATE cxx_std_17)
+# cbk.h's CBK_VERSION_* macros must agree with project(VERSION) above;
+# src/cbk.cpp static_asserts it.
+target_compile_definitions(cbk PRIVATE
+  CBK_CMAKE_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+  CBK_CMAKE_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+  CBK_CMAKE_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(cbk PRIVATE OpenMP::OpenMP_CXX)
 endif()

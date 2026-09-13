@@ -74,6 +74,7 @@ Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
 * [Examples and benchmarks](docs/examples.md) - the worked solve and the five
   benchmarks; measured results in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
 * One design document per routine, linked from the table above.
+* [CHANGELOG.md](CHANGELOG.md) - what each release changed.
 
 ## Related work
 

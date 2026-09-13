@@ -24,6 +24,20 @@
 
 #include <cassert>
 
+/* The header's version macros are the source of truth for the library's
+ * version; project(cbk VERSION ...) in CMakeLists.txt has to say the same
+ * (it names the shared library and the CMake package), so the build passes
+ * its numbers in and a mismatch fails to compile. */
+static_assert(CBK_VERSION_MAJOR == CBK_CMAKE_VERSION_MAJOR &&
+                  CBK_VERSION_MINOR == CBK_CMAKE_VERSION_MINOR &&
+                  CBK_VERSION_PATCH == CBK_CMAKE_VERSION_PATCH,
+              "cbk.h's CBK_VERSION_* and CMakeLists.txt's project(VERSION) disagree");
+
+extern "C" int cbk_get_version(void)
+{
+    return CBK_VERSION;
+}
+
 namespace {
 
 using cbk::detail::for_vlen;

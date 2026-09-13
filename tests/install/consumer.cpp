@@ -46,6 +46,15 @@ bool report(const char *api, int info, const std::vector<double> &ap, int V)
 
 int main()
 {
+    /* First: the header compiled against and the library linked are one version. */
+    const int version = cbk_get_version();
+    if (version != CBK_VERSION) {
+        std::printf("cbk_get_version() = %d, header CBK_VERSION = %d, FAILED\n", version,
+                    CBK_VERSION);
+        return 1;
+    }
+    std::printf("cbk_get_version() = %d, ok\n", version);
+
     constexpr int V = 2;
     std::vector<double> ap = identity3(V), taup(n * V);
     const int info = dgeqrf_compact('C', n, n, ap.data(), n, taup.data(), V, nm);
