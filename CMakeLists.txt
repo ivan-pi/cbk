@@ -91,7 +91,7 @@ if(CQR_BUILD_TESTS)
 
   # Portable self-contained suites (no BLAS): each kernel vs a scalar reference
   # of the same unblocked algorithm, plus the C API's LAPACK-style validation.
-  foreach(routine geqrf ormqr potrf sytrfnp trsm gels)
+  foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
     add_executable(test_cqr_${routine}_compact tests/test_cqr_${routine}_compact.cpp)
     target_link_libraries(test_cqr_${routine}_compact PRIVATE cqr_compact)
     target_include_directories(test_cqr_${routine}_compact
@@ -103,7 +103,7 @@ if(CQR_BUILD_TESTS)
     # MKL + dense-LAPACK validation of each cqr_mkl_?*_compact routine (the
     # design docs' section 7): invariants vs LAPACK, cross-checks vs MKL's own
     # compact kernels, and end-to-end solves.
-    foreach(routine geqrf ormqr potrf sytrfnp trsm gels)
+    foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_cqr_${routine}_mkl tests/test_cqr_${routine}_mkl.cpp)
       target_link_libraries(test_cqr_${routine}_mkl PRIVATE cqr_mkl_ext MKL::Compact)
       target_include_directories(test_cqr_${routine}_mkl

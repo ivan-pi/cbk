@@ -8,6 +8,7 @@
  *
  *   dgeqrf_compact   / sgeqrf_compact    -- QR factorization  A = Q R
  *   dormqr_compact   / sormqr_compact    -- apply Q or Q^T from the left, B := op(Q) B
+ *   dorgqr_compact   / sorgqr_compact    -- form the explicit Q of a QR, in place
  *   dpotrf_compact   / spotrf_compact    -- Cholesky factorization  A = L L^T or U^T U
  *   dsytrfnp_compact / ssytrfnp_compact  -- LDL^T factorization, no pivoting
  *   dsytrsnp_compact / ssytrsnp_compact  -- solve A X = B from an LDL^T factor
@@ -19,9 +20,10 @@
  *   A_v(i,j)  = ap [ g*ldap*ncol*V + (j*ldap + i)*V + v ]   (column-major)
  *   tau_v(kk) = taup[ g*k*V         +  kk*V          + v ]
  *   B_v(i,j)  = bp [ g*ldbp*nrhs*V  + (j*ldbp + i)*V + v ]
- * where ncol is n for ?geqrf (the full matrix) and k for ?ormqr (A is the
- * (ldap, k) reflector batch, exactly as LAPACK ?ormqr's A(LDA,K)). Row-major
- * ?geqrf swaps the in-matrix index roles (i -> i*ldap + j).
+ * where ncol is n for ?geqrf (the full matrix), k for ?ormqr (A is the
+ * (ldap, k) reflector batch, exactly as LAPACK ?ormqr's A(LDA,K)), and n for
+ * ?orgqr (the m x n Q it generates in place). Row-major ?geqrf swaps the
+ * in-matrix index roles (i -> i*ldap + j).
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
  * AVX512 d=8/s=16; any of these also work on NEON/SVE as unrolled bursts).
@@ -94,6 +96,32 @@ int dormqr_compact(char trans, int m, int nrhs, int k, const double *ap, int lda
 
 int sormqr_compact(char trans, int m, int nrhs, int k, const float *ap, int ldap,
                    const float *taup, float *bp, int ldbp, int V, int nm);
+
+/* Generate the explicit orthogonal factor of a compact QR: the first n columns
+ * of Q = H(0) H(1) ... H(k-1) (m >= n >= k), formed in place over the
+ * reflectors and scalars that ?geqrf_compact left in ap and taup -- LAPACK
+ * ?orgqr, one matrix per compact lane. On entry columns 0..k-1 of each matrix
+ * hold the reflectors below the diagonal; everything else (the upper triangle,
+ * and columns k..n-1 entirely) need not be set. On exit each matrix holds n
+ * orthonormal columns; the factorization, R included, is overwritten, so
+ * extract R first if it is still needed.
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   m, n     rows of Q; columns of Q to generate (m >= n >= 0)
+ *   k        number of reflectors (n >= k >= 0; k = 0 seeds Q = I(:, 0:n-1))
+ *   ap       compact reflectors from ?geqrf_compact, packed m x n;
+ *            overwritten with Q
+ *   ldap     compact leading dimension (>= m col-major, >= n row-major)
+ *   taup     compact tau (k per matrix, ld = k), as ?geqrf_compact wrote it
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout   -2 m (<0)   -3 n (<0 or >m)   -4 k (<0 or >n)   -6 ldap
+ *   -8 V (not 2/4/8/16)   -9 nm (<0)
+ */
+int dorgqr_compact(char layout, int m, int n, int k, double *ap, int ldap,
+                   const double *taup, int V, int nm);
+
+int sorgqr_compact(char layout, int m, int n, int k, float *ap, int ldap,
+                   const float *taup, int V, int nm);
 
 /* Cholesky factorization of a batch of symmetric positive-definite n x n
  * matrices A: A = L L^T (uplo 'L') or A = U^T U (uplo 'U'), one matrix per

@@ -162,7 +162,7 @@ factorization. `larf`'s implicit-unit convention (it never reads the
 pivot row of the reflector column) means the diagonal does not need the
 temporary `A(kk,kk) = 1` store dense `?org2r` performs.
 
-Step 2 is new code, but small: one pack broadcast of `tau(kk)`, one scale
+Step 2 is new code, but small: one pack load of `tau(kk)`, one scale
 loop, one store, one zero loop. Following the one-kernel-per-routine rule
 the routine gets its own group kernel, `orgqr_compact_group`, in its own
 header `src/cqr_orgqr_compact.hpp`; nothing is added to any existing
@@ -215,17 +215,18 @@ CTest-registered and run in FP64 and FP32.
 
 * **Suite 1, vs dense `LAPACKE_?orgqr`** (the dispatch already exists in
   `test_mkl_util.hpp` and is used by the `?geqrf` suite): square and tall
-  shapes in both layouts, factored by `mkl_?geqrf_compact` where MKL
-  provides the shape and `cqr_mkl_?geqrf_compact` otherwise, then `Q`
-  formed both ways -- `cqr_mkl_?orgqr_compact` on the compact batch,
-  `LAPACKE_?orgqr` per unpacked matrix. Gated: `Q` elementwise at a
+  shapes in both layouts, factored per matrix by dense `LAPACKE_?geqrf` --
+  so the compact routine and the dense reference consume bit-identical
+  reflectors, isolating the accumulation from any factorization
+  difference -- then `Q` formed both ways: `cqr_mkl_?orgqr_compact` on the
+  packed batch, `LAPACKE_?orgqr` per matrix. Gated: `Q` elementwise at a
   cross-check tolerance (LAPACKE's blocked accumulation orders the
   rounding differently, so the gate is a modest multiple of `eps`, not
   exactness), plus the properties formed independently: orthogonality
-  `||Q^T Q - I||_1 <= c * m * eps` and reconstruction
-  `||Q R - A||_1 <= c * m * eps * ||A||_1` with `R = triu` of the
+  `||Q^T Q - I|| <= c * n * eps` and reconstruction
+  `||Q R - A|| <= c * m * eps * ||A||_1` with `R = triu` of the
   factorization saved before the call. The `k < n` case (extra unit-seeded
-  columns) and the workspace query are covered here.
+  columns), `k = 0`, and the workspace query are covered here.
 * **Suite 2, vs `cqr_mkl_?ormqr_compact` on a packed identity**: the two
   routes to `Q` must agree elementwise to a small multiple of `eps` --
   same reflectors, same application order, different structure
