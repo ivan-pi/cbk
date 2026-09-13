@@ -1,0 +1,254 @@
+! cqr_mkl_ext.fi -- Fortran interfaces for the MKL-style API of
+! cqr_mkl_ext.h: batched QR, Cholesky, unpivoted LDL^T, triangular
+! solve and least-squares solve for matrices in Intel MKL's Compact
+! format, backed by this project's portable SIMD kernels.
+!
+! INCLUDE this file (once) in the specification part of each program
+! unit that calls the routines:
+!
+!       implicit none
+!       include 'cqr_mkl_ext.fi'
+!
+! The file reads identically as fixed-form and free-form source; the
+! column conventions are documented in cqr_compact.fi (statements in
+! columns 7-72, '&' in column 73 continued by '&' in column 6 -- keep
+! those columns when editing, and compile fixed-form includers at the
+! standard 72-column line length).
+!
+! MKL_LAYOUT / MKL_UPLO / MKL_SIDE / MKL_TRANSPOSE / MKL_DIAG /
+! MKL_COMPACT_PACK arguments are C enums: integer(c_int) dummies here,
+! with the enumerators below transcribed from MKL's mkl_types.h
+! (identical in MKL 2020.0.4 and oneMKL 2026.1). MKL_INT is LP64 MKL's
+! 32-bit int -- the configuration this project builds against (see
+! cmake/FindMKLCompact.cmake); an ILP64 MKL (MKL_ILP64) would take
+! integer(c_long_long) arguments instead. side/trans option flags that
+! are plain C char stay single characters passed by value.
+!
+! Like MKL's own compact routines these skip argument checking, and
+! info is a scalar output: 0 on success, -1 for an unrecognized
+! format. Size each routine's work from its own lwork = -1 query and
+! give each routine its own buffer -- lwork is never checked, so an
+! undersized or shared work array is a silent overrun (cqr_mkl_ext.h
+! documents the workspace contract; ?gels's work is its tau scratch
+! and holds tau on exit).
+
+! Enumerators transcribed from mkl_types.h
+      enum, bind(c)
+      enumerator :: MKL_ROW_MAJOR = 101
+      enumerator :: MKL_COL_MAJOR = 102
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_NOTRANS = 111
+      enumerator :: MKL_TRANS = 112
+      enumerator :: MKL_CONJTRANS = 113
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_UPPER = 121
+      enumerator :: MKL_LOWER = 122
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_NONUNIT = 131
+      enumerator :: MKL_UNIT = 132
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_LEFT = 141
+      enumerator :: MKL_RIGHT = 142
+      end enum
+      enum, bind(c)
+      enumerator :: MKL_COMPACT_SSE = 181
+      enumerator :: MKL_COMPACT_AVX = 182
+      enumerator :: MKL_COMPACT_AVX512 = 183
+      end enum
+
+      interface
+
+! QR factorization: ap -> (R, Householder vectors), taup -> tau
+      subroutine cqr_mkl_dgeqrf_compact(layout, m, n, ap, ldap, taup,   &
+     &    work, lwork, info, format, nm)                                &
+     &    bind(c, name='cqr_mkl_dgeqrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, m, n, ldap, lwork, format, nm
+      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(out) :: taup(*)
+      real(c_double), intent(inout) :: work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dgeqrf_compact
+
+      subroutine cqr_mkl_sgeqrf_compact(layout, m, n, ap, ldap, taup,   &
+     &    work, lwork, info, format, nm)                                &
+     &    bind(c, name='cqr_mkl_sgeqrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, m, n, ldap, lwork, format, nm
+      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(out) :: taup(*)
+      real(c_float), intent(inout) :: work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_sgeqrf_compact
+
+! cp := op(Q) cp (side 'L') or cp op(Q) (side 'R')
+      subroutine cqr_mkl_dormqr_compact(layout, side, trans, m, n, k,   &
+     &    ap, ldap, taup, cp, ldcp, work, lwork, info, format, nm)      &
+     &    bind(c, name='cqr_mkl_dormqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, m, n, k, ldap, ldcp, lwork
+      integer(c_int), value :: format, nm
+      character(kind=c_char), value :: side, trans
+      real(c_double), intent(in) :: ap(*), taup(*)
+      real(c_double), intent(inout) :: cp(*), work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dormqr_compact
+
+      subroutine cqr_mkl_sormqr_compact(layout, side, trans, m, n, k,   &
+     &    ap, ldap, taup, cp, ldcp, work, lwork, info, format, nm)      &
+     &    bind(c, name='cqr_mkl_sormqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, m, n, k, ldap, ldcp, lwork
+      integer(c_int), value :: format, nm
+      character(kind=c_char), value :: side, trans
+      real(c_float), intent(in) :: ap(*), taup(*)
+      real(c_float), intent(inout) :: cp(*), work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_sormqr_compact
+
+! Cholesky factorization of an SPD batch: A = L L^T or U^T U
+      subroutine cqr_mkl_dpotrf_compact(layout, uplo, n, ap, ldap,      &
+     &    info, format, nm) bind(c, name='cqr_mkl_dpotrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, ldap, format, nm
+      real(c_double), intent(inout) :: ap(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dpotrf_compact
+
+      subroutine cqr_mkl_spotrf_compact(layout, uplo, n, ap, ldap,      &
+     &    info, format, nm) bind(c, name='cqr_mkl_spotrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, ldap, format, nm
+      real(c_float), intent(inout) :: ap(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_spotrf_compact
+
+! Unpivoted LDL^T: A = L D L^T (MKL_LOWER) or U^T D U (MKL_UPPER)
+      subroutine cqr_mkl_dsytrfnp_compact(layout, uplo, n, ap, ldap,    &
+     &    info, format, nm) bind(c, name='cqr_mkl_dsytrfnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, ldap, format, nm
+      real(c_double), intent(inout) :: ap(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dsytrfnp_compact
+
+      subroutine cqr_mkl_ssytrfnp_compact(layout, uplo, n, ap, ldap,    &
+     &    info, format, nm) bind(c, name='cqr_mkl_ssytrfnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, ldap, format, nm
+      real(c_float), intent(inout) :: ap(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_ssytrfnp_compact
+
+! Solve A X = B from the ?sytrfnp_compact factor: bp := X
+      subroutine cqr_mkl_dsytrsnp_compact(layout, uplo, n, nrhs, ap,    &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_dsytrsnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dsytrsnp_compact
+
+      subroutine cqr_mkl_ssytrsnp_compact(layout, uplo, n, nrhs, ap,    &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_ssytrsnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_ssytrsnp_compact
+
+! Symmetric solve in one pass: ap -> (D, L|U) factor, bp := X
+      subroutine cqr_mkl_dsysvnp_compact(layout, uplo, n, nrhs, ap,     &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_dsysvnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_double), intent(inout) :: ap(*), bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dsysvnp_compact
+
+      subroutine cqr_mkl_ssysvnp_compact(layout, uplo, n, nrhs, ap,     &
+     &    ldap, bp, ldbp, info, format, nm)                             &
+     &    bind(c, name='cqr_mkl_ssysvnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, uplo, n, nrhs, ldap, ldbp
+      integer(c_int), value :: format, nm
+      real(c_float), intent(inout) :: ap(*), bp(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_ssysvnp_compact
+
+! Triangular solve: op(A) X = alpha B (MKL_LEFT) or X op(A) = alpha B
+      subroutine cqr_mkl_dtrsm_compact(layout, side, uplo, transa,      &
+     &    diag, m, n, alpha, ap, ldap, bp, ldbp, format, nm)            &
+     &    bind(c, name='cqr_mkl_dtrsm_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, side, uplo, transa, diag
+      integer(c_int), value :: m, n, ldap, ldbp, format, nm
+      real(c_double), value :: alpha
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      end subroutine cqr_mkl_dtrsm_compact
+
+      subroutine cqr_mkl_strsm_compact(layout, side, uplo, transa,      &
+     &    diag, m, n, alpha, ap, ldap, bp, ldbp, format, nm)            &
+     &    bind(c, name='cqr_mkl_strsm_compact')
+      use, intrinsic :: iso_c_binding, only: c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, side, uplo, transa, diag
+      integer(c_int), value :: m, n, ldap, ldbp, format, nm
+      real(c_float), value :: alpha
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      end subroutine cqr_mkl_strsm_compact
+
+! Least-squares / minimum-norm solve op(A) X = B: ap -> QR|LQ factor,
+! bp rows 1..n -> X, work -> tau (its lwork = -1 query sizes it)
+      subroutine cqr_mkl_dgels_compact(layout, trans, m, n, nrhs, ap,   &
+     &    ldap, bp, ldbp, work, lwork, info, format, nm)                &
+     &    bind(c, name='cqr_mkl_dgels_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      integer(c_int), value :: layout, m, n, nrhs, ldap, ldbp, lwork
+      integer(c_int), value :: format, nm
+      character(kind=c_char), value :: trans
+      real(c_double), intent(inout) :: ap(*), bp(*), work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_dgels_compact
+
+      subroutine cqr_mkl_sgels_compact(layout, trans, m, n, nrhs, ap,   &
+     &    ldap, bp, ldbp, work, lwork, info, format, nm)                &
+     &    bind(c, name='cqr_mkl_sgels_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      integer(c_int), value :: layout, m, n, nrhs, ldap, ldbp, lwork
+      integer(c_int), value :: format, nm
+      character(kind=c_char), value :: trans
+      real(c_float), intent(inout) :: ap(*), bp(*), work(*)
+      integer(c_int), intent(out) :: info
+      end subroutine cqr_mkl_sgels_compact
+
+      end interface

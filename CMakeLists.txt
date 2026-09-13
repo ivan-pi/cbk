@@ -14,6 +14,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CQR_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" ON)
 option(CQR_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
 option(CQR_BUILD_TESTS "Build tests and register them with CTest"                     ON)
+option(CQR_BUILD_FORTRAN_TESTS
+  "Build the Fortran-interface tests (include/*.fi; needs a Fortran compiler)" OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
@@ -119,6 +121,39 @@ if(CQR_BUILD_TESTS)
     foreach(prog bench_qr_compact bench_geqrf_compact bench_potrf_compact bench_sysvnp_compact)
       add_test(NAME ${prog}_integration COMMAND ${prog} 33 1)
       set_tests_properties(${prog}_integration PROPERTIES LABELS "integration")
+    endforeach()
+  endif()
+
+  # Fortran interface tests: the dual-form include files (include/*.fi)
+  # compiled from free-form (.f90) and fixed-form (.f) sources -- compiling
+  # both is what verifies the dual-form layout -- then run against the same
+  # libraries the C callers link. Opt-in, since they need a Fortran compiler.
+  if(CQR_BUILD_FORTRAN_TESTS)
+    enable_language(Fortran)
+
+    # CMake links these with the C++ driver (CXX, propagated from the kernel
+    # libraries, outranks Fortran in linker preference) and adds the Fortran
+    # runtime itself, so both languages' runtimes arrive without extra flags.
+    set(fortran_tests test_cqr_fortran_compact test_cqr_fortran_compact_fixed)
+    add_executable(test_cqr_fortran_compact tests/test_cqr_fortran_compact.f90)
+    add_executable(test_cqr_fortran_compact_fixed tests/test_cqr_fortran_compact_fixed.f)
+    target_link_libraries(test_cqr_fortran_compact PRIVATE cqr_compact)
+    target_link_libraries(test_cqr_fortran_compact_fixed PRIVATE cqr_compact)
+
+    if(CQR_WITH_MKL)
+      # The MKL-style tests pack their compact buffers by hand, so they link
+      # only cqr_mkl_ext (no MKL: like the header, the .fi needs none).
+      list(APPEND fortran_tests test_cqr_fortran_mkl test_cqr_fortran_mkl_fixed)
+      add_executable(test_cqr_fortran_mkl tests/test_cqr_fortran_mkl.f90)
+      add_executable(test_cqr_fortran_mkl_fixed tests/test_cqr_fortran_mkl_fixed.f)
+      target_link_libraries(test_cqr_fortran_mkl PRIVATE cqr_mkl_ext)
+      target_link_libraries(test_cqr_fortran_mkl_fixed PRIVATE cqr_mkl_ext)
+    endif()
+
+    foreach(t IN LISTS fortran_tests)
+      string(REPLACE "test_cqr_" "" short "${t}")
+      add_test(NAME ${short} COMMAND ${t})
+      set_tests_properties(${short} PROPERTIES LABELS "fortran")
     endforeach()
   endif()
 endif()

@@ -15,6 +15,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-DCQR_WITH_MKL=OFF` builds only the portable kernels (no MKL, no MKL tests).
+`-DCQR_BUILD_FORTRAN_TESTS=ON` adds the Fortran-interface tests (needs a
+Fortran compiler; the `fortran` CTest label selects them).
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
 Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's
@@ -36,7 +38,9 @@ Correctness is independent of these flags; only throughput changes.
 
 ```
 include/   public headers: cqr_compact.h (portable C API), cqr_mkl_ext.h
-           (MKL-style API), cqr_mkl_alloc.h (optional RAII mkl_malloc helpers)
+           (MKL-style API), cqr_mkl_alloc.h (optional RAII mkl_malloc helpers),
+           and their Fortran interfaces cqr_compact.fi / cqr_mkl_ext.fi
+           (dual-form include files, see the convention below)
 src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
            shared cqr_compact_common.hpp; sysvnp's is a driver over the sytrfnp
            and sytrsnp group kernels), the two adapter sources that implement
@@ -47,7 +51,9 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
            include/)
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
-           the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
+           the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs;
+           test_cqr_fortran_* are the Fortran-interface tests (free-form .f90
+           and fixed-form .f includers of the .fi files)
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine
 ```
@@ -94,8 +100,9 @@ argument, which cannot be parenthesized, so they also sit between
 `.claude/settings.json` wires up two hooks:
 
 - `.claude/hooks/session-start.sh` provisions a fresh remote session: Intel MKL,
-  clang's OpenMP runtime, and pre-commit with its hook environments. It does
-  nothing on a developer's own machine.
+  clang's OpenMP runtime, gfortran (for the Fortran-interface tests), and
+  pre-commit with its hook environments. It does nothing on a developer's own
+  machine.
 - `.claude/hooks/format.sh` runs after every `Edit` or `Write`: the pre-commit
   hooks on that one file, so Claude's edits come out the way a commit would.
   clang-format fixes silently; a finding the hooks cannot fix is fed back to
@@ -197,6 +204,19 @@ workspace contract, or the benchmarks' threading.
   own kernel, as `geqrf_panel_compact_group` does. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
+- **Fortran interfaces are dual-form include files.** `include/cqr_compact.fi`
+  and `include/cqr_mkl_ext.fi` hold `bind(c)` interface blocks for the two C
+  APIs (specific names only, no generics; the MKL enums transcribed as
+  `enum, bind(c)`; `integer(c_int)` for LP64 `MKL_INT`), written so one file
+  INCLUDEs from both fixed-form and free-form sources: statements in columns
+  7-72, a continued line ends with `&` in column 73 (past fixed form's field,
+  a continuation in free form) and its continuation carries `&` in column 6
+  (a continuation in fixed form, stripped in free form), comments start with
+  `!` in column 1. Keep those columns when editing -- CI compiles each file
+  both ways (`tests/test_cqr_fortran_*.f90` free form, `*.f` fixed form,
+  `-DCQR_BUILD_FORTRAN_TESTS=ON`), which is what enforces the discipline.
+  Every dummy argument is declared under `use, intrinsic :: iso_c_binding`
+  plus `implicit none` inside each interface body.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th

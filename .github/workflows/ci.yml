@@ -48,3 +48,43 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  # The Fortran interface: the dual-form include files (include/*.fi)
+  # compiled from free-form and fixed-form sources and linked against the
+  # kernel libraries. gcc/gfortran only, and only the fortran-labeled tests
+  # run -- the full suites are the build-and-test matrix's job.
+  fortran-interface:
+    name: gfortran / MKL ${{ matrix.mkl }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mkl: ["ON", "OFF"]
+    env:
+      CC: gcc
+      CXX: g++
+      FC: gfortran
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gfortran
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran
+
+      - name: Install Intel MKL
+        if: matrix.mkl == 'ON'
+        run: sudo apt-get install -y --no-install-recommends libmkl-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCQR_WITH_MKL=${{ matrix.mkl }}
+          -DCQR_BUILD_FORTRAN_TESTS=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build -L fortran --output-on-failure

@@ -10,6 +10,8 @@
 #                  (apt.repos.intel.com) is blocked by the web network policy.
 #   libomp-dev     clang's OpenMP runtime and its omp.h, which clang-tidy
 #                  needs (.pre-commit-config.yaml explains).
+#   gfortran       compiles the Fortran-interface tests (include/*.fi,
+#                  -DCQR_BUILD_FORTRAN_TESTS=ON).
 #   pre-commit     the formatting and linting driver, with its hook
 #                  environments built up front so the first edit does not
 #                  pay for it (.claude/hooks/format.sh runs it after every
@@ -41,6 +43,7 @@ missing=()
 dpkg -s libomp-dev >/dev/null 2>&1 || missing+=(libomp-dev)
 command -v clang-format >/dev/null 2>&1 || missing+=(clang-format)
 command -v clang-tidy >/dev/null 2>&1 || missing+=(clang-tidy)
+command -v gfortran >/dev/null 2>&1 || missing+=(gfortran)
 
 if [ ${#missing[@]} -eq 0 ]; then
   echo "session-start: packages already present, nothing to install"

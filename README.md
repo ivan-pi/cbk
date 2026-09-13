@@ -86,8 +86,10 @@ same AVX-512 MKL selects at runtime):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
-Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL) and
-`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below).
+Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL),
+`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below), and
+`-DCQR_BUILD_FORTRAN_TESTS=ON` (build and run the Fortran-interface tests;
+needs a Fortran compiler).
 
 ## Threading
 
@@ -165,6 +167,18 @@ The headers under `include/` are the project's API, the only files users need:
 | `include/cqr_mkl_ext.h` | The MKL-style API: `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
 | `include/cqr_compact.h` | The portable C API: `?geqrf_compact`, `?ormqr_compact`, `?potrf_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. |
 | `include/cqr_mkl_alloc.h` | Optional RAII buffer helpers (`mkl_alloc_bytes`, `mkl_buffer`) wrapping `mkl_malloc`/`mkl_free`. |
+| `include/cqr_compact.fi` | Fortran interfaces (`bind(c)` interface blocks) for the portable C API. |
+| `include/cqr_mkl_ext.fi` | Fortran interfaces for the MKL-style API, with the `MKL_LAYOUT` / `MKL_UPLO` / `MKL_SIDE` / `MKL_TRANSPOSE` / `MKL_DIAG` / `MKL_COMPACT_PACK` enumerators transcribed from `mkl_types.h` as `enum, bind(c)` (LP64 `MKL_INT`). |
+
+The two `.fi` files are Fortran `INCLUDE` files, written so the same file reads
+as **fixed-form and free-form** source (statements in columns 7-72, continuations
+with `&` in column 73 carried on by `&` in column 6): put
+`include 'cqr_compact.fi'` (or `cqr_mkl_ext.fi`) in the specification part of
+any program unit, after its `implicit none`, and add `include/` to the
+compiler's include path. Specific names only for now (`dgeqrf_compact`,
+`sgeqrf_compact`, ...), no generic interfaces. Compile fixed-form includers at
+the standard 72-column line length. `tests/test_cqr_fortran_*` show complete
+calls of every routine from both source forms.
 
 ### Internals
 

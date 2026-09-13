@@ -1,0 +1,218 @@
+! cqr_compact.fi -- Fortran interfaces for the portable C API of
+! cqr_compact.h: batched QR, Cholesky, unpivoted LDL^T, triangular
+! solve and least-squares solve for many small matrices in the compact
+! (interleaved) format, with an explicit interleave width V.
+!
+! INCLUDE this file (once) in the specification part of each program
+! unit that calls the routines:
+!
+!       implicit none
+!       include 'cqr_compact.fi'
+!
+! The file reads identically as fixed-form and free-form source:
+! statements start in column 7 and end by column 72; a continued line
+! carries '&' in column 73 (past fixed form's statement field, a
+! continuation marker in free form) and its continuation line carries
+! '&' in column 6 (a continuation marker in fixed form, stripped in
+! free form). Keep those columns when editing. Compile fixed-form
+! includers at the standard 72-column line length: extended 132-column
+! fixed form would read the column-73 '&' as part of the statement.
+!
+! Each interface is bind(c) against the C entry point of the same
+! lower-case name; cqr_compact.h documents the arguments and the
+! compact layout. All routines are integer(c_int) functions returning
+! 0 on success or -j for an illegal j-th argument (LAPACK convention).
+! Option flags (layout, uplo, side, trans, diag) are single characters
+! passed by value; ap/bp/taup are the compact interleaved buffers,
+! declared assumed-size.
+
+      interface
+
+! QR factorization A = Q R: ap -> (R, Householder vectors), taup -> tau
+      function dgeqrf_compact(layout, m, n, ap, ldap, taup, v, nm)      &
+     &    result(info) bind(c, name='dgeqrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout
+      integer(c_int), value :: m, n, ldap, v, nm
+      real(c_double), intent(inout) :: ap(*)
+      real(c_double), intent(out) :: taup(*)
+      integer(c_int) :: info
+      end function dgeqrf_compact
+
+      function sgeqrf_compact(layout, m, n, ap, ldap, taup, v, nm)      &
+     &    result(info) bind(c, name='sgeqrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout
+      integer(c_int), value :: m, n, ldap, v, nm
+      real(c_float), intent(inout) :: ap(*)
+      real(c_float), intent(out) :: taup(*)
+      integer(c_int) :: info
+      end function sgeqrf_compact
+
+! Apply Q or Q^T of a compact QR from the left: bp := op(Q) bp
+      function dormqr_compact(trans, m, nrhs, k, ap, ldap, taup, bp,    &
+     &    ldbp, v, nm) result(info) bind(c, name='dormqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: trans
+      integer(c_int), value :: m, nrhs, k, ldap, ldbp, v, nm
+      real(c_double), intent(in) :: ap(*), taup(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function dormqr_compact
+
+      function sormqr_compact(trans, m, nrhs, k, ap, ldap, taup, bp,    &
+     &    ldbp, v, nm) result(info) bind(c, name='sormqr_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: trans
+      integer(c_int), value :: m, nrhs, k, ldap, ldbp, v, nm
+      real(c_float), intent(in) :: ap(*), taup(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function sormqr_compact
+
+! Cholesky factorization of an SPD batch: A = L L^T ('L'), U^T U ('U')
+      function dpotrf_compact(layout, uplo, n, ap, ldap, v, nm)         &
+     &    result(info) bind(c, name='dpotrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, ldap, v, nm
+      real(c_double), intent(inout) :: ap(*)
+      integer(c_int) :: info
+      end function dpotrf_compact
+
+      function spotrf_compact(layout, uplo, n, ap, ldap, v, nm)         &
+     &    result(info) bind(c, name='spotrf_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, ldap, v, nm
+      real(c_float), intent(inout) :: ap(*)
+      integer(c_int) :: info
+      end function spotrf_compact
+
+! Unpivoted LDL^T: A = L D L^T ('L') or U^T D U ('U'), D on the diag
+      function dsytrfnp_compact(layout, uplo, n, ap, ldap, v, nm)       &
+     &    result(info) bind(c, name='dsytrfnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, ldap, v, nm
+      real(c_double), intent(inout) :: ap(*)
+      integer(c_int) :: info
+      end function dsytrfnp_compact
+
+      function ssytrfnp_compact(layout, uplo, n, ap, ldap, v, nm)       &
+     &    result(info) bind(c, name='ssytrfnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, ldap, v, nm
+      real(c_float), intent(inout) :: ap(*)
+      integer(c_int) :: info
+      end function ssytrfnp_compact
+
+! Solve A X = B from the ?sytrfnp_compact factor: bp := X
+      function dsytrsnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,    &
+     &    ldbp, v, nm) result(info) bind(c, name='dsytrsnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function dsytrsnp_compact
+
+      function ssytrsnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,    &
+     &    ldbp, v, nm) result(info) bind(c, name='ssytrsnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function ssytrsnp_compact
+
+! Symmetric solve in one pass: ap -> (D, L|U) factor, bp := X
+      function dsysvnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,     &
+     &    ldbp, v, nm) result(info) bind(c, name='dsysvnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_double), intent(inout) :: ap(*), bp(*)
+      integer(c_int) :: info
+      end function dsysvnp_compact
+
+      function ssysvnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,     &
+     &    ldbp, v, nm) result(info) bind(c, name='ssysvnp_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, uplo
+      integer(c_int), value :: n, nrhs, ldap, ldbp, v, nm
+      real(c_float), intent(inout) :: ap(*), bp(*)
+      integer(c_int) :: info
+      end function ssysvnp_compact
+
+! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R')
+      function dtrsm_compact(layout, side, uplo, transa, diag, m, n,    &
+     &    alpha, ap, ldap, bp, ldbp, v, nm) result(info)                &
+     &    bind(c, name='dtrsm_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, side, uplo, transa
+      character(kind=c_char), value :: diag
+      integer(c_int), value :: m, n, ldap, ldbp, v, nm
+      real(c_double), value :: alpha
+      real(c_double), intent(in) :: ap(*)
+      real(c_double), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function dtrsm_compact
+
+      function strsm_compact(layout, side, uplo, transa, diag, m, n,    &
+     &    alpha, ap, ldap, bp, ldbp, v, nm) result(info)                &
+     &    bind(c, name='strsm_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, side, uplo, transa
+      character(kind=c_char), value :: diag
+      integer(c_int), value :: m, n, ldap, ldbp, v, nm
+      real(c_float), value :: alpha
+      real(c_float), intent(in) :: ap(*)
+      real(c_float), intent(inout) :: bp(*)
+      integer(c_int) :: info
+      end function strsm_compact
+
+! Least-squares / minimum-norm solve op(A) X = B: ap -> QR|LQ factor,
+! bp rows 1..n -> X (trailing rows the residual), taup -> tau
+      function dgels_compact(layout, trans, m, n, nrhs, ap, ldap, bp,   &
+     &    ldbp, taup, v, nm) result(info)                               &
+     &    bind(c, name='dgels_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
+      implicit none
+      character(kind=c_char), value :: layout, trans
+      integer(c_int), value :: m, n, nrhs, ldap, ldbp, v, nm
+      real(c_double), intent(inout) :: ap(*), bp(*)
+      real(c_double), intent(out) :: taup(*)
+      integer(c_int) :: info
+      end function dgels_compact
+
+      function sgels_compact(layout, trans, m, n, nrhs, ap, ldap, bp,   &
+     &    ldbp, taup, v, nm) result(info)                               &
+     &    bind(c, name='sgels_compact')
+      use, intrinsic :: iso_c_binding, only: c_char, c_int, c_float
+      implicit none
+      character(kind=c_char), value :: layout, trans
+      integer(c_int), value :: m, n, nrhs, ldap, ldbp, v, nm
+      real(c_float), intent(inout) :: ap(*), bp(*)
+      real(c_float), intent(out) :: taup(*)
+      integer(c_int) :: info
+      end function sgels_compact
+
+      end interface
