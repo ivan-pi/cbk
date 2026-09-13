@@ -45,7 +45,7 @@
  * Row-major swaps the in-matrix roles (i*ldap + j); the group stride is the
  * same either way (A is n x n).
  *
- * Assisted-by: Claude Claude:claude-fable-5
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #ifndef CBK_SYTRFNP_COMPACT_HPP

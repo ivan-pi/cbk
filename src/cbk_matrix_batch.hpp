@@ -13,7 +13,7 @@
  * LAPACK working copies start pack-aligned like the compact buffers (see
  * "Buffer alignment" in .claude/CLAUDE.md).
  *
- * Assisted-by: Claude Claude:claude-fable-5
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #ifndef CBK_MATRIX_BATCH_HPP
