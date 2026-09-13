@@ -223,8 +223,11 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
     if (ldbp < max1(row ? nrhs : mx)) return -9;
     if (!vlen_ok(V)) return -11;
     if (nm < 0) return -12;
-    if (nrhs == 0 || nm == 0) return 0; /* empty: nothing to compute */
-    assert(ap != nullptr && bp != nullptr && taup != nullptr);
+    if (nrhs == 0 || nm == 0 || mx == 0) return 0; /* empty: nothing to compute */
+    /* min(m, n) = 0 with a non-empty B is ?gels's quick return (B := 0): the
+     * kernel never touches A or tau, so they may be null then. */
+    assert(bp != nullptr);
+    assert((m == 0 || n == 0) || (ap != nullptr && taup != nullptr));
 
     for_vlen(V, [&](auto v) {
         cqr::detail::gels_compact<T, decltype(v)::value>(row, trans, m, n, nrhs, ap, ldap,
