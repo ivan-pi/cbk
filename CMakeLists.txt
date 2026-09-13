@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.18)
 
 project(cqr
   VERSION 0.1.0
-  DESCRIPTION "Compact QR extensions"
+  DESCRIPTION "Batched QR, Cholesky and LDL^T for small matrices in the compact (interleaved) format"
   LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -11,7 +11,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 # manual-stage hook in .pre-commit-config.yaml)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(CQR_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" ON)
+option(CQR_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" OFF)
 option(CQR_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
 option(CQR_BUILD_TESTS "Build tests and register them with CTest"                     ON)
 
@@ -38,7 +38,8 @@ function(cqr_link_openmp target)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# Portable kernel library: the C API of include/cqr_compact.h (no BLAS)
+# The library: the portable C API of include/cqr_compact.h (no BLAS, no MKL).
+# This is what a default configure builds and tests.
 # ---------------------------------------------------------------------------
 add_library(cqr_compact src/cqr_compact.cpp)
 target_include_directories(cqr_compact
@@ -49,9 +50,10 @@ cqr_link_openmp(cqr_compact)
 add_library(cqr::compact ALIAS cqr_compact)
 
 # ---------------------------------------------------------------------------
-# Intel MKL compact extension: cqr_mkl_?{geqrf,ormqr,potrf,potrs,posv,sytrfnp,
-# sytrsnp,sysvnp,trsm,gels}_compact, the MKL-style API of include/cqr_mkl_ext.h
-# (see docs/*_design.md)
+# Optional Intel MKL compact extension (-DCQR_WITH_MKL=ON): cqr_mkl_?{geqrf,
+# ormqr,orgqr,potrf,potrs,posv,sytrfnp,sytrsnp,sysvnp,trsm,gels}_compact, the
+# MKL-style API of include/cqr_mkl_ext.h over the same kernels (see
+# docs/*_design.md), plus the MKL-backed tests, the example and the benchmarks.
 # ---------------------------------------------------------------------------
 if(CQR_WITH_MKL)
   find_package(MKLCompact REQUIRED)

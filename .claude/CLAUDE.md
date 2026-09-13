@@ -1,20 +1,26 @@
 # CLAUDE.md
 
-Working notes for contributors (human or agent) to **cqr**, a batched QR library
-for many small matrices in Intel MKL's Compact (interleaved) format.
+Working notes for contributors (human or agent) to **cqr**, a library of
+batched QR, Cholesky and LDL^T factorizations for many small matrices in the
+compact (interleaved) format: a portable C API over SIMD kernels, plus an
+optional Intel MKL-style API that drops into MKL's compact ecosystem.
 
 ## Build and test
 
-Intel MKL supplies the Compact API and the LAPACK/LAPACKE used for validation:
+The default configure builds the portable library and its BLAS-free tests and
+needs nothing but CMake and a C++17 compiler:
 
 ```sh
-# Debian/Ubuntu: sudo apt-get install libmkl-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-`-DCQR_WITH_MKL=OFF` builds only the portable kernels (no MKL, no MKL tests).
+`-DCQR_WITH_MKL=ON` adds the MKL-style API, the MKL-backed suites (validated
+against MKL's compact kernels and LAPACK/LAPACKE), the example and the
+benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
+Debian/Ubuntu). Run that build too before pushing changes to the kernels or
+the wrappers: it is the one that cross-checks against MKL.
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
 Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's
@@ -50,7 +56,8 @@ tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
-docs/      one design document per routine
+docs/      one design document per routine, plus the guides README.md indexes
+           (building, threading, layout, examples)
 ```
 
 ## Formatting and linting
@@ -144,10 +151,10 @@ workspace contract, or the benchmarks' threading.
 - **Build and test with both gcc and clang before pushing.** CI runs both, and
   the packs' alignment is exactly the kind of contract only one of them
   enforces: both alignment faults so far (issue #34 and the one above) were
-  invisible to gcc. The portable tree needs nothing but the compiler:
+  invisible to gcc. The default (portable) tree needs nothing but the compiler:
 
   ```sh
-  CXX=clang++ cmake -S . -B build-clang -DCQR_WITH_MKL=OFF && cmake --build build-clang && ctest --test-dir build-clang
+  CXX=clang++ cmake -S . -B build-clang && cmake --build build-clang && ctest --test-dir build-clang
   ```
 
 - **Threading over groups.** Every all-groups driver is a call to

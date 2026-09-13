@@ -7,7 +7,7 @@ versions and paths below are what they installed then.
 
 ```sh
 sudo apt-get install libmkl-dev          # MKL 2020.0.4 (Debian 2020.4.304-4)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCQR_WITH_MKL=ON
 ```
 
 Headers land in `/usr/include/mkl`, libraries in `/usr/lib/x86_64-linux-gnu`,
@@ -50,8 +50,8 @@ libraries in the same prefix order (package root, `$MKLROOT`, default paths,
 no mixed build. Point it at oneAPI with either form:
 
 ```sh
-MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCMAKE_BUILD_TYPE=Release
-cmake -S . -B build-oneapi -DMKLCompact_ROOT=/opt/intel/oneapi/mkl/latest -DCMAKE_BUILD_TYPE=Release
+MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCQR_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-oneapi -DCQR_WITH_MKL=ON -DMKLCompact_ROOT=/opt/intel/oneapi/mkl/latest -DCMAKE_BUILD_TYPE=Release
 cmake --build build-oneapi -j
 ctest --test-dir build-oneapi          # 17/17 on 2026.1
 ```
@@ -102,8 +102,8 @@ full path, which needs neither the flag nor the group.
   - Intel compilers: `mkl_intel_thread` on `libiomp5`.
   The full test suite passes threaded under g++ and clang++. MKL's workspace
   query then scales with its thread count, and `lwork` is never checked: size
-  every buffer from a query made under the thread count of the call (README,
-  "Build"; `.claude/mkl-compact-behavior.md`, section 2).
+  every buffer from a query made under the thread count of the call
+  (`docs/building.md`; `.claude/mkl-compact-behavior.md`, section 2).
 - **`-DMKLCompact_INTERFACE=lp64`** (default) or **`ilp64`**: the integer
   interface; `ilp64` also defines `MKL_ILP64` on the headers target.
 - **`-DMKLCompact_ROOT=<prefix>`** or **`MKLROOT`** in the environment: the
