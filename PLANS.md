@@ -40,19 +40,52 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases.
 
-## potrf
+## orgqr
+
+- **Implemented (design 6, 8):** vectorized unblocked `dorg2r`: columns
+  `k..n-1` unit-seeded, then a backward sweep on the shared `larf` over the
+  trailing columns only, with each column `kk` formed sweep-free
+  (`1 - tau` diagonal, `-tau`-scaled reflector body, zeros above). In place on
+  the `?geqrf_compact` output (`m >= n >= k`); both layouts through the one
+  strided kernel; no scratch (the MKL-style `lwork = -1` query answers 1).
+- **Validated (design 7):** BLAS-free test vs a scalar `dorg2r` plus the
+  independent invariants (`Q^T Q = I`, `Q R = A`, padded lanes exactly
+  identity), covering `k < n`, `k = 0` and both layouts; MKL test vs dense
+  `LAPACKE_dorgqr` (cross-check tolerance) gating orthogonality (`100 n eps`)
+  and reconstruction (`100 m eps`), plus bit-exact agreement with
+  `cqr_mkl_?ormqr_compact` applied to a packed identity.
+- **Scoped out (design 6.5):** complex (`?ungqr`); `?orglq` (this kernel over
+  the transposed view) until a use case asks; blocked accumulation.
+
+## potrf / potrs / posv
+
+The Cholesky factorization, its solve, and the fused `?posv`-style driver
+(`docs/cqr_mkl_dpotrf_compact_design.md`); MKL has a compact `potrf` but no
+compact `potrs` or `posv`.
 
 - **Implemented (design 6-8):** vectorized unblocked `potf2`, unconditional
   `sqrt` pivot, `JB = 4` register-blocked rank-1 update. The four
   `(layout, uplo)` cases are one kernel over transposed views (design 6.3).
+  The solve as two non-unit `trsm` group sweeps (`?sytrsnp` minus the diagonal
+  step); `posv` factoring and solving each group while its factor is
+  cache-resident, bit-identical to the two calls.
 - **Validated (design 7):** BLAS-free test vs a scalar `potf2` (both `uplo`,
-  both layouts, padding, non-SPD lane isolation); MKL/LAPACK test gating the
+  both layouts, padding, non-SPD lane isolation), the end-to-end SPD solve
+  (two-step and fused) and C-API validation of all three entry points;
+  MKL/LAPACK test gating the
   reconstruction residual (`20 n eps`), the untouched triangle (bit-for-bit),
   the factor vs `LAPACKE_dpotrf` (`20 n eps`), the cross-check vs
-  `mkl_dpotrf_compact` (bit-exact), and the SPD solve.
-- **Benchmarked:** `bench_potrf_compact`.
+  `mkl_dpotrf_compact` (bit-exact), the SPD solve through `mkl_?trsm_compact`
+  and through `potrs` (`100 n eps`), and the fused driver's bit-identity.
+- **Benchmarked:** `bench_potrf_compact` (the factorization) and
+  `bench_posv_compact` (the end-to-end solve: fused vs its own two-step calls
+  vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv`).
+  The fusion measurement design 6.8 called for: `~1.0x` on cache-resident
+  pools (512 matrices, one RHS), `1.1-1.3x` on out-of-cache pools (orders
+  32-96, 134-300 MB) -- see `examples/BENCHMARKS.md` for the indicative run.
 - **Scoped out (design 6.6):** positive-definiteness is assumed (a non-SPD lane
-  poisons itself with `NaN`/`Inf`); no blocked factorization.
+  poisons itself with `NaN`/`Inf`, and propagates through a `potrs` solve with
+  that factor); no blocked factorization.
 
 ## sytrfnp / sytrsnp / sysvnp
 
@@ -81,7 +114,9 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
   Hermitian variants; the strided sweep is correctness-first.
 - **Open:** no factorization-only benchmark (the potrf harness would port);
   no `sysvnp` vs `sytrfnp + sytrsnp` measurement on out-of-cache pools, the
-  comparison that would quantify the fusion (design 6.8).
+  comparison that would quantify the fusion (design 6.8) -- the
+  `bench_posv_compact` harness, which carries exactly that column for the
+  Cholesky pair, would port directly.
 
 ## trsm
 
@@ -151,8 +186,8 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
   benchmarks hand the whole pool to one cqr call and drive the sequential MKL
   and LAPACK references from an equivalent outer loop; the solve benchmark
   keeps its pipeline per group (whole-pool passes measured 15-55% slower).
-  `gels` and `sysvnp` are the fused per-group drivers that give library-side
-  threading of a whole solve.
+  `gels`, `posv` and `sysvnp` are the fused per-group drivers that give
+  library-side threading of a whole solve.
 - **MKL Compact contract.** `.claude/mkl-compact-behavior.md` records what
   MKL's own compact routines were measured to do (`info` and `work` mandatory,
   `lwork` unchecked, `n*V` scratch per thread, internal threading only under

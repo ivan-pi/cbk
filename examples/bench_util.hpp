@@ -3,13 +3,16 @@
  * The harness shared by the benchmark programs: abort-on-failure checks, the
  * MKL compact-format lookups, pack-aligned std::vector storage, MatrixPool (the
  * batch of dense matrices every benchmark measures on) with PackedPool (its
- * pristine compact image, restored before every timed pass), best-of-N timing,
+ * pristine compact image, restored before every timed pass) and PackedSystems
+ * (a solve benchmark's matrix + RHS pair of those), the symmetric pool fill
+ * and the known-solution right-hand sides / forward error the Cholesky and
+ * LDL^T benchmarks share, the Cholesky flop count, best-of-N timing,
  * the OpenMP thread count, and the factorization / solve benchmarks' command
  * line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs the MKL
  * headers, and PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs
  * using it link MKL (all benchmarks do).
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4.8 Claude
  */
 
 #ifndef CQR_BENCH_UTIL_HPP
@@ -20,6 +23,7 @@
 #include "cqr_matrix_batch.hpp"
 #include "cqr_matrix_view.hpp"
 
+#include <mkl.h>         /* cblas_dgemm, for the known-solution RHS */
 #include <mkl_compact.h> /* mkl_dget_size_compact / mkl_dgepack_compact */
 
 #include <chrono>
@@ -28,6 +32,7 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <random>
 #include <vector>
 #include <algorithm>
 
@@ -79,11 +84,83 @@ template <typename T> using aligned_vector = std::vector<T, aligned_allocator<T>
 /* The batch every benchmark measures on: MatrixBatch (src/cqr_matrix_batch.hpp,
  * shared with the test suites), allocated pack-aligned so a dense pool and its
  * LAPACK working copies start aligned like the compact buffers. The benchmarks
- * differ only in what they put in their matrices (diagonally dominant, SPD,
- * symmetric indefinite, ...), so the fill stays with each of them; a
- * right-hand-side block is the same thing with cols = nrhs, so the benchmarks
- * that solve keep two of these. */
+ * differ in what they put in their matrices, so a fill unique to one benchmark
+ * stays with it (the QR pools); the symmetric diagonally dominant fill the
+ * Cholesky and LDL^T benchmarks share is fill_sym_dd below. A right-hand-side
+ * block is the same thing with cols = nrhs, so the benchmarks that solve keep
+ * two of these (fill_known_rhs pairs the RHS with forward_error). */
 using MatrixPool = cqr::detail::MatrixBatch<double, aligned_allocator<double>>;
+
+/* Fill a square pool with symmetric, strictly diagonally dominant matrices:
+ * random off-diagonals in [-1,1] mirrored across the diagonal, and a diagonal
+ * of magnitude 2n (row off-diagonal magnitudes sum to at most n-1 < 2n, so
+ * every leading principal minor is nonsingular) -- O(n^2) to build, no O(n^3)
+ * M^T M product. With `indefinite` false the diagonal is positive, so the
+ * matrices are SPD and well conditioned; with it true the sign alternates,
+ * making them genuinely indefinite (Cholesky would fail; LAPACK needs ?sysv,
+ * not ?posv) while the unpivoted LDL^T stays safe with bounded element growth.
+ * The full matrix is stored (both triangles) so a per-matrix LAPACK path and
+ * the compact pack see identical symmetric input; each routine reads only the
+ * triangle it is told to. */
+inline void fill_sym_dd(MatrixPool &P, bool indefinite)
+{
+    const int n = P.rows();
+    std::mt19937_64 rng(2025);
+    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    for (int v = 0; v < P.count(); ++v) {
+        const auto A = P.view(v);
+        for (int j = 0; j < n; ++j) {
+            for (int i = j + 1; i < n; ++i) {
+                double x = dist(rng);
+                A(i, j) = x; /* lower */
+                A(j, i) = x; /* mirror to upper (symmetric) */
+            }
+            A(j, j) = (indefinite && j % 2 ? -2.0 : 2.0) * n; /* dominant */
+        }
+    }
+}
+
+/* B := A X for the known solution X(:,j) = j + 1 -- the right-hand sides the
+ * solve benchmarks recover, measured against that X by forward_error below. */
+inline void fill_known_rhs(const MatrixPool &A, MatrixPool &B)
+{
+    const int n = A.rows(), nrhs = B.cols();
+    std::vector<double> xs((size_t)n * nrhs);
+    const auto X = mat_view(xs.data(), n, nrhs);
+    for (int j = 0; j < nrhs; ++j)
+        for (int i = 0; i < n; ++i)
+            X(i, j) = j + 1;
+    for (int v = 0; v < A.count(); ++v) {
+        const auto Av = A.view(v);
+        const auto Bv = B.view(v);
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, nrhs, n, 1.0, Av.data,
+                    Av.ld(), X.data, X.ld(), 0.0, Bv.data, Bv.ld());
+    }
+}
+
+/* Worst relative forward error max|X_v - X| / max|X| over the pool, X_v the
+ * solution in a dense pool-layout buffer (nmat * n*nrhs), X the known solution
+ * of fill_known_rhs. */
+inline double forward_error(const double *x, int n, int nrhs, int nmat)
+{
+    double worst = 0;
+    for (int v = 0; v < nmat; ++v) {
+        const auto X = mat_view(x + (size_t)v * n * nrhs, n, nrhs);
+        for (int j = 0; j < nrhs; ++j)
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(X(i, j) - (j + 1)));
+    }
+    return worst / nrhs; /* max|X| = nrhs */
+}
+
+/* Standard LAPACK ?potrf flop count in GFLOP: n^3/3 + n^2/2 + n/6 (adds +
+ * mults, the classic LAWN 41 count; the n square roots are not counted, as in
+ * LAPACK's own timing). The solve benchmarks add their sweeps' flops on top. */
+inline double chol_gflop(int n)
+{
+    const double dn = n;
+    return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0) * 1e-9;
+}
 
 /* A pool packed column-major into a compact buffer it owns: the pristine bytes
  * an in-place compact routine's working copy is restored from before every
@@ -108,6 +185,37 @@ struct PackedPool {
     }
     void restore_into(double *dst) const { std::memcpy(dst, p.get(), bytes); }
 };
+
+/* A solve benchmark's pair of pristine compact images -- the matrices and
+ * their right-hand sides -- restored together before every timed pass. */
+struct PackedSystems {
+    PackedPool a, b;
+
+    PackedSystems(const MatrixPool &A, const MatrixPool &B, MKL_COMPACT_PACK fmt)
+        : a(A, fmt), b(B, fmt)
+    {
+    }
+
+    void restore_into(double *ap, double *bp) const
+    {
+        a.restore_into(ap);
+        b.restore_into(bp);
+    }
+};
+
+/* Unpack a compact solution batch (n x nrhs per matrix, column-major, ld = n)
+ * and measure it against fill_known_rhs's X: the correctness gate of a compact
+ * solve path, read from the buffer its last timed pass left behind. */
+inline double unpacked_forward_error(const double *bp, int n, int nrhs, int nmat,
+                                     MKL_COMPACT_PACK fmt)
+{
+    std::vector<double> X((size_t)nmat * n * nrhs);
+    std::vector<double *> Xp(nmat);
+    for (int v = 0; v < nmat; ++v)
+        Xp[v] = X.data() + (size_t)v * n * nrhs;
+    mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xp.data(), n, bp, n, fmt, nmat);
+    return forward_error(X.data(), n, nrhs, nmat);
+}
 
 /* Best (minimum) wall time over `reps` timed passes, in seconds. `reset` runs
  * untimed before every pass (e.g. to restore input the timed work destroys);

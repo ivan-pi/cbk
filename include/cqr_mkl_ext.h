@@ -6,7 +6,10 @@
  *
  *   cqr_mkl_?geqrf_compact   -- QR factorization of a Compact-format batch
  *   cqr_mkl_?ormqr_compact   -- apply Q (or Q^T) of a Compact-format QR
+ *   cqr_mkl_?orgqr_compact   -- form the explicit Q of a Compact-format QR
  *   cqr_mkl_?potrf_compact   -- Cholesky factorization of an SPD Compact-format batch
+ *   cqr_mkl_?potrs_compact   -- solve A X = B from that Cholesky factor
+ *   cqr_mkl_?posv_compact    -- Cholesky factor + solve, fused per group
  *   cqr_mkl_?sytrfnp_compact -- unpivoted LDL^T factorization of a symmetric batch
  *   cqr_mkl_?sytrsnp_compact -- solve A X = B from that LDL^T factor
  *   cqr_mkl_?sysvnp_compact  -- LDL^T factor + solve, fused per group
@@ -19,8 +22,12 @@
  * this project's portable SIMD kernels. cqr_mkl_?geqrf_compact,
  * cqr_mkl_?potrf_compact and cqr_mkl_?trsm_compact are signature- and
  * storage-compatible alternatives to the MKL routines of the same name, so they
- * mix freely with them; cqr_mkl_?ormqr_compact is the apply-Q step MKL omits
- * (LAPACK ?ormqr plus the layout/format/nm arguments), and the three symmetric
+ * mix freely with them; cqr_mkl_?ormqr_compact and cqr_mkl_?orgqr_compact are
+ * the apply-Q and form-Q steps MKL omits (LAPACK ?ormqr / ?orgqr plus the
+ * layout/format/nm arguments), cqr_mkl_?potrs_compact
+ * and cqr_mkl_?posv_compact are the Cholesky solve and fused factor-and-solve
+ * MKL likewise has no compact form of (LAPACK ?potrs / ?posv plus
+ * layout/format/nm), and the three symmetric
  * "np" routines are the unpivoted LDL^T MKL has no compact form of at all (the
  * suffix follows MKL's own unpivoted mkl_?getrfnp_compact). Together they factor
  * and solve batched systems entirely in the compact format:
@@ -28,6 +35,8 @@
  *     cqr_mkl_dgeqrf_compact (..., A -> H, tau);       // A = Q R
  *     cqr_mkl_dormqr_compact('L','T', ..., H, tau, B); // B := Q^T B
  *     cqr_mkl_dtrsm_compact  (..., U, R, B);           // B := R^{-1} Q^T B = X
+ *
+ *     cqr_mkl_dposv_compact  (..., A -> L, B);         // A = L L^T; B := A^{-1} B
  *
  *     cqr_mkl_dsysvnp_compact(..., A -> (L, D), B);   // A = L D L^T; B := A^{-1} B
  *
@@ -44,9 +53,12 @@
  *     entry points for LAPACK-style info = -j validation.
  *   - `info` is a single scalar status (MKL leaves the compact info reserved):
  *     0 on success, -1 for an unrecognized `format`.
- *   - Workspace: ?geqrf and ?ormqr take work/lwork like their LAPACK namesakes;
+ *   - Workspace: ?geqrf, ?ormqr and ?orgqr take work/lwork like their LAPACK
+ *     namesakes;
  *     with lwork = -1 the call is a query returning the optimal lwork in
- *     work[0] -- 1, these kernels need no scratch. Always size work from a
+ *     work[0]. Today that is 1 -- the current kernels need no scratch -- but
+ *     that is an implementation detail, not a contract, so never hard-code
+ *     it. Always size work from a
  *     query of the routine you will call, and give each routine its own
  *     buffer: lwork is not checked (no compact routine checks it, MKL's
  *     included), so an undersized work array is a silent overrun. This matters
@@ -107,6 +119,20 @@ void cqr_mkl_sormqr_compact(MKL_LAYOUT layout, char side, char trans, MKL_INT m,
                             MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format,
                             MKL_INT nm);
 
+/* Generate the first n columns of Q = H(0) ... H(k-1) (m >= n >= k) from the
+ * (H, tau) of a compact QR, in place over the reflectors: LAPACK ?orgqr plus
+ * layout, format and nm. ap is packed m x n; on entry its columns 0..k-1 hold
+ * the reflectors (columns k..n-1 need not be set), on exit each matrix holds
+ * n orthonormal columns -- the factorization, R included, is overwritten. */
+void cqr_mkl_dorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k,
+                            double *ap, MKL_INT ldap, const double *taup, double *work,
+                            MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format,
+                            MKL_INT nm);
+
+void cqr_mkl_sorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, float *ap,
+                            MKL_INT ldap, const float *taup, float *work, MKL_INT lwork,
+                            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+
 /* Cholesky factorization of a batch of symmetric positive-definite n x n
  * matrices: A = L L^T (MKL_LOWER) or A = U^T U (MKL_UPPER). Drop-in for
  * mkl_?potrf_compact (identical signature). On exit the named triangle holds
@@ -119,6 +145,36 @@ void cqr_mkl_dpotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, double 
 void cqr_mkl_spotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
                             MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
                             MKL_INT nm);
+
+/* Solve A X = B from the factor of cqr_mkl_?potrf_compact (same uplo), in
+ * place: L z = B; L^T X = z (MKL_LOWER), or U^T z = B; U X = z (MKL_UPPER).
+ * LAPACK ?potrs plus layout/format/nm; MKL has no compact potrs. B is n x nrhs
+ * with ldbp >= n (column-major) or >= nrhs (row-major); the factor is not
+ * modified. A factor lane poisoned by non-SPD input yields NaN/Inf in that
+ * lane's X, not an error. */
+void cqr_mkl_dpotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                            const double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
+                            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+
+void cqr_mkl_spotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                            const float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
+                            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+
+/* Symmetric positive-definite solve A X = B in one pass: cqr_mkl_?potrf_compact
+ * followed by cqr_mkl_?potrs_compact, fused per group of V matrices so each
+ * factor is solved with while cache-resident and the whole solve is one
+ * threaded group loop. LAPACK ?posv plus layout/format/nm. On exit ap holds
+ * the Cholesky factor exactly as ?potrf leaves it and bp holds X; the result
+ * is bit-identical to the two separate calls. As in LAPACK ?posv, nrhs = 0
+ * still factors ap (the nrhs quick return is ?potrs's); bp is then never
+ * referenced. */
+void cqr_mkl_dposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                           double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
+                           MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+
+void cqr_mkl_sposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                           float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
+                           MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* LDL^T factorization without pivoting of a batch of symmetric n x n matrices:
  * A = L D L^T (MKL_LOWER) or A = U^T D U (MKL_UPPER; the transpose dual, as
@@ -154,7 +210,9 @@ void cqr_mkl_ssytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_I
  * solved with while cache-resident and the whole solve is one threaded group
  * loop. LAPACK ?sysv minus ipiv and workspace. On exit ap holds the (D, L|U)
  * factor exactly as ?sytrfnp leaves it and bp holds X; the result is
- * bit-identical to the two separate calls. */
+ * bit-identical to the two separate calls. As in LAPACK ?sysv, nrhs = 0 still
+ * factors ap (the nrhs quick return is ?sytrs's); bp is then never
+ * referenced. */
 void cqr_mkl_dsysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
                              double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
                              MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);

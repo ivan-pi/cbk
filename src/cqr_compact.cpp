@@ -12,7 +12,10 @@
 #include "cqr_compact.h"
 #include "cqr_geqrf_compact.hpp"
 #include "cqr_ormqr_compact.hpp"
+#include "cqr_orgqr_compact.hpp"
 #include "cqr_potrf_compact.hpp"
+#include "cqr_potrs_compact.hpp"
+#include "cqr_posv_compact.hpp"
 #include "cqr_sytrfnp_compact.hpp"
 #include "cqr_sytrsnp_compact.hpp"
 #include "cqr_sysvnp_compact.hpp"
@@ -83,6 +86,28 @@ int ormqr(char trans, int m, int nrhs, int k, const T *ap, int ldap, const T *ta
 }
 
 template <typename T>
+int orgqr(char layout, int m, int n, int k, T *ap, int ldap, const T *taup, int V, int nm)
+{
+    const bool col = opt(layout, 'C'), row = opt(layout, 'R');
+    if (!col && !row) return -1;
+    if (m < 0) return -2;
+    if (n < 0 || n > m) return -3;
+    if (k < 0 || k > n) return -4;
+    if (ldap < max1(row ? n : m)) return -6;
+    if (!vlen_ok(V)) return -8;
+    if (nm < 0) return -9;
+    /* k == 0 is NOT empty: Q = I(:, 0:n-1) must still be written. */
+    if (m == 0 || n == 0 || nm == 0) return 0;
+    assert(ap != nullptr && (k == 0 || taup != nullptr));
+
+    for_vlen(V, [&](auto v) {
+        cqr::detail::orgqr_compact<T, decltype(v)::value>(row, m, n, k, ap, ldap, taup,
+                                                          nm);
+    });
+    return 0;
+}
+
+template <typename T>
 int potrf(char layout, char uplo, int n, T *ap, int ldap, int V, int nm)
 {
     const bool col = opt(layout, 'C'), row = opt(layout, 'R');
@@ -122,12 +147,12 @@ int sytrfnp(char layout, char uplo, int n, T *ap, int ldap, int V, int nm)
     return 0;
 }
 
-/* ?sytrsnp_compact and ?sysvnp_compact share one signature (layout, uplo, n,
- * nrhs, ap, ldap, bp, ldbp, V, nm) and hence one validation, in argument order:
- * -1 layout, -2 uplo, -3 n, -4 nrhs, -6 ldap, -8 ldbp, -9 V, -10 nm. Sets the
- * kernel flags. */
-inline int sytrs_args(char layout, char uplo, int n, int nrhs, int ldap, int ldbp, int V,
-                      int nm, bool &row, bool &up)
+/* ?potrs_compact, ?posv_compact, ?sytrsnp_compact and ?sysvnp_compact share
+ * one signature (layout, uplo, n, nrhs, ap, ldap, bp, ldbp, V, nm) and hence
+ * one validation, in argument order: -1 layout, -2 uplo, -3 n, -4 nrhs,
+ * -6 ldap, -8 ldbp, -9 V, -10 nm. Sets the kernel flags. */
+inline int sym_solve_args(char layout, char uplo, int n, int nrhs, int ldap, int ldbp,
+                          int V, int nm, bool &row, bool &up)
 {
     const bool col = opt(layout, 'C'), lo = opt(uplo, 'L');
     row = opt(layout, 'R');
@@ -144,11 +169,48 @@ inline int sytrs_args(char layout, char uplo, int n, int nrhs, int ldap, int ldb
 }
 
 template <typename T>
+int potrs(char layout, char uplo, int n, int nrhs, const T *ap, int ldap, T *bp, int ldbp,
+          int V, int nm)
+{
+    bool row, up;
+    if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
+        return e;
+    if (n == 0 || nrhs == 0 || nm == 0) return 0;
+    assert(ap != nullptr && bp != nullptr);
+
+    for_vlen(V, [&](auto v) {
+        cqr::detail::potrs_compact<T, decltype(v)::value>(row, up, n, nrhs, ap, ldap, bp,
+                                                          ldbp, nm);
+    });
+    return 0;
+}
+
+template <typename T>
+int posv(char layout, char uplo, int n, int nrhs, T *ap, int ldap, T *bp, int ldbp, int V,
+         int nm)
+{
+    bool row, up;
+    if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
+        return e;
+    /* nrhs == 0 still factors ap (LAPACK ?posv), never referencing bp --
+     * which, Fortran semantics, must still be present (a dummy suffices) */
+    if (n == 0 || nm == 0) return 0;
+    assert(ap != nullptr && bp != nullptr);
+
+    for_vlen(V, [&](auto v) {
+        cqr::detail::posv_compact<T, decltype(v)::value>(row, up, n, nrhs, ap, ldap, bp,
+                                                         ldbp, nm);
+    });
+    return 0;
+}
+
+template <typename T>
 int sytrsnp(char layout, char uplo, int n, int nrhs, const T *ap, int ldap, T *bp,
             int ldbp, int V, int nm)
 {
     bool row, up;
-    if (int e = sytrs_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up)) return e;
+    if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
+        return e;
     if (n == 0 || nrhs == 0 || nm == 0) return 0;
     assert(ap != nullptr && bp != nullptr);
 
@@ -164,8 +226,11 @@ int sysvnp(char layout, char uplo, int n, int nrhs, T *ap, int ldap, T *bp, int 
            int V, int nm)
 {
     bool row, up;
-    if (int e = sytrs_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up)) return e;
-    if (n == 0 || nrhs == 0 || nm == 0) return 0;
+    if (int e = sym_solve_args(layout, uplo, n, nrhs, ldap, ldbp, V, nm, row, up))
+        return e;
+    /* nrhs == 0 still factors ap (LAPACK ?sysv), never referencing bp --
+     * which, Fortran semantics, must still be present (a dummy suffices) */
+    if (n == 0 || nm == 0) return 0;
     assert(ap != nullptr && bp != nullptr);
 
     for_vlen(V, [&](auto v) {
@@ -223,7 +288,9 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
     if (ldbp < max1(row ? nrhs : mx)) return -9;
     if (!vlen_ok(V)) return -11;
     if (nm < 0) return -12;
-    if (nrhs == 0 || nm == 0) return 0; /* empty: nothing to compute */
+    if (nrhs == 0 || nm == 0 || mx == 0) return 0; /* empty: nothing to compute */
+    /* Fortran semantics: every array argument must be present, a dummy when its
+     * extent is zero (min(m, n) = 0 reads neither A nor tau, but B := 0). */
     assert(ap != nullptr && bp != nullptr && taup != nullptr);
 
     for_vlen(V, [&](auto v) {
@@ -250,9 +317,24 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
     {                                                                                    \
         return ormqr(trans, m, nrhs, k, ap, ldap, taup, bp, ldbp, V, nm);                \
     }                                                                                    \
+    int p##orgqr_compact(char layout, int m, int n, int k, T *ap, int ldap,              \
+                         const T *taup, int V, int nm)                                   \
+    {                                                                                    \
+        return orgqr(layout, m, n, k, ap, ldap, taup, V, nm);                            \
+    }                                                                                    \
     int p##potrf_compact(char layout, char uplo, int n, T *ap, int ldap, int V, int nm)  \
     {                                                                                    \
         return potrf(layout, uplo, n, ap, ldap, V, nm);                                  \
+    }                                                                                    \
+    int p##potrs_compact(char layout, char uplo, int n, int nrhs, const T *ap, int ldap, \
+                         T *bp, int ldbp, int V, int nm)                                 \
+    {                                                                                    \
+        return potrs(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, V, nm);                  \
+    }                                                                                    \
+    int p##posv_compact(char layout, char uplo, int n, int nrhs, T *ap, int ldap, T *bp, \
+                        int ldbp, int V, int nm)                                         \
+    {                                                                                    \
+        return posv(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, V, nm);                   \
     }                                                                                    \
     int p##sytrfnp_compact(char layout, char uplo, int n, T *ap, int ldap, int V,        \
                            int nm)                                                       \

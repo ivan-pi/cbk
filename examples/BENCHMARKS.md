@@ -3,11 +3,11 @@
 > Assisted-by: Claude:claude-opus-4.8
 
 Throughput benchmarks for the compact batched kernels, alongside the programs
-they drive. The first three run the *same* math three ways -- this project's
+they drive. Most run the *same* math several ways -- this project's
 open compact kernels, MKL's own compact kernels, and the conventional
 one-matrix-at-a-time LAPACK path -- over pools of many small matrices,
-reporting per-size throughput and a geometric-mean speedup; the fourth has no
-MKL yardstick (MKL ships no compact `sytrf`) and compares the fused compact
+reporting per-size throughput and a geometric-mean speedup; `bench_sysvnp_compact`
+has no MKL yardstick (MKL ships no compact `sytrf`) and compares the fused compact
 solver with per-matrix LAPACK alone. Each also cross-checks its result against per-matrix
 LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 
@@ -16,6 +16,7 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_geqrf_compact`](#bench_geqrf_compact) | QR *factorization* | `cqr_mkl_dgeqrf_compact` vs `mkl_dgeqrf_compact` vs `LAPACKE_dgeqrf` |
 | [`bench_potrf_compact`](#bench_potrf_compact) | Cholesky *factorization* (SPD) | `cqr_mkl_dpotrf_compact` vs `mkl_dpotrf_compact` vs `LAPACKE_dpotrf` |
 | [`bench_qr_compact`](#bench_qr_compact) | end-to-end QR *solve* `AX = B` | fully-open compact pipeline (three steps, and the one-call `gels`) vs MKL's pipeline vs per-matrix LAPACK (the three-step chain, and `LAPACKE_dgels`) |
+| [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cqr_mkl_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cqr_mkl_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
@@ -31,6 +32,7 @@ cmake --build build -j
 ./build/bench_geqrf_compact      # QR factorization
 ./build/bench_potrf_compact      # Cholesky (SPD) factorization
 ./build/bench_qr_compact         # end-to-end QR solve
+./build/bench_posv_compact       # end-to-end SPD (Cholesky) solve
 ./build/bench_sysvnp_compact     # end-to-end symmetric (LDL^T) solve
 ```
 
@@ -110,6 +112,52 @@ comparison to LAPACK.
 bench_qr_compact [nmat] [reps]
 ```
 
+## `bench_posv_compact`
+
+Throughput of the end-to-end solve of many symmetric positive-definite systems
+`A_v X_v = B_v` via Cholesky, four ways:
+
+* **cqr fused** -- `cqr_mkl_dposv_compact`: the Cholesky factorization and its
+  two-sweep solve, fused per group of `V` matrices, one call on the whole pool
+  (the library threads the group loop).
+* **cqr 2-step** -- `cqr_mkl_dpotrf_compact` then `cqr_mkl_dpotrs_compact`: the
+  *same* group kernels (bit-identical result), but two whole-pool calls that
+  stream the pool twice. fused-vs-2-step is what the fusion buys -- pure memory
+  traffic, no arithmetic difference -- so grow the pool past the cache to see
+  it (`~1.0x` on a cache-resident pool, `1.1-1.3x` measured at orders `32-96`
+  on pools of `134-300 MB`).
+* **mkl-compact** -- `mkl_dpotrf_compact` + `mkl_dtrsm_compact` twice: MKL's
+  native pipeline (it ships no compact `potrs`/`posv`), kept per group from an
+  OpenMP loop so its factors are solved with cache-resident too, on the same
+  thread count.
+* **unbatched** -- `LAPACKE_dposv`, one matrix at a time from an OpenMP loop of
+  the same thread count.
+
+The SPD pool is `bench_potrf_compact`'s (symmetric, off-diagonals in `[-1, 1]`,
+diagonal `2n`: strictly diagonally dominant with a positive diagonal, hence SPD
+and well conditioned, `O(n^2)` to build). `A` and `B = A X` are packed once,
+only the solve is timed (every path destroys its input, restored untimed
+between passes), and every path is checked against the known solution
+`X(:,j) = j + 1`, so the reported error is a forward error. GFLOP/s uses the
+Cholesky `n^3/3 + n^2/2 + n/6` count plus `2 n^2 nrhs` for the two sweeps.
+
+```
+bench_posv_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
+```
+
+Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512
+matrices, one RHS): the fused compact solve matched MKL's compact pipeline
+(geometric mean `0.90x`, `0.84-1.2x` per size) and outran per-matrix
+`LAPACKE_dposv` by `3-4x` at orders `8-48` and `1.3-2.1x` at `60-105`, with the
+crossover near `128-168` and LAPACK ahead from there (`0.17x` at `500`) -- a
+geometric mean of `1.27x` over the default size list. fused-vs-2-step was
+`~1.0x` throughout: at 512 matrices the pools are cache-resident up to
+`n ~ 90`, and past the crossover the solve is a small fraction of the
+factorization at one RHS. On out-of-cache pools the fusion showed directly:
+`1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64` (8192), `1.14x` at
+`n = 96` (4096), each with `nrhs = 8`. Every path recovered the known solution
+to `~5e-15`.
+
 ## `bench_sysvnp_compact`
 
 Throughput of the end-to-end solve of many symmetric *indefinite* systems
@@ -151,8 +199,9 @@ Both paths recovered the known solution to `~6e-15`.
 
 ## Notes
 
-* **Defaults:** 512 matrices / 3 reps for the factorization benchmarks and
-  `bench_sysvnp_compact`, 1000 / 3 for `bench_qr_compact`.
+* **Defaults:** 512 matrices / 3 reps for the factorization benchmarks,
+  `bench_posv_compact` and `bench_sysvnp_compact`, 1000 / 3 for
+  `bench_qr_compact`.
 * **Flags (factorization benchmarks).** `--simdlen=2|4|8` forces a narrower
   interleave width than the host default (a wider-than-native width is rejected);
   `--size-sweep=nmin:nmax[:stride]` switches to a cqr-only throughput scan (no

@@ -11,11 +11,11 @@
  * here it is a single scalar status, 0 on success, or -1 for an unrecognized
  * format (the one failure dispatch can detect). Like LAPACK's INFO it is a
  * required output, written unconditionally, and `work` a required buffer, as
- * for MKL's own compact routines (which crash on a null info or work). ?geqrf
- * and ?ormqr answer the lwork = -1 workspace query with 1: the kernels need no
- * scratch. ?trsm has no
- * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?sytrfnp,
- * ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
+ * for MKL's own compact routines (which crash on a null info or work). ?geqrf,
+ * ?ormqr and ?orgqr answer the lwork = -1 workspace query with 1: the current
+ * kernels need no scratch. ?trsm has no
+ * info and no workspace, like the BLAS ?trsm it batches; ?potrf, ?potrs,
+ * ?posv, ?sytrfnp, ?sytrsnp and ?sysvnp have info but no workspace. ?gels does use work -- as
  * the tau scratch of its factorization, one slot per group -- so its query
  * returns the size of a compact tau buffer for the batch.
  *
@@ -25,7 +25,10 @@
 #include "cqr_mkl_ext.h"
 #include "cqr_geqrf_compact.hpp"
 #include "cqr_ormqr_compact.hpp"
+#include "cqr_orgqr_compact.hpp"
 #include "cqr_potrf_compact.hpp"
+#include "cqr_potrs_compact.hpp"
+#include "cqr_posv_compact.hpp"
 #include "cqr_sytrfnp_compact.hpp"
 #include "cqr_sytrsnp_compact.hpp"
 #include "cqr_sysvnp_compact.hpp"
@@ -85,6 +88,24 @@ void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n, MKL_I
 }
 
 template <typename T>
+void orgqr(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, T *ap, MKL_INT ldap,
+           const T *taup, T *work, MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format,
+           MKL_INT nm)
+{
+    *info = 0;
+    if (workspace_query(work, lwork)) return;
+    /* k == 0 is not empty (Q = I(:, 0:n-1) is still written); only a Q with no
+     * rows, no columns, or no matrices is. */
+    if (m == 0 || n == 0 || nm == 0) return;
+
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::orgqr_compact<T, decltype(v)::value, MKL_INT>(rowmajor, m, n, k, ap,
+                                                                   ldap, taup, nm);
+    });
+}
+
+template <typename T>
 void potrf(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,
            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
@@ -96,6 +117,39 @@ void potrf(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,
     *info = run_format<T>(format, [&](auto v) {
         cqr::detail::potrf_compact<T, decltype(v)::value, MKL_INT>(rowmajor, upper, n, ap,
                                                                    ldap, nm);
+    });
+}
+
+template <typename T>
+void potrs(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, const T *ap,
+           MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
+           MKL_INT nm)
+{
+    *info = 0;
+    if (n == 0 || nrhs == 0 || nm == 0) return;
+
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    const bool upper = (uplo == MKL_UPPER);
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::potrs_compact<T, decltype(v)::value, MKL_INT>(
+            rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
+    });
+}
+
+template <typename T>
+void posv(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap, MKL_INT ldap,
+          T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
+{
+    *info = 0;
+    /* nrhs == 0 is NOT empty -- LAPACK ?posv still factors ap (the kernel
+     * skips the solve and never references bp) -- so it flows through. */
+    if (n == 0 || nm == 0) return;
+
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    const bool upper = (uplo == MKL_UPPER);
+    *info = run_format<T>(format, [&](auto v) {
+        cqr::detail::posv_compact<T, decltype(v)::value, MKL_INT>(
+            rowmajor, upper, n, nrhs, ap, ldap, bp, ldbp, nm);
     });
 }
 
@@ -136,7 +190,9 @@ void sysvnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,
             MKL_INT nm)
 {
     *info = 0;
-    if (n == 0 || nrhs == 0 || nm == 0) return;
+    /* nrhs == 0 is NOT empty -- LAPACK ?sysv still factors ap (the kernel
+     * skips the solve and never references bp) -- so it flows through. */
+    if (n == 0 || nm == 0) return;
 
     const bool rowmajor = (layout == MKL_ROW_MAJOR);
     const bool upper = (uplo == MKL_UPPER);
@@ -208,11 +264,31 @@ void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *
         ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, work, lwork, info, \
               format, nm);                                                               \
     }                                                                                    \
+    void cqr_mkl_##p##orgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k,  \
+                                    T *ap, MKL_INT ldap, const T *taup, T *work,         \
+                                    MKL_INT lwork, MKL_INT *info,                        \
+                                    MKL_COMPACT_PACK format, MKL_INT nm)                 \
+    {                                                                                    \
+        orgqr(layout, m, n, k, ap, ldap, taup, work, lwork, info, format, nm);           \
+    }                                                                                    \
     void cqr_mkl_##p##potrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap,  \
                                     MKL_INT ldap, MKL_INT *info,                         \
                                     MKL_COMPACT_PACK format, MKL_INT nm)                 \
     {                                                                                    \
         potrf(layout, uplo, n, ap, ldap, info, format, nm);                              \
+    }                                                                                    \
+    void cqr_mkl_##p##potrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,         \
+                                    MKL_INT nrhs, const T *ap, MKL_INT ldap, T *bp,      \
+                                    MKL_INT ldbp, MKL_INT *info,                         \
+                                    MKL_COMPACT_PACK format, MKL_INT nm)                 \
+    {                                                                                    \
+        potrs(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, format, nm);              \
+    }                                                                                    \
+    void cqr_mkl_##p##posv_compact(                                                      \
+        MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap, MKL_INT ldap,  \
+        T *bp, MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)         \
+    {                                                                                    \
+        posv(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, format, nm);               \
     }                                                                                    \
     void cqr_mkl_##p##sytrfnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,       \
                                       T *ap, MKL_INT ldap, MKL_INT *info,                \

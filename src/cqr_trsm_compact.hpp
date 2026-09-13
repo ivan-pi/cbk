@@ -111,7 +111,10 @@ void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int l
     using VT = typename pack<T, V>::type;
     static_assert(std::is_floating_point_v<T>,
                   "trsm_compact is defined for real float/double");
-    assert(ldap >= m && ldbp >= m);
+    /* n = 1 never steps to a second RHS column, so ldbp is unused then: the
+     * routing in trsm_compact_group reaches here with ldbp = 1 for a one-column
+     * row-major B, whose unit row stride is a valid column-major column. */
+    assert(ldap >= m && (n <= 1 || ldbp >= m));
 
     const VT *A = reinterpret_cast<const VT *>(a_);
     VT *B = reinterpret_cast<VT *>(b_);
@@ -230,7 +233,7 @@ void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int
  * reached through a transposed view, as gels's LQ path does) -- and to the
  * strided kernel otherwise. One branch per group, outside every kernel loop.
  * The per-group entry point the fused solves (gels, and through the pointer
- * form below, the LDL^T solve) compose their sweeps from. */
+ * form below, the Cholesky and LDL^T solves) compose their sweeps from. */
 template <typename T, int V, typename Int = int>
 inline void trsm_compact_group(bool left, bool upper, bool tran, bool unit, Int m, Int n,
                                T alpha, ConstBatchView<T, V, Int> A,

@@ -212,10 +212,12 @@ int test_empty_op()
         const int ldb = row ? nrhs : n;
         std::vector<double> bp = compact_buffer<double>(nm, n, nrhs, ldb, V, row);
         std::fill(bp.begin(), bp.end(), 1.0);
-        double *ap = nullptr, *tau = nullptr; // m = 0: A and tau are empty, never touched
-        const int lda = row ? n : 1;          // (but ldap is still checked)
-        int info =
-            dgels_compact(lay, 'N', 0, n, nrhs, ap, lda, bp.data(), ldb, tau, V, nm);
+        // m = 0: A and tau are empty and never touched, but Fortran semantics
+        // want a (dummy) argument present, so hand in 1-element stand-ins
+        double a_dummy = 0, tau_dummy = 0;
+        const int lda = row ? n : 1; // ldap is still checked
+        int info = dgels_compact(lay, 'N', 0, n, nrhs, &a_dummy, lda, bp.data(), ldb,
+                                 &tau_dummy, V, nm);
         double mx = 0;
         for (double x : bp)
             mx = std::max(mx, std::abs(x));

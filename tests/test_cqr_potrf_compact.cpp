@@ -1,19 +1,25 @@
 // test_cqr_potrf_compact.cpp
 //
 // Self-contained validation of the templated compact Cholesky factorization
-// (dpotrf_compact / spotrf_compact), with no BLAS dependency. The reference is
-// the unblocked Cholesky (LAPACK ?potf2) implemented in scalar form -- the same
-// algorithm the vectorized kernel executes V lanes at a time, so a correct
-// kernel matches it to working precision.
+// (dpotrf_compact / spotrf_compact), its solve companion (dpotrs_compact /
+// spotrs_compact) and the fused factor-and-solve (dposv_compact /
+// sposv_compact), with no BLAS dependency. The reference is the unblocked
+// Cholesky (LAPACK ?potf2) implemented in scalar form -- the same algorithm
+// the vectorized kernel executes V lanes at a time, so a correct kernel
+// matches it to working precision.
 //
 // Checks per (T, V, uplo, layout):
 //   1. named-triangle factor  ==  scalar potf2 factor   (elementwise, ~eps*scale)
 //   2. reconstruction  L L^T == A  (lower) / U^T U == A  (upper)
 //   3. the strictly-opposite triangle of the compact buffer is bit-for-bit
 //      unchanged from the input (the routine must not reference or write it)
-// plus LAPACK-style argument validation of the C API.
+//   4. end-to-end solve: factor + ?potrs_compact recovers a known X, and
+//      ?posv_compact reproduces that factor and X bit-for-bit
+//   5. nrhs = 0: ?posv_compact still factors (LAPACK ?posv), bit-identical to
+//      ?potrf_compact, with a 1-element dummy bp (never referenced)
+// plus LAPACK-style argument validation of the three C APIs.
 //
-// Assisted-by: Claude:claude-opus-4.8
+// Assisted-by: Claude:claude-opus-4.8 Claude
 
 #include <cstdio>
 #include <cmath>
@@ -132,6 +138,84 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     return (!ok_f) + (!ok_r) + (!ok_u) + (!ok_i);
 }
 
+// --------------------- end-to-end solve A X = B ---------------------
+// Two-step (potrf, then potrs) against a known X, and the fused posv against
+// the two-step result: the fused driver runs the same group kernels in the
+// same order on the same data, so its factor and X must match bit-for-bit.
+
+template <class T, int V>
+static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
+{
+    const T eps = std::numeric_limits<T>::epsilon();
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    const int ldb = rowmajor ? nrhs : n;
+
+    // known X, B = A X densely
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_spd(A.view(idx));
+        matmul(A.view(idx), X, B.view(idx));
+    }
+
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
+    std::vector<T> ap2 = ap, bp2 = bp; // the fused call's copies
+
+    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    int info_s =
+        compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), n, bp.data(), ldb, V, nm);
+    int info_v =
+        compact<T>::posv(layout, uplo, n, nrhs, ap2.data(), n, bp2.data(), ldb, V, nm);
+
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
+
+    const auto [e_fwd, e_res] = solve_errors(A, B, Xhat, X);
+    // fused vs two-step, on the raw compact buffers (padded lanes included)
+    const bool fused_same = (ap2 == ap) && (bp2 == bp);
+
+    // The tame SPD batches keep cond(A) modest, so residual and forward error
+    // share one backward-stability-sized gate.
+    const double rtol = 100.0 * std::max(1, n) * eps;
+    bool ok = (e_fwd <= rtol) && (e_res <= rtol) && fused_same && (info_f == 0) &&
+              (info_s == 0) && (info_v == 0);
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | fwd:%.1e "
+                "res:%.1e (%.1e) posv==trf+trs:%s info=%d/%d/%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, nrhs, e_fwd, e_res, rtol,
+                fused_same ? "yes" : "NO", info_f, info_s, info_v, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// ------------- nrhs = 0: the fused driver still factors --------------
+// LAPACK ?posv calls ?potrf unconditionally -- the nrhs = 0 quick return is
+// ?potrs's -- so the fused driver must factor ap even with no right-hand
+// sides, bit-identically to ?potrf_compact, without referencing bp (a
+// 1-element dummy here: Fortran semantics want the argument present).
+
+template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    MatrixBatch<T> A(nm, n, n);
+    for (int idx = 0; idx < nm; ++idx)
+        gen_spd(A.view(idx));
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> ap2 = ap;
+
+    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    T b_dummy = 0; // never referenced at nrhs = 0, present per Fortran semantics
+    int info_v = compact<T>::posv(layout, uplo, n, 0, ap2.data(), n, &b_dummy, n, V, nm);
+
+    const bool same = (ap == ap2);
+    bool ok = (info_f == 0) && (info_v == 0) && same;
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=0 | posv==potrf:%s "
+                "info=%d/%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, same ? "yes" : "NO", info_f,
+                info_v, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
 // ------------- non-SPD lane isolation (design section 6.2) ----------
 // A single non-SPD matrix shares a pack with SPD siblings. The routine takes no
 // safeguarded path and reports no error (info stays 0): the bad lane simply
@@ -202,34 +286,17 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
 
 // --------------------- C API argument validation --------------------
 
+// The factor signature is shared with ?sytrfnp and the solve signature with
+// ?sytrsnp/?sysvnp -- one validator each in cqr_compact.cpp -- so the tables
+// live in test_compact_util.hpp and are run here against this family's three
+// entry points.
 static int test_validation()
 {
-    const int n = 8, V = 4, nm = 4, ld = 8;
-    std::vector<double> ap((size_t)ld * n * V, 0);
-    // Seed a valid identity-ish diagonal so factoring is sane (one group's
-    // worth). The offset is the compact (interleaved) one, not a dense 2-D
-    // layout.
-    for (int v = 0; v < V; ++v)
-        for (int i = 0; i < n; ++i)
-            ap[((size_t)i * ld + i) * V + v] = 1.0;
-    auto call = [&](char lay, char up, int n_, int ldap_, int V_, int nm_) {
-        return dpotrf_compact(lay, up, n_, ap.data(), ldap_, V_, nm_);
-    };
-    // clang-format off
-    const ApiCheck t[] = {
-        {"valid col L",  call('C', 'L', n,  ld,  V, nm),   0},
-        {"valid row U",  call('R', 'U', n,  ld,  V, nm),   0},
-        {"bad layout",   call('X', 'L', n,  ld,  V, nm),  -1},
-        {"bad uplo",     call('C', 'X', n,  ld,  V, nm),  -2},
-        {"n<0",          call('C', 'L', -1, ld,  V, nm),  -3},
-        {"ldap<n",       call('C', 'L', n,  n-1, V, nm),  -5},
-        {"bad V",        call('C', 'L', n,  ld,  3, nm),  -6},
-        {"nm<0",         call('C', 'L', n,  ld,  V, -1),  -7},
-        {"empty n=0",    call('C', 'L', 0,  1,   V, nm),   0},
-        {"empty nm=0",   call('C', 'L', n,  ld,  V, 0),    0},
-    };
-    // clang-format on
-    return report_api_checks(t);
+    std::vector<ApiCheck> t;
+    append_factor_api_checks(t, "trf", dpotrf_compact);
+    append_solve_api_checks(t, "trs", dpotrs_compact);
+    append_solve_api_checks(t, "sv", dposv_compact);
+    return report_api_checks(t.data(), t.size());
 }
 
 // ------------------------------- main --------------------------------
@@ -254,6 +321,22 @@ int main()
             fails += run_case<float, 16>(17, 24, u, l); // padded partial group
         }
 
+    // End-to-end solve A X = B on SPD batches, closing the pipeline (factor +
+    // potrs, and the fused posv), over uplo/layout/precision, padded groups,
+    // and RHS counts that exercise trsm's 4/2/1 column blocks.
+    for (char u : uplos)
+        for (char l : lays) {
+            fails += run_solve<double, 4>(8, 30, 5, u, l);
+            fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
+            fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
+            fails += run_solve<float, 8>(16, 24, 3, u, l);
+        }
+
+    // nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to potrf,
+    // bp a never-referenced dummy.
+    fails += run_nrhs0<double, 4>(6, 20, 'L', 'C');
+    fails += run_nrhs0<float, 8>(9, 16, 'U', 'R');
+
     // Non-SPD lane isolation (design 6.2): a poisoned lane must not contaminate
     // its SPD siblings, over both uplo, both layouts, and both precisions.
     for (char u : uplos)
@@ -264,6 +347,7 @@ int main()
 
     // 10 groups: takes the OpenMP group loop when the team has <= 10 threads.
     fails += run_case<double, 4>(40, 20, 'L', 'C');
+    fails += run_solve<double, 4>(40, 20, 4, 'L', 'C');
 
     return finish(fails);
 }

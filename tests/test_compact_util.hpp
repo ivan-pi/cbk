@@ -20,7 +20,9 @@
 #include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <random>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -99,6 +101,22 @@ template <class Mv> double norm1(Mv M)
         mx = std::max(mx, s);
     }
     return mx;
+}
+
+// Deviation of Q's columns from orthonormality, max |(Q^T Q - I)(i,j)| over
+// the upper triangle (Q^T Q is symmetric), accumulated in double so the gate
+// does not inherit float rounding. BLAS-free; shared by the orgqr suites.
+template <class Qv> double orth_error(Qv Q)
+{
+    double e = 0;
+    for (int j = 0; j < Q.cols; ++j)
+        for (int i = 0; i <= j; ++i) {
+            double s = 0;
+            for (int l = 0; l < Q.rows; ++l)
+                s += (double)Q(l, i) * Q(l, j);
+            e = std::max(e, std::abs(s - (i == j ? 1.0 : 0.0)));
+        }
+    return e;
 }
 
 // C (m x n) := A (m x k) * B (k x n) -- the plain triple loop, for forming
@@ -324,9 +342,10 @@ template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T
 }
 
 // ----------------------- portable C API, by scalar type ------------
-// compact<T>::geqrf / ormqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm / gels forward
-// to the d/s entry points of cqr_compact.h, so the templated suites call one name for both precisions;
-// compact<T>::name labels their output.
+// compact<T>::geqrf / ormqr / orgqr / potrf / potrs / posv / sytrfnp / sytrsnp
+// / sysvnp / trsm / gels forward to the d/s entry points of cqr_compact.h, so
+// the templated suites call one name for both precisions; compact<T>::name
+// labels their output.
 
 template <class T> struct compact;
 
@@ -340,8 +359,17 @@ template <> struct compact<T> {                                                 
     static int ormqr(char tr, int m, int nrhs, int k, const T *a, int lda, const T *tau,   \
                      T *b, int ldb, int V, int nm)                                         \
     { return p##ormqr_compact(tr, m, nrhs, k, a, lda, tau, b, ldb, V, nm); }               \
+    static int orgqr(char lay, int m, int n, int k, T *a, int lda, const T *tau,           \
+                     int V, int nm)                                                        \
+    { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \
     static int potrf(char lay, char up, int n, T *a, int ld, int V, int nm)                \
     { return p##potrf_compact(lay, up, n, a, ld, V, nm); }                                 \
+    static int potrs(char lay, char up, int n, int nrhs, const T *a, int lda, T *b,        \
+                     int ldb, int V, int nm)                                               \
+    { return p##potrs_compact(lay, up, n, nrhs, a, lda, b, ldb, V, nm); }                  \
+    static int posv(char lay, char up, int n, int nrhs, T *a, int lda, T *b, int ldb,      \
+                    int V, int nm)                                                         \
+    { return p##posv_compact(lay, up, n, nrhs, a, lda, b, ldb, V, nm); }                   \
     static int sytrfnp(char lay, char up, int n, T *a, int ld, int V, int nm)              \
     { return p##sytrfnp_compact(lay, up, n, a, ld, V, nm); }                               \
     static int sytrsnp(char lay, char up, int n, int nrhs, const T *a, int lda, T *b,      \
@@ -677,7 +705,7 @@ SolveErrors solve_errors(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
 // One row of a C API validation table: the call made, what it returned, and
 // what LAPACK-style argument checking must return.
 struct ApiCheck {
-    const char *what;
+    std::string what;
     int got, want;
 };
 
@@ -691,8 +719,86 @@ inline int report_api_checks(const ApiCheck *t, std::size_t n)
     std::printf("C API validation: %zu checks | %s\n", n, bad ? "FAIL" : "OK");
     for (std::size_t i = 0; i < n; ++i)
         if (t[i].got != t[i].want)
-            std::printf("  %-13s got=%d want=%d\n", t[i].what, t[i].got, t[i].want);
+            std::printf("  %-16s got=%d want=%d\n", t[i].what.c_str(), t[i].got,
+                        t[i].want);
     return bad ? 1 : 0;
+}
+
+// The suites table-test two shared entry-point signatures, each validated by
+// one helper in src/cqr_compact.cpp, so each is one contract with one table:
+//   factor  (layout, uplo, n, ap, ldap, V, nm)            -- ?potrf, ?sytrfnp
+//   solve   (layout, uplo, n, nrhs, ap, ldap, bp, ldbp, V, nm)
+//                                     -- ?potrs, ?posv, ?sytrsnp, ?sysvnp
+// Each append_* runs that contract's rows against one entry point and appends
+// them to `t`, labels prefixed with `tag`; pass the entry point itself, e.g.
+// append_solve_api_checks(t, "trs", dpotrs_compact). The buffers are owned
+// here, seeded with unit diagonals (at the compact, interleaved offsets --
+// not a dense 2-D layout) so the valid calls factor/solve sanely.
+using factor_api_fn = std::function<int(char, char, int, double *, int, int, int)>;
+using solve_api_fn =
+    std::function<int(char, char, int, int, double *, int, double *, int, int, int)>;
+
+inline std::vector<double> seeded_compact_diag(int n, int ld, int V)
+{
+    std::vector<double> ap((std::size_t)ld * n * V, 0);
+    for (int v = 0; v < V; ++v)
+        for (int i = 0; i < n; ++i)
+            ap[((std::size_t)i * ld + i) * V + v] = 1.0;
+    return ap;
+}
+
+inline void append_factor_api_checks(std::vector<ApiCheck> &t, const std::string &tag,
+                                     const factor_api_fn &f)
+{
+    const int n = 8, V = 4, nm = 4, ld = 8;
+    std::vector<double> ap = seeded_compact_diag(n, ld, V);
+    auto call = [&](char lay, char up, int n_, int ldap_, int V_, int nm_) {
+        return f(lay, up, n_, ap.data(), ldap_, V_, nm_);
+    };
+    auto name = [&](const char *what) { return tag + " " + what; };
+    // clang-format off
+    t.insert(t.end(), {
+        {name("valid col L"), call('C', 'L', n,  ld,  V, nm),   0},
+        {name("valid row U"), call('R', 'U', n,  ld,  V, nm),   0},
+        {name("bad layout"),  call('X', 'L', n,  ld,  V, nm),  -1},
+        {name("bad uplo"),    call('C', 'X', n,  ld,  V, nm),  -2},
+        {name("n<0"),         call('C', 'L', -1, ld,  V, nm),  -3},
+        {name("ldap<n"),      call('C', 'L', n,  n-1, V, nm),  -5},
+        {name("bad V"),       call('C', 'L', n,  ld,  3, nm),  -6},
+        {name("nm<0"),        call('C', 'L', n,  ld,  V, -1),  -7},
+        {name("empty n=0"),   call('C', 'L', 0,  1,   V, nm),   0},
+        {name("empty nm=0"),  call('C', 'L', n,  ld,  V, 0),    0},
+    });
+    // clang-format on
+}
+
+inline void append_solve_api_checks(std::vector<ApiCheck> &t, const std::string &tag,
+                                    const solve_api_fn &f)
+{
+    const int n = 8, nrhs = 3, V = 4, nm = 4, ld = 8;
+    std::vector<double> ap = seeded_compact_diag(n, ld, V);
+    std::vector<double> bp((std::size_t)ld * nrhs * V, 0);
+    auto call = [&](char lay, char up, int n_, int nrhs_, int ldap_, int ldbp_, int V_,
+                    int nm_) {
+        return f(lay, up, n_, nrhs_, ap.data(), ldap_, bp.data(), ldbp_, V_, nm_);
+    };
+    auto name = [&](const char *what) { return tag + " " + what; };
+    // clang-format off
+    t.insert(t.end(), {
+        {name("valid col L"), call('C', 'L', n, nrhs, ld, n,    V, nm),   0},
+        {name("valid row U"), call('R', 'U', n, nrhs, ld, nrhs, V, nm),   0},
+        {name("bad layout"),  call('X', 'L', n, nrhs, ld, n,    V, nm),  -1},
+        {name("bad uplo"),    call('C', 'X', n, nrhs, ld, n,    V, nm),  -2},
+        {name("n<0"),         call('C', 'L', -1, nrhs, ld, n,   V, nm),  -3},
+        {name("nrhs<0"),      call('C', 'L', n, -1,  ld, n,     V, nm),  -4},
+        {name("ldap<n"),      call('C', 'L', n, nrhs, n-1, n,   V, nm),  -6},
+        {name("ldbp<n"),      call('C', 'L', n, nrhs, ld, n-1,  V, nm),  -8},
+        {name("ldbp<nrhs R"), call('R', 'L', n, nrhs, ld, nrhs-1, V, nm), -8},
+        {name("bad V"),       call('C', 'L', n, nrhs, ld, n,    3, nm),  -9},
+        {name("nm<0"),        call('C', 'L', n, nrhs, ld, n,    V, -1), -10},
+        {name("empty nrhs"),  call('C', 'L', n, 0,   ld, n,     V, nm),   0},
+    });
+    // clang-format on
 }
 template <std::size_t N> int report_api_checks(const ApiCheck (&t)[N])
 {

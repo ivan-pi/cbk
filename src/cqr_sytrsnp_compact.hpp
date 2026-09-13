@@ -11,7 +11,9 @@
  *
  * The two triangular sweeps are the compact trsm group kernels with a unit
  * diagonal (the stored diagonal -- D -- is not read by them): column-major
- * takes trsm's tuned side='L' row-dot path, row-major the strided kernel. The
+ * takes trsm's tuned side='L' row-dot path, row-major the strided kernel
+ * (except a single RHS column, contiguous in either layout, which the view
+ * routing sends to the tuned path too). The
  * diagonal solve between them, B(i,:) *= 1/D(i), is the one operation trsm
  * cannot express, an O(n*nrhs) row scaling next to the O(n^2*nrhs) sweeps. No
  * workspace; B is overwritten with X. The LAPACK ?sytrs analogue, minus ipiv.

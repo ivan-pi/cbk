@@ -42,8 +42,9 @@ include/   public headers: cqr_compact.h (portable C API), cqr_mkl_ext.h
            and their Fortran interfaces cqr_compact.fi / cqr_mkl_ext.fi
            (dual-form include files, see the convention below)
 src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
-           shared cqr_compact_common.hpp; sysvnp's is a driver over the sytrfnp
-           and sytrsnp group kernels), the two adapter sources that implement
+           shared cqr_compact_common.hpp; posv's and sysvnp's are drivers over
+           the potrf/potrs and sytrfnp/sytrsnp group kernels), the two adapter
+           sources that implement
            the public headers (cqr_compact.cpp, cqr_mkl_ext.cpp), and
            cqr_matrix_view.hpp and cqr_matrix_batch.hpp, the dense MatrixView
            and the owning MatrixBatch the tests, benchmarks and examples share
@@ -198,7 +199,7 @@ workspace contract, or the benchmarks' threading.
 - **One kernel per routine.** Every kernel addresses its operands through
   `BatchView` (strides `si`, `sj`), so column-major, row-major, and ormqr's
   `side='R'` are the same code with different strides -- and gels's LQ case is
-  geqrf's kernel over the transposed view. The fused solves (gels, sysvnp)
+  geqrf's kernel over the transposed view. The fused solves (gels, posv, sysvnp)
   compose the factorization and solve *group* kernels inside one
   `for_each_group` body; add a fused driver the same way rather than
   duplicating arithmetic. Do not add parameters to an existing group kernel's

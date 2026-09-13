@@ -12,7 +12,10 @@
  * factorization and once more for the solve -- the penalty the solve benchmark
  * measured for whole-pool pipelines (PLANS.md) -- and the whole solve threads
  * as one group loop. On exit ap holds the factor (D on the diagonal, unit L or
- * U strictly off it, the opposite triangle untouched) and bp holds X.
+ * U strictly off it, the opposite triangle untouched) and bp holds X. As in
+ * LAPACK ?sysv -- which calls ?sytrf unconditionally; the nrhs = 0 quick
+ * return is ?sytrs's -- nrhs = 0 still factors ap, and bp is then never
+ * referenced.
  *
  * Assisted-by: Claude
  */
@@ -36,8 +39,16 @@ void sysvnp_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap,
 {
     assert(nm >= 1 && n >= 0 && nrhs >= 0);
 
+    /* no right-hand sides: factor anyway (LAPACK ?sysv), touching only ap */
+    if (nrhs == 0) {
+        sytrfnp_compact<T, V, Int>(rowmajor, upper, n, ap, ldap, nm);
+        return;
+    }
+
     const std::size_t str_a = group_stride(rowmajor, ldap, n, n, V);
     const std::size_t str_b = group_stride(rowmajor, ldbp, n, nrhs, V);
+    /* the work estimate for_each_group's threading gate weighs: both fused steps */
+    const double flops_per_group = sytrfnp_flops(n, V) + sytrsnp_flops(n, nrhs, V);
 
     for_each_group<V>(
         nm,
@@ -48,7 +59,7 @@ void sysvnp_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap,
             sytrsnp_compact_group<T, V, Int>(rowmajor, upper, n, nrhs, a, ldap,
                                              bp + g * str_b, ldbp);
         },
-        sytrfnp_flops(n, V) + sytrsnp_flops(n, nrhs, V));
+        flops_per_group);
 }
 
 } /* namespace cqr::detail */
