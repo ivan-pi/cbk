@@ -1,8 +1,8 @@
 # CLAUDE.md
 
 Working notes for contributors (human or agent) to **cbk** (Compact Batch
-Kernels, libcbk; named **cqr** until September 2026), a library of
-batched QR, Cholesky and LDL^T factorizations for many small matrices in the
+Kernels, libcbk), a library of batched QR, Cholesky and LDL^T factorizations
+for many small matrices in the
 compact (interleaved) format: a portable C API over SIMD kernels, plus an
 optional Intel MKL-style API that drops into MKL's compact ecosystem.
 

@@ -15,9 +15,6 @@ into MKL's Compact ecosystem on Intel CPUs.
 > models, working from and against per-routine design documents, with human
 > direction and review. Each design document and benchmark page records the
 > models that assisted it, and the commit history records the rest.
->
-> The library was named **cqr** ("compact QR") until September 2026; older
-> links, issues and citations refer to it by that name.
 
 | Routine (`s`/`d`) | What it does |
 |-------------------|--------------|
