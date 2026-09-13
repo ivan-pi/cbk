@@ -15,6 +15,8 @@
  *   4. padded lanes of a partial last group come out exactly identity
  * plus k < n (unit-seeded extra columns), k = 0 (Q = leading columns of I),
  * row-major, and the C API's LAPACK-style argument validation.
+ *
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #include <cstdio>

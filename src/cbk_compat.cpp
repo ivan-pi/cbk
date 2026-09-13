@@ -19,7 +19,7 @@
  * the tau scratch of its factorization, one slot per group -- so its query
  * returns the size of a compact tau buffer for the batch.
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 #include "cbk_compat.h"

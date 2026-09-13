@@ -17,7 +17,7 @@
  * return is ?sytrs's -- nrhs = 0 still factors ap, and bp is then never
  * referenced.
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude Claude:claude-fable-5
  */
 
 #ifndef CBK_SYSVNP_COMPACT_HPP

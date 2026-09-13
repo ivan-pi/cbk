@@ -38,7 +38,7 @@
  * host-tuned flags (e.g. `-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the open
  * compact kernel emits the full vector width.
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude Claude:claude-fable-5
  */
 
 #include <mkl.h>

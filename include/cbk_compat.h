@@ -85,7 +85,7 @@
  * Per-routine parameter references:
  * docs/cbk_d{geqrf,ormqr,potrf,sytrfnp,trsm,gels}_compact_design.md.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #include "mkl_types.h"

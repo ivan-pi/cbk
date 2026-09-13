@@ -28,7 +28,7 @@
  * factor batch ap is n x n with leading dimension ldap, the RHS batch bp is
  * n x nrhs with leading dimension ldbp (>= n column-major, >= nrhs row-major).
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude Claude:claude-fable-5
  */
 
 #ifndef CBK_SYTRSNP_COMPACT_HPP

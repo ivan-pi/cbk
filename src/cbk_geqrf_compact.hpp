@@ -21,7 +21,7 @@
  * on and above the diagonal, the Householder vectors v(kk) below it (implicit 1
  * on the diagonal), and taup(0..k-1) the reflector scalars.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #ifndef CBK_GEQRF_COMPACT_HPP

@@ -1,6 +1,6 @@
 # Benchmarks
 
-> Assisted-by: Claude:claude-opus-4.8
+> Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 Throughput benchmarks for the compact batched kernels, alongside the programs
 they drive. Most run the *same* math several ways -- this project's

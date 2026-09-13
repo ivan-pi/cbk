@@ -36,7 +36,7 @@
  *
  * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude Claude:claude-fable-5
  */
 
 #include "test_mkl_util.hpp" /* compat<T>, mkl<T> + the MKL-free helpers */

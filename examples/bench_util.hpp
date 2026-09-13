@@ -12,7 +12,7 @@
  * headers, and PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs
  * using it link MKL (all benchmarks do).
  *
- * Assisted-by: Claude:claude-opus-4.8 Claude
+ * Assisted-by: Claude:claude-opus-4-8 Claude Claude:claude-fable-5
  */
 
 #ifndef CBK_BENCH_UTIL_HPP

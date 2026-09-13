@@ -13,7 +13,7 @@
 //      recovers a known X from B = A X                 (in-situ with ormqr)
 // plus LAPACK-style argument validation of the C API.
 //
-// Assisted-by: Claude:claude-opus-4.8
+// Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 #include <cstdio>
 #include <cstdlib>

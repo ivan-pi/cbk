@@ -30,7 +30,7 @@
 # clang), and it puts -m64, -DMKL_ILP64 and an rpath on every consumer. One
 # search here covers both installations.
 #
-# Assisted-by: Claude:claude-opus-4.8 Claude:claude-fable-5
+# Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 set(MKLCompact_THREADING "sequential" CACHE STRING "MKL threading layer: sequential | threaded")
 set(MKLCompact_INTERFACE "lp64" CACHE STRING "MKL integer interface: lp64 | ilp64")

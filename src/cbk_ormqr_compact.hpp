@@ -41,7 +41,7 @@
  * A is the (ldap, k) reflector batch, exactly as LAPACK ?ormqr declares it, so
  * its per-matrix column extent -- hence the group stride -- is k.
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 #ifndef CBK_ORMQR_COMPACT_HPP

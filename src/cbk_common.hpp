@@ -24,7 +24,7 @@
  *   SVE:   compile fixed-width with -msve-vector-bits=512 on A64FX to map V=8
  *          doubles onto one SVE register.
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 #ifndef CBK_COMMON_HPP

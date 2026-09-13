@@ -11,6 +11,8 @@
 #   cbk_MKL_INTERFACE  the MKL integer interface cbk was built with, lp64 or
 #                  ilp64: part of its ABI (MKL_INT in every prototype), so
 #                  the consumer's MKLCompact_INTERFACE has to match
+#
+# Assisted-by: Claude:claude-fable-5
 
 @PACKAGE_INIT@
 

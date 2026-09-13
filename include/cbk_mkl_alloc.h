@@ -11,7 +11,7 @@
  * These helpers call MKL runtime functions, so a translation unit that
  * includes this header must link MKL (e.g. CMake target MKL::Compact).
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #include "mkl_service.h" /* mkl_malloc / mkl_free */

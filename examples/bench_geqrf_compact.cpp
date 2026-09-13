@@ -30,7 +30,7 @@
  * Build: needs Intel MKL plus this repo's MKL-style API; wired up by CMakeLists.txt
  * as the `bench_geqrf_compact` target. OpenMP is used when available.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #include <mkl.h>

@@ -27,7 +27,7 @@
  *     B_v(i,j) = bp[g*ldbp*n*V + (j*ldbp+i)*V + v]
  * Row-major swaps the in-matrix roles to i*ld + j.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #ifndef CBK_TRSM_COMPACT_HPP

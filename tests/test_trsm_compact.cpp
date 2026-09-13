@@ -15,7 +15,7 @@
 //      formed with an independent triangular multiply (so a bug shared by the
 //      reference and the kernel cannot pass unseen).
 //
-// Assisted-by: Claude:claude-opus-4.8
+// Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 #include <cassert>
 #include <cstdio>

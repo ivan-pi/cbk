@@ -24,7 +24,7 @@
 //     its siblings (design section 6.2),
 //   - LAPACK-style argument validation of the three C APIs.
 //
-// Assisted-by: Claude
+// Assisted-by: Claude Claude:claude-fable-5
 
 #include <cstdio>
 #include <cmath>

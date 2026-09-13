@@ -6,7 +6,7 @@
  * process -- and dispatches on the runtime interleave width V to a compile-time
  * instantiation via for_vlen.
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 #include "cbk.h"
