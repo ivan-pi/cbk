@@ -208,8 +208,10 @@ workspace contract, or the benchmarks' threading.
   compiler unrolls, not as hand-expanded `w0..w3` copies.
 - **Fortran interfaces are dual-form include files.** `include/cqr_compact.fi`
   and `include/cqr_mkl_ext.fi` hold `bind(c)` interface blocks for the two C
-  APIs (specific names only, no generics; the MKL enums transcribed as
-  `enum, bind(c)`; `integer(c_int)` for LP64 `MKL_INT`), written so one file
+  APIs (each `d`/`s` pair grouped under a precision-generic name, so both the
+  specifics and `geqrf_compact`-style generics are declared; the MKL enums
+  transcribed as `enum, bind(c)`; `integer(c_int)` for LP64 `MKL_INT`),
+  written so one file
   INCLUDEs from both fixed-form and free-form sources: statements in columns
   7-72, a continued line ends with `&` in column 73 (past fixed form's field,
   a continuation in free form) and its continuation carries `&` in column 6
@@ -227,13 +229,13 @@ workspace contract, or the benchmarks' threading.
   edit the two files in step. The MKL Fortran tests are preprocessed
   (`.F90`/`.F`) and switch include file and integer kind on `CQR_ILP64`,
   which CMake defines under an ilp64 build; CI's ilp64 leg runs them.
-  The free-form test programs are precision-generic: they declare generic
-  interfaces over the `.fi` specifics (`interface geqrf_compact` /
-  `procedure sgeqrf_compact, dgeqrf_compact` -- the pattern a user copies)
-  and write one body in the work precision `wp`, which `CQR_SINGLE` sets
-  to `c_float`; CMake builds each source as a `_d` and an `_s` executable.
-  Generic resolution requires the actuals' rank to match the assumed-size
-  dummies, so the compact buffers in these tests stay rank-1.
+  The free-form test programs are precision-generic: they call through the
+  `.fi` files' generic names and write one body in the work precision `wp`,
+  which `CQR_SINGLE` sets to `c_float`; CMake builds each source as a `_d`
+  and an `_s` executable. Generic resolution requires the actuals' rank to
+  match the assumed-size dummies (a call to a specific accepts any rank by
+  sequence association), so compact buffers are rank-1 wherever the generic
+  names are used -- the tests included.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th

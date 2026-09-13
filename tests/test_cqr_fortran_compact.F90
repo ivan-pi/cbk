@@ -7,12 +7,12 @@
 ! interface blocks match the C signatures and the link line closes, not the
 ! numerics (the C++ suites own those).
 !
-! The test body is precision-generic: the include file provides only
-! specific names (dgeqrf_compact, sgeqrf_compact, ...), and the generic
-! interfaces below -- the pattern a user would write -- resolve each call
-! against the work precision wp, which the CQR_SINGLE preprocessor guard
-! sets to c_float (default c_double). CMake compiles this source once per
-! precision, so both sets of entry points stay covered.
+! The test body is precision-generic: it calls through the include file's
+! generic names (geqrf_compact, ...), which resolve against the work
+! precision wp -- set to c_float by the CQR_SINGLE preprocessor guard,
+! default c_double. CMake compiles this source once per precision, so both
+! sets of specifics stay covered. The compact buffers are rank-1: generic
+! resolution matches rank against the assumed-size dummies.
 !
 ! The compact (interleaved) buffers are built with RESHAPE alone: the first
 ! reshape splits the batch index into (lane, group) and its PAD argument
@@ -35,32 +35,6 @@ program test_cqr_fortran_compact
    integer, parameter :: wp = c_double
 #endif
 
-   ! One generic name per routine over its two specific interfaces; the
-   ! real(wp) actual arguments select the precision.
-   interface geqrf_compact
-      procedure sgeqrf_compact, dgeqrf_compact
-   end interface
-   interface ormqr_compact
-      procedure sormqr_compact, dormqr_compact
-   end interface
-   interface potrf_compact
-      procedure spotrf_compact, dpotrf_compact
-   end interface
-   interface sytrfnp_compact
-      procedure ssytrfnp_compact, dsytrfnp_compact
-   end interface
-   interface sytrsnp_compact
-      procedure ssytrsnp_compact, dsytrsnp_compact
-   end interface
-   interface sysvnp_compact
-      procedure ssysvnp_compact, dsysvnp_compact
-   end interface
-   interface trsm_compact
-      procedure strsm_compact, dtrsm_compact
-   end interface
-   interface gels_compact
-      procedure sgels_compact, dgels_compact
-   end interface
 
    integer(c_int), parameter :: vw = 2, nmat = 3, n = 3, nrhs = 2
    integer(c_int), parameter :: ng = (nmat + vw - 1) / vw ! compact groups

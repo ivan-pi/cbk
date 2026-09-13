@@ -9,13 +9,14 @@
 ! so nothing here calls or links MKL itself; the point is that the
 ! interface blocks match the C signatures and the link line closes.
 !
-! The test body is precision-generic: the include file provides only
-! specific names, and the generic interfaces below -- the pattern a user
-! would write -- resolve each call against the work precision wp, which
-! the CQR_SINGLE preprocessor guard sets to c_float (default c_double).
-! CMake compiles this source once per precision. The interleave width
-! follows: MKL_COMPACT_SSE packs 128 bits, V = 2 doubles or 4 floats, so
-! nmat = 3 leaves a padding lane either way.
+! The test body is precision-generic: it calls through the include file's
+! generic names (cqr_mkl_geqrf_compact, ...), which resolve against the
+! work precision wp -- set to c_float by the CQR_SINGLE preprocessor
+! guard, default c_double. CMake compiles this source once per precision.
+! The interleave width follows: MKL_COMPACT_SSE packs 128 bits, V = 2
+! doubles or 4 floats, so nmat = 3 leaves a padding lane either way. The
+! compact buffers are rank-1: generic resolution matches rank against the
+! assumed-size dummies.
 !
 ! Compiled with CQR_ILP64 defined (an ilp64 library build,
 ! -DMKLCompact_INTERFACE=ilp64) the same test runs through
@@ -42,32 +43,6 @@ program test_cqr_fortran_mkl
    integer, parameter :: wp = c_double
 #endif
 
-   ! One generic name per routine over its two specific interfaces; the
-   ! real(wp) actual arguments select the precision.
-   interface cqr_mkl_geqrf_compact
-      procedure cqr_mkl_sgeqrf_compact, cqr_mkl_dgeqrf_compact
-   end interface
-   interface cqr_mkl_ormqr_compact
-      procedure cqr_mkl_sormqr_compact, cqr_mkl_dormqr_compact
-   end interface
-   interface cqr_mkl_potrf_compact
-      procedure cqr_mkl_spotrf_compact, cqr_mkl_dpotrf_compact
-   end interface
-   interface cqr_mkl_sytrfnp_compact
-      procedure cqr_mkl_ssytrfnp_compact, cqr_mkl_dsytrfnp_compact
-   end interface
-   interface cqr_mkl_sytrsnp_compact
-      procedure cqr_mkl_ssytrsnp_compact, cqr_mkl_dsytrsnp_compact
-   end interface
-   interface cqr_mkl_sysvnp_compact
-      procedure cqr_mkl_ssysvnp_compact, cqr_mkl_dsysvnp_compact
-   end interface
-   interface cqr_mkl_trsm_compact
-      procedure cqr_mkl_strsm_compact, cqr_mkl_dtrsm_compact
-   end interface
-   interface cqr_mkl_gels_compact
-      procedure cqr_mkl_sgels_compact, cqr_mkl_dgels_compact
-   end interface
 
    integer(ik), parameter :: nmat = 3, n = 3, nrhs = 2
    ! MKL_COMPACT_SSE: a 128-bit register of wp lanes.

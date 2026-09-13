@@ -180,11 +180,15 @@ compiler's include path. Following MKL's own `_lp64`/`_ilp64` interface-file
 convention, include exactly one of `cqr_mkl_ext.fi` and `cqr_mkl_ext_ilp64.fi`,
 whichever matches the library build's `MKLCompact_INTERFACE` -- guarding that
 choice is the includer's job (the portable `cqr_compact.fi` uses plain C `int`
-and has no variant). Specific names only for now (`dgeqrf_compact`,
-`sgeqrf_compact`, ...); a caller who wants precision-generic names declares
-them over the specifics in two lines (`interface geqrf_compact` /
-`procedure sgeqrf_compact, dgeqrf_compact`), which is exactly what the tests
-do. Compile fixed-form includers at the standard 72-column line length.
+and has no variant). Each routine comes under its two specific names
+(`dgeqrf_compact`, `sgeqrf_compact`) and a precision-generic one
+(`geqrf_compact`; `cqr_mkl_geqrf_compact` for the MKL-style API): the
+interface blocks group each `d`/`s` pair under the generic, and the kind of
+the real arguments selects the specific. One caveat: generic resolution
+matches rank, so pass the compact buffers as rank-1 arrays when calling
+through the generic names (the specifics accept any rank by sequence
+association). Compile fixed-form includers at the standard 72-column line
+length.
 `tests/test_cqr_fortran_*` show complete calls of every routine from both
 source forms: the free-form programs are written once in a work precision
 `wp` and built per precision (`CQR_SINGLE`), and under an ilp64 build

@@ -25,10 +25,17 @@
 ! Option flags (layout, uplo, side, trans, diag) are single characters
 ! passed by value; ap/bp/taup are the compact interleaved buffers,
 ! declared assumed-size.
+!
+! Each d/s pair is grouped under a precision-generic name as well
+! (geqrf_compact, ormqr_compact, ...): the kind of the real actual
+! arguments selects the specific. Generic resolution matches rank --
+! unlike a call to a specific name, where sequence association lets
+! any rank associate with the assumed-size dummies -- so pass the
+! compact buffers as rank-1 arrays when calling through the generics.
 
-      interface
 
 ! QR factorization A = Q R: ap -> (R, Householder vectors), taup -> tau
+      interface geqrf_compact
       function dgeqrf_compact(layout, m, n, ap, ldap, taup, v, nm)      &
      &    result(info) bind(c, name='dgeqrf_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -50,8 +57,10 @@
       real(c_float), intent(out) :: taup(*)
       integer(c_int) :: info
       end function sgeqrf_compact
+      end interface geqrf_compact
 
 ! Apply Q or Q^T of a compact QR from the left: bp := op(Q) bp
+      interface ormqr_compact
       function dormqr_compact(trans, m, nrhs, k, ap, ldap, taup, bp,    &
      &    ldbp, v, nm) result(info) bind(c, name='dormqr_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -73,8 +82,10 @@
       real(c_float), intent(inout) :: bp(*)
       integer(c_int) :: info
       end function sormqr_compact
+      end interface ormqr_compact
 
 ! Cholesky factorization of an SPD batch: A = L L^T ('L'), U^T U ('U')
+      interface potrf_compact
       function dpotrf_compact(layout, uplo, n, ap, ldap, v, nm)         &
      &    result(info) bind(c, name='dpotrf_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -94,8 +105,10 @@
       real(c_float), intent(inout) :: ap(*)
       integer(c_int) :: info
       end function spotrf_compact
+      end interface potrf_compact
 
 ! Unpivoted LDL^T: A = L D L^T ('L') or U^T D U ('U'), D on the diag
+      interface sytrfnp_compact
       function dsytrfnp_compact(layout, uplo, n, ap, ldap, v, nm)       &
      &    result(info) bind(c, name='dsytrfnp_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -115,8 +128,10 @@
       real(c_float), intent(inout) :: ap(*)
       integer(c_int) :: info
       end function ssytrfnp_compact
+      end interface sytrfnp_compact
 
 ! Solve A X = B from the ?sytrfnp_compact factor: bp := X
+      interface sytrsnp_compact
       function dsytrsnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,    &
      &    ldbp, v, nm) result(info) bind(c, name='dsytrsnp_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -138,8 +153,10 @@
       real(c_float), intent(inout) :: bp(*)
       integer(c_int) :: info
       end function ssytrsnp_compact
+      end interface sytrsnp_compact
 
 ! Symmetric solve in one pass: ap -> (D, L|U) factor, bp := X
+      interface sysvnp_compact
       function dsysvnp_compact(layout, uplo, n, nrhs, ap, ldap, bp,     &
      &    ldbp, v, nm) result(info) bind(c, name='dsysvnp_compact')
       use, intrinsic :: iso_c_binding, only: c_char, c_int, c_double
@@ -159,8 +176,10 @@
       real(c_float), intent(inout) :: ap(*), bp(*)
       integer(c_int) :: info
       end function ssysvnp_compact
+      end interface sysvnp_compact
 
 ! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R')
+      interface trsm_compact
       function dtrsm_compact(layout, side, uplo, transa, diag, m, n,    &
      &    alpha, ap, ldap, bp, ldbp, v, nm) result(info)                &
      &    bind(c, name='dtrsm_compact')
@@ -188,9 +207,11 @@
       real(c_float), intent(inout) :: bp(*)
       integer(c_int) :: info
       end function strsm_compact
+      end interface trsm_compact
 
 ! Least-squares / minimum-norm solve op(A) X = B: ap -> QR|LQ factor,
 ! bp rows 1..n -> X (trailing rows the residual), taup -> tau
+      interface gels_compact
       function dgels_compact(layout, trans, m, n, nrhs, ap, ldap, bp,   &
      &    ldbp, taup, v, nm) result(info)                               &
      &    bind(c, name='dgels_compact')
@@ -214,5 +235,4 @@
       real(c_float), intent(out) :: taup(*)
       integer(c_int) :: info
       end function sgels_compact
-
-      end interface
+      end interface gels_compact
