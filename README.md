@@ -43,9 +43,7 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-march=native` lets the kernels use the host's widest vectors; drop it for a
-generic build. Link the `cbk::cbk` target and include `cbk.h`; `cbk_get_version()`
-reports the linked library's version (`major * 10000 + minor * 100 + patch`),
-and [CHANGELOG.md](CHANGELOG.md) what each release changed.
+generic build. Link the `cbk::cbk` target and include `cbk.h`.
 `cmake --install build --prefix <dir>` installs the library, the headers and a
 CMake package (`find_package(cbk CONFIG)`); see [Building](docs/building.md).
 
@@ -76,6 +74,7 @@ Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
 * [Examples and benchmarks](docs/examples.md) - the worked solve and the five
   benchmarks; measured results in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
 * One design document per routine, linked from the table above.
+* [CHANGELOG.md](CHANGELOG.md) - what each release changed.
 
 ## Related work
 
