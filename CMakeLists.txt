@@ -69,13 +69,8 @@ if(CQR_WITH_MKL)
   find_package(MKLCompact REQUIRED)
 
   target_sources(cqr PRIVATE src/cqr_mkl_ext.cpp)
-  # MKL types appear in the public header (no link dependency). The integer
-  # interface is part of cqr's ABI (MKL_INT in every prototype), so the ilp64
-  # definition rides on the target itself into the installed package.
+  # MKL types appear in the public header (no link dependency).
   target_link_libraries(cqr PUBLIC MKL::CompactHeaders)
-  if(MKLCompact_INTERFACE STREQUAL "ilp64")
-    target_compile_definitions(cqr PUBLIC MKL_ILP64)
-  endif()
 
   # Examples: the worked batched solve and the five throughput benchmarks
   # (examples/BENCHMARKS.md). All link MKL for the pack/unpack routines and the
