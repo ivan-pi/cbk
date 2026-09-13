@@ -25,6 +25,8 @@
  *   structure exploitation. Padded lanes agree too (both produce identity).
  *
  * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
+ *
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */

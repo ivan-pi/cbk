@@ -36,7 +36,7 @@
  * group, whose base offset is applied to the pointer beforehand, and the int
  * arithmetic is what keeps its SIMD sweeps vectorizable.)
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #ifndef CBK_MATRIX_VIEW_HPP

@@ -10,6 +10,8 @@
 # cbk was installed with the MKL extension, one of the MKL-style API next to
 # MKL's own compact API (linked through the FindMKLCompact module the
 # package installs).
+#
+# Assisted-by: Claude:claude-fable-5
 cmake_minimum_required(VERSION 3.28)
 project(cbk_install_check LANGUAGES CXX)
 

@@ -53,7 +53,7 @@
  * cache line; a non-pack-aligned base splits each access across two lines,
  * costing up to ~40% on small, cache-resident sizes.
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 /* Version. The macros describe the header; cbk_get_version() the library

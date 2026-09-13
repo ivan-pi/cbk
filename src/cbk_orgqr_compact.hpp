@@ -26,6 +26,8 @@
  *     tau_v(kk) = taup[ g*k*V      +  kk*V          + v ]
  * A is packed with its n output columns (group stride ldap*n*V); on entry only
  * columns 0..k-1 below the diagonal are read.
+ *
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #ifndef CBK_ORGQR_COMPACT_HPP

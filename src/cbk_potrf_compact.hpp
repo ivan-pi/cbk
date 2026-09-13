@@ -31,7 +31,7 @@
  * Row-major swaps the in-matrix roles (i*ldap + j); the group stride is the
  * same either way (A is n x n).
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #ifndef CBK_POTRF_COMPACT_HPP

@@ -3,7 +3,9 @@
  * MKL-style API with the format MKL reports for this CPU. Both factor V
  * interleaved copies of 3 * I, which a QR leaves as they are (every
  * sub-diagonal column is already zero, so tau = 0 and R = A). Exit status 0 on
- * success. */
+ * success.
+ *
+ * Assisted-by: Claude:claude-fable-5 */
 
 #include "cbk.h"
 

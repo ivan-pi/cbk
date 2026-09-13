@@ -15,7 +15,7 @@
 // cannot drift apart. Needs MKL headers; the MKL-free helpers (including
 // compact<T>, the portable C API's dispatch) are in test_compact_util.hpp.
 //
-// Assisted-by: Claude:claude-opus-4.8
+// Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 #ifndef TEST_MKL_UTIL_HPP
 #define TEST_MKL_UTIL_HPP

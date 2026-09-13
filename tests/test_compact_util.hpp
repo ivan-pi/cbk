@@ -5,7 +5,7 @@
 // overloads of the portable C API, and Compact pack/unpack. Header-only and
 // MKL-free, so the BLAS-free portable tests use it too.
 //
-// Assisted-by: Claude:claude-opus-4.8
+// Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 #ifndef TEST_COMPACT_UTIL_HPP
 #define TEST_COMPACT_UTIL_HPP

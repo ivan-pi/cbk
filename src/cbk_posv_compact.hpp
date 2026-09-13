@@ -16,7 +16,7 @@
  * ?posv -- which calls ?potrf unconditionally; the nrhs = 0 quick return is
  * ?potrs's -- nrhs = 0 still factors ap, and bp is then never referenced.
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #ifndef CBK_POSV_COMPACT_HPP

@@ -12,7 +12,7 @@
  *   2. back substitution recovers X
  *   3. applying 'N' after 'T' recovers the original B  (Q Q^T = I)
  *
- * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
 
 #include <cstdio>

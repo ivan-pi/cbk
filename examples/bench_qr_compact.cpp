@@ -51,7 +51,7 @@
  * dispatch; without it the geqrf-dominated cbk path runs the V-wide packs on the
  * baseline ISA and is unfairly slow (cbk/MKL well below 1).
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #include <mkl.h>

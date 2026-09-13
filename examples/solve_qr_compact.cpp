@@ -27,7 +27,7 @@
  * repo's MKL-style API (cbk_compat.h); wired up by CMakeLists.txt as the
  * `solve_qr_compact` target.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
 #include <mkl.h>

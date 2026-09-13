@@ -46,7 +46,7 @@
  * `-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the open compact kernels emit the
  * full vector width, matching MKL's AVX-512 runtime dispatch.
  *
- * Assisted-by: Claude
+ * Assisted-by: Claude:claude-fable-5
  */
 
 #include <mkl.h>

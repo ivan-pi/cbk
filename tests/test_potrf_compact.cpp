@@ -19,7 +19,7 @@
 //      ?potrf_compact, with a 1-element dummy bp (never referenced)
 // plus LAPACK-style argument validation of the three C APIs.
 //
-// Assisted-by: Claude:claude-opus-4.8 Claude
+// Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
 #include <cstdio>
 #include <cmath>
