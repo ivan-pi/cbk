@@ -101,6 +101,22 @@ template <class Mv> double norm1(Mv M)
     return mx;
 }
 
+// Deviation of Q's columns from orthonormality, max |(Q^T Q - I)(i,j)| over
+// the upper triangle (Q^T Q is symmetric), accumulated in double so the gate
+// does not inherit float rounding. BLAS-free; shared by the orgqr suites.
+template <class Qv> double orth_error(Qv Q)
+{
+    double e = 0;
+    for (int j = 0; j < Q.cols; ++j)
+        for (int i = 0; i <= j; ++i) {
+            double s = 0;
+            for (int l = 0; l < Q.rows; ++l)
+                s += (double)Q(l, i) * Q(l, j);
+            e = std::max(e, std::abs(s - (i == j ? 1.0 : 0.0)));
+        }
+    return e;
+}
+
 // C (m x n) := A (m x k) * B (k x n) -- the plain triple loop, for forming
 // right-hand sides and residuals. The shapes come from the views, which also
 // carry the layout, so the three operands need not share one.
@@ -324,7 +340,7 @@ template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T
 }
 
 // ----------------------- portable C API, by scalar type ------------
-// compact<T>::geqrf / ormqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm / gels forward
+// compact<T>::geqrf / ormqr / orgqr / potrf / sytrfnp / sytrsnp / sysvnp / trsm / gels forward
 // to the d/s entry points of cqr_compact.h, so the templated suites call one name for both precisions;
 // compact<T>::name labels their output.
 
@@ -340,6 +356,9 @@ template <> struct compact<T> {                                                 
     static int ormqr(char tr, int m, int nrhs, int k, const T *a, int lda, const T *tau,   \
                      T *b, int ldb, int V, int nm)                                         \
     { return p##ormqr_compact(tr, m, nrhs, k, a, lda, tau, b, ldb, V, nm); }               \
+    static int orgqr(char lay, int m, int n, int k, T *a, int lda, const T *tau,           \
+                     int V, int nm)                                                        \
+    { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \
     static int potrf(char lay, char up, int n, T *a, int ld, int V, int nm)                \
     { return p##potrf_compact(lay, up, n, a, ld, V, nm); }                                 \
     static int sytrfnp(char lay, char up, int n, T *a, int ld, int V, int nm)              \

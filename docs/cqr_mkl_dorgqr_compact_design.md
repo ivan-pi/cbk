@@ -27,9 +27,9 @@ void cqr_mkl_dorgqr_compact (
 LAPACK [`?orgqr`](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/orgqr.html)'s
 argument list with MKL's compact arguments added as `cqr_mkl_?ormqr_compact`
 adds them: `layout` in front, `format` and `nm` at the back. `work` and
-`lwork` are kept because the reference LAPACK routine has them (the kernel
-itself needs no scratch; the query answers `1`). `d` (double) and `s`
-(single) precisions.
+`lwork` are kept because the reference LAPACK routine has them (the
+current kernel needs no scratch, so the query answers `1`). `d` (double)
+and `s` (single) precisions.
 
 ## 3. Description
 
@@ -97,11 +97,13 @@ the same mechanism the padded final group relies on (section 6.4).
 * **`taup`**: compact buffer of the reflector scalars, `k` per matrix
   (`tau_v(kk) = taup[g*k*V + kk*V + v]`), as `?geqrf_compact` wrote them.
 * **`work`, `lwork`**: `lwork = -1` is a workspace query: `work[0]`
-  receives the required `lwork` and nothing else is touched. The kernel is
-  scratch-free (the reflector-application accumulators live in registers),
-  so the query answers `1`; the arguments exist because LAPACK `?orgqr`'s
-  do. As everywhere in the compact ecosystem, `lwork` is not otherwise
-  checked and `work` must be a valid pointer.
+  receives the required `lwork` and nothing else is touched. The current
+  kernel is scratch-free (the reflector-application accumulators live in
+  registers), so the query answers `1` today -- an implementation detail,
+  not a contract: size `work` from the query, never from a hard-coded
+  constant. The arguments exist because LAPACK `?orgqr`'s do. As everywhere
+  in the compact ecosystem, `lwork` is not otherwise checked and `work`
+  must be a valid pointer.
 * **`format`**: the pack format from `mkl_get_format_compact()`; selects
   `V` (SSE/AVX/AVX-512 -> 2/4/8 for FP64, 4/8/16 for FP32).
 * **`nm`**: number of matrices in the batch.
@@ -110,8 +112,8 @@ the same mechanism the padded final group relies on (section 6.4).
 
 * **`ap`**: the first `n` columns of `Q`, one `m x n` matrix with
   orthonormal columns per compact lane.
-* **`work`**: on a query, `work[0]` is the required `lwork` (`1`);
-  otherwise untouched.
+* **`work`**: on a query, `work[0]` is the required `lwork` (`1` in the
+  current implementation); otherwise untouched.
 * **`info`**: a scalar status, `0` on success (MKL leaves the compact
   `info` reserved). No argument checking (section 6.4); an unrecognized
   `format` selects no kernel and sets `info = -1`.
@@ -162,7 +164,7 @@ factorization. `larf`'s implicit-unit convention (it never reads the
 pivot row of the reflector column) means the diagonal does not need the
 temporary `A(kk,kk) = 1` store dense `?org2r` performs.
 
-Step 2 is new code, but small: one pack broadcast of `tau(kk)`, one scale
+Step 2 is new code, but small: one pack load of `tau(kk)`, one scale
 loop, one store, one zero loop. Following the one-kernel-per-routine rule
 the routine gets its own group kernel, `orgqr_compact_group`, in its own
 header `src/cqr_orgqr_compact.hpp`; nothing is added to any existing
@@ -215,17 +217,18 @@ CTest-registered and run in FP64 and FP32.
 
 * **Suite 1, vs dense `LAPACKE_?orgqr`** (the dispatch already exists in
   `test_mkl_util.hpp` and is used by the `?geqrf` suite): square and tall
-  shapes in both layouts, factored by `mkl_?geqrf_compact` where MKL
-  provides the shape and `cqr_mkl_?geqrf_compact` otherwise, then `Q`
-  formed both ways -- `cqr_mkl_?orgqr_compact` on the compact batch,
-  `LAPACKE_?orgqr` per unpacked matrix. Gated: `Q` elementwise at a
+  shapes in both layouts, factored per matrix by dense `LAPACKE_?geqrf` --
+  so the compact routine and the dense reference consume bit-identical
+  reflectors, isolating the accumulation from any factorization
+  difference -- then `Q` formed both ways: `cqr_mkl_?orgqr_compact` on the
+  packed batch, `LAPACKE_?orgqr` per matrix. Gated: `Q` elementwise at a
   cross-check tolerance (LAPACKE's blocked accumulation orders the
   rounding differently, so the gate is a modest multiple of `eps`, not
   exactness), plus the properties formed independently: orthogonality
-  `||Q^T Q - I||_1 <= c * m * eps` and reconstruction
-  `||Q R - A||_1 <= c * m * eps * ||A||_1` with `R = triu` of the
+  `||Q^T Q - I|| <= c * n * eps` and reconstruction
+  `||Q R - A|| <= c * m * eps * ||A||_1` with `R = triu` of the
   factorization saved before the call. The `k < n` case (extra unit-seeded
-  columns) and the workspace query are covered here.
+  columns), `k = 0`, and the workspace query are covered here.
 * **Suite 2, vs `cqr_mkl_?ormqr_compact` on a packed identity**: the two
   routes to `Q` must agree elementwise to a small multiple of `eps` --
   same reflectors, same application order, different structure

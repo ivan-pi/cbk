@@ -40,6 +40,23 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases.
 
+## orgqr
+
+- **Implemented (design 6, 8):** vectorized unblocked `dorg2r`: columns
+  `k..n-1` unit-seeded, then a backward sweep on the shared `larf` over the
+  trailing columns only, with each column `kk` formed sweep-free
+  (`1 - tau` diagonal, `-tau`-scaled reflector body, zeros above). In place on
+  the `?geqrf_compact` output (`m >= n >= k`); both layouts through the one
+  strided kernel; no scratch (the MKL-style `lwork = -1` query answers 1).
+- **Validated (design 7):** BLAS-free test vs a scalar `dorg2r` plus the
+  independent invariants (`Q^T Q = I`, `Q R = A`, padded lanes exactly
+  identity), covering `k < n`, `k = 0` and both layouts; MKL test vs dense
+  `LAPACKE_dorgqr` (cross-check tolerance) gating orthogonality (`100 n eps`)
+  and reconstruction (`100 m eps`), plus bit-exact agreement with
+  `cqr_mkl_?ormqr_compact` applied to a packed identity.
+- **Scoped out (design 6.5):** complex (`?ungqr`); `?orglq` (this kernel over
+  the transposed view) until a use case asks; blocked accumulation.
+
 ## potrf
 
 - **Implemented (design 6-8):** vectorized unblocked `potf2`, unconditional
