@@ -53,8 +53,8 @@ tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs;
            test_cqr_fortran_* are the Fortran-interface tests: the free-form
-           .F90 sources are precision-generic (generic interfaces over the
-           .fi specifics; CQR_SINGLE picks wp) and built once per precision,
+           .F90 sources are precision-generic (they call the .fi files'
+           generic names; CQR_SINGLE picks wp) and built once per precision,
            the fixed-form .f/.F includers prove the dual-form layout
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine
@@ -232,10 +232,14 @@ workspace contract, or the benchmarks' threading.
   The free-form test programs are precision-generic: they call through the
   `.fi` files' generic names and write one body in the work precision `wp`,
   which `CQR_SINGLE` sets to `c_float`; CMake builds each source as a `_d`
-  and an `_s` executable. Generic resolution requires the actuals' rank to
-  match the assumed-size dummies (a call to a specific accepts any rank by
-  sequence association), so compact buffers are rank-1 wherever the generic
-  names are used -- the tests included.
+  and an `_s` executable. Generic resolution matches rank exactly --
+  sequence association (any rank, or a starting array element) applies only
+  to a call to a specific name, never to choosing one -- so the generics
+  take rank-1 actuals: the tests keep their buffers naturally shaped,
+  `(V, rows, cols, ngroups)`, and call through rank-1 pointer views
+  (`p(1:size(a)) => a`). Packing is one `reshape(dense, shape(packed),
+  pad=..., order=[2,3,1,4])`: ORDER interleaves the lanes and PAD's copies
+  fill the padding lanes along the same permuted walk.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th

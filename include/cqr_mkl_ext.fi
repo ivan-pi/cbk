@@ -31,10 +31,12 @@
 !
 ! Each d/s pair is grouped under a precision-generic name as well
 ! (cqr_mkl_geqrf_compact, ...): the kind of the real actual arguments
-! selects the specific. Generic resolution matches rank -- unlike a
-! call to a specific name, where sequence association lets any rank
-! associate with the assumed-size dummies -- so pass the compact
-! buffers as rank-1 arrays when calling through the generics.
+! selects the specific. Generic resolution matches rank exactly:
+! sequence association applies only once a specific has been chosen,
+! so a call to a specific name accepts an array of any rank (or a
+! starting array element), while the generics need rank-1 actuals --
+! a rank-1 buffer, or a rank-1 pointer view of a shaped one,
+! p(1:size(a)) => a.
 !
 ! Like MKL's own compact routines these skip argument checking, and
 ! info is a scalar output: 0 on success, -1 for an unrecognized

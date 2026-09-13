@@ -185,9 +185,11 @@ and has no variant). Each routine comes under its two specific names
 (`geqrf_compact`; `cqr_mkl_geqrf_compact` for the MKL-style API): the
 interface blocks group each `d`/`s` pair under the generic, and the kind of
 the real arguments selects the specific. One caveat: generic resolution
-matches rank, so pass the compact buffers as rank-1 arrays when calling
-through the generic names (the specifics accept any rank by sequence
-association). Compile fixed-form includers at the standard 72-column line
+matches rank exactly (sequence association applies only once a specific has
+been chosen), so give the generic names rank-1 actuals -- a rank-1 buffer, or
+a rank-1 pointer view of a naturally shaped one, `p(1:size(a)) => a`; the
+specific names accept an array of any rank, or a starting array element, by
+sequence association. Compile fixed-form includers at the standard 72-column line
 length.
 `tests/test_cqr_fortran_*` show complete calls of every routine from both
 source forms: the free-form programs are written once in a work precision
