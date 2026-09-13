@@ -165,10 +165,10 @@ whole solve inside the library.
 
 ### 6.3 Threading
 
-One `for_each_group` over the batch, the body solving one group. The gate is
-the toolkit's ([threading.md](threading.md)): static-schedule OpenMP, at most one
-thread per group, active only for two or more groups and enough work, with the
-per-group estimate `(2 p q^2 + 4 p q nrhs + q^2 nrhs) * V`.
+One `for_each_group` over the batch, the body solving one group, threaded as
+the toolkit's routines are ([threading.md](threading.md)): static-schedule
+OpenMP, at most one thread per group, active only for two or more groups and
+enough work, with the per-group estimate `(2 p q^2 + 4 p q nrhs + q^2 nrhs) * V`.
 
 ### 6.4 Workspace
 
