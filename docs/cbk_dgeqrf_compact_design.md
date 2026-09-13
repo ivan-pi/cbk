@@ -183,23 +183,20 @@ reasons" and make "the user responsible for passing correct parameters" --
 The column norm is the direct `sqrt(sum of squares)` -- fast and vectorizable,
 and accurate to working precision across the target range. Rank-deficient and
 already-triangular columns degrade gracefully through the `has` mask (`tau = 0`,
-diagonal preserved). A wide dynamic range across columns is handled to the
-extent the unscaled sum of squares allows. Once a column's sub-diagonal entries
-fall below the square root of the smallest subnormal (about `1.5e-162` in FP64,
-`3.7e-23` in FP32), their squares underflow to zero, the below-diagonal norm
-reads zero, and the column is treated as already triangular: `tau = 0`, the
-diagonal is kept, and the reflector body below it is scaled by zero (the
-storage holds zeros, which `?ormqr`/`?orgqr` ignore under `tau = 0` anyway)
-instead of taking the rescaled slow path LAPACK's `dlarfg` would. Between there
-and the square root of the smallest normal (`1.5e-154` FP64) the squares are
-subnormal and the norm carries fewer correct digits. Safe scaling of ill-conditioned or extreme-range inputs is deferred to a later
-release, and inputs are assumed to stay in range; the current behavior outside
-it is documented and pinned so that it cannot change unnoticed, not endorsed as
-the final design. The factorization returned is still exact to working
-precision (the dropped tail is far below `eps * ||A||`), and the portable
-self-test (7.4) pins the behavior down with a column of `1e-170` (FP64) /
-`1e-25` (FP32) entries. The suites otherwise exercise column scaling to
-`cond = 4` (`1e-4`), the range the target applications span.
+diagonal preserved). There is no protection against overflow or underflow in the column norm: the
+sum of squares is formed directly, without the rescaling LAPACK's `dlarfg`
+applies when a column's entries are extreme. Inputs are assumed well
+conditioned and within range, as the target applications' are, and safe scaling
+is deferred to a later release. Outside that range the kernel does not fail; it
+simply does what the direct arithmetic gives. Entries large enough for their
+squares to overflow produce an infinite norm and an unusable factor. Entries so
+small that their squares underflow to zero make the below-diagonal norm read
+zero, and the column is then treated as already triangular exactly as an
+all-zero tail is: `tau = 0`, the diagonal kept, the reflector body below it
+written as zeros. That factorization is still exact to working precision (the
+dropped tail is negligible against `||A||`). The portable self-test (7.4)
+exercises the underflow case so that this behavior cannot change unnoticed; the
+suites otherwise exercise column scaling to `cond = 4`.
 
 Two of Intel's stated [numerical limitations for Compact BLAS and Compact LAPACK
 routines](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/numerical-limits-compact-blas-compact-lapack.html)

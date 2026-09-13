@@ -22,10 +22,11 @@ and the solves built on them, for many small matrices in the compact
 - Optional Intel MKL-style API (`cbk_compat.h`, `-DCBK_WITH_MKL=ON`): the same
   routines as `cbk_?*_compact` entry points taking MKL's `MKL_LAYOUT` and
   `MKL_COMPACT_PACK`, interoperable with MKL's own compact routines and
-  pack/unpack helpers; `cbk_mkl_alloc.h` with RAII `mkl_malloc` helpers.
-- SIMD kernels written with GNU vector types, one source for SSE, AVX and
-  AVX-512; OpenMP threading of each routine's loop over groups
-  (`-DCBK_WITH_OPENMP`), composable with a caller's outer parallel loop.
+  pack/unpack helpers; `cbk_mkl_alloc.h`, C++-only RAII `mkl_malloc` helpers.
+- SIMD kernels written with GNU vector types, one source the compiler lowers to
+  whatever vector ISA it targets (SSE, AVX, AVX-512, or non-x86 extensions);
+  OpenMP threading of each routine's loop over groups (`-DCBK_WITH_OPENMP`),
+  composable with a caller's outer parallel loop.
 - CMake package: `find_package(cbk CONFIG)` and the `cbk::cbk` target, static or
   shared (`BUILD_SHARED_LIBS`), verified by an install CI job.
 - Tests: BLAS-free suites against scalar references for every routine, and
@@ -37,10 +38,8 @@ and the solves built on them, for many small matrices in the compact
 
 - Real precisions only; no column pivoting (`?geqrf`) and no pivoting in the
   LDL^T (`?sytrfnp` requires a well-behaved factorization).
-- Overflow/underflow-safe scaling (LAPACK's `?lascl`/`dlarfg` rescaling) is
-  deferred to a later release: the routines assume the input entries stay in
-  the range where squares neither overflow nor underflow (see each design
-  document's numerical scope; `?geqrf`'s documents what happens outside it).
+- No overflow/underflow-safe scaling (LAPACK's `dlarfg` rescaling): inputs are
+  assumed well conditioned and within range. Deferred to a later release.
 - Tested on x86-64 Linux with GCC and Clang.
 
 [0.1.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.1.0
