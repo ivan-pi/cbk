@@ -1,7 +1,7 @@
 # PLANS
 
 Status of each routine against its design document (`docs/`), plus open items.
-Every routine ships both API surfaces -- the MKL-style `cqr_mkl_?*_compact`
+Every routine ships both API surfaces -- the MKL-style `cbk_?*_compact`
 (no argument checking, scalar `info`) and the portable `?*_compact` C API
 (LAPACK-style `info = -j`) -- in FP64 and FP32, over one `BatchView` kernel
 that covers every layout (and side, for `ormqr`/`trsm`). Complex precisions,
@@ -34,7 +34,7 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
 - **Validated (design 7):** BLAS-free test vs a scalar `dorm2r` (including a
   column-pivoted QR + back-permutation solve); MKL test of `op(Q) C` vs dense
   `LAPACKE_dormqr` over `layout x side x trans` (`20 s eps`) plus the
-  `mkl_dgeqrf_compact -> cqr_mkl_dormqr_compact -> mkl_dtrsm_compact` solve
+  `mkl_dgeqrf_compact -> cbk_dormqr_compact -> mkl_dtrsm_compact` solve
   (`100 n eps`).
 - **Known gap:** the stress structures of design 7.3 (`cond` knob, banded /
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
@@ -53,14 +53,14 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   identity), covering `k < n`, `k = 0` and both layouts; MKL test vs dense
   `LAPACKE_dorgqr` (cross-check tolerance) gating orthogonality (`100 n eps`)
   and reconstruction (`100 m eps`), plus bit-exact agreement with
-  `cqr_mkl_?ormqr_compact` applied to a packed identity.
+  `cbk_?ormqr_compact` applied to a packed identity.
 - **Scoped out (design 6.5):** complex (`?ungqr`); `?orglq` (this kernel over
   the transposed view) until a use case asks; blocked accumulation.
 
 ## potrf / potrs / posv
 
 The Cholesky factorization, its solve, and the fused `?posv`-style driver
-(`docs/cqr_mkl_dpotrf_compact_design.md`); MKL has a compact `potrf` but no
+(`docs/cbk_dpotrf_compact_design.md`); MKL has a compact `potrf` but no
 compact `potrs` or `posv`.
 
 - **Implemented (design 6-8):** vectorized unblocked `potf2`, unconditional
@@ -90,7 +90,7 @@ compact `potrs` or `posv`.
 ## sytrfnp / sytrsnp / sysvnp
 
 The unpivoted LDL^T factorization, its solve, and the fused `?sysv`-style
-driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
+driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 `sytrf`, and the `np` naming follows its `mkl_?getrfnp_compact`.
 
 - **Implemented (design 6-8):** the square-root-free sweep with the `JB = 4`
@@ -154,9 +154,9 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
   test vs per-matrix `LAPACKE_?gels` over every `(layout, trans)` and
   square/tall/wide shape (forward error `100 max(m,n) eps`, residual
   contracts, workspace query, factorization vs `LAPACKE_?geqrf`/`?gelqf`); and
-  a cross-check vs the `mkl_?geqrf_compact -> cqr_mkl_?ormqr_compact ->
+  a cross-check vs the `mkl_?geqrf_compact -> cbk_?ormqr_compact ->
   mkl_?trsm_compact` pipeline on the same packed input.
-- **Benchmarked:** the `cqr-gels` path of `bench_qr_compact` vs per-matrix
+- **Benchmarked:** the `cbk-gels` path of `bench_qr_compact` vs per-matrix
   `LAPACKE_dgels`: `3.2x` geometric mean over `n = 10..100` (4 threads,
   AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`). At `nrhs = 1` it matches
   the three-step chain (`1.00x`): the fused apply-`Q^T` saves an `O(n^2)`
@@ -175,15 +175,15 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
 ## Project-wide
 
 - **Precision coverage.** Every suite is templated on the scalar type and runs
-  in FP64 and FP32 through the `cqr_mkl<T>` / `mkl<T>` / `lapack<T>` dispatch
+  in FP64 and FP32 through the `compat<T>` / `mkl<T>` / `lapack<T>` dispatch
   of `tests/test_mkl_util.hpp`; FP32 cross-checks agree with `mkl_s*_compact`
   to ~1e-6, gated at 1e-4.
 - **Threading.** Each routine's group loop is an OpenMP `parallel for`
   (static, at most one thread per group), active for two or more groups and a
-  work estimate above `CQR_OMP_MIN_FLOPS` (`5e4`, a compromise between two
+  work estimate above `CBK_OMP_MIN_FLOPS` (`5e4`, a compromise between two
   measured fork/join break-evens). Inside a caller's parallel region it stays
   serial unless nesting is enabled (`OMP_NUM_THREADS=8,2`). The factorization
-  benchmarks hand the whole pool to one cqr call and drive the sequential MKL
+  benchmarks hand the whole pool to one cbk call and drive the sequential MKL
   and LAPACK references from an equivalent outer loop; the solve benchmark
   keeps its pipeline per group (whole-pool passes measured 15-55% slower).
   `gels`, `posv` and `sysvnp` are the fused per-group drivers that give
@@ -191,9 +191,9 @@ driver (`docs/cqr_mkl_dsytrfnp_compact_design.md`); MKL has no compact
 - **MKL Compact contract.** `.claude/mkl-compact-behavior.md` records what
   MKL's own compact routines were measured to do (`info` and `work` mandatory,
   `lwork` unchecked, `n*V` scratch per thread, internal threading only under
-  the threaded layer). The wrappers follow it; cqr's own workspace policy for
+  the threaded layer). The wrappers follow it; cbk's own workspace policy for
   `gels` may still change.
 - **No install/export.** No `install()`/package-config rules; the project is
-  not consumable via `find_package(cqr)`.
+  not consumable via `find_package(cbk)`.
 - **Alignment.** Compact buffers are correct at any `T` alignment on GCC and
   clang (issue #34); pack-width alignment is a performance recommendation only.

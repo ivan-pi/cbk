@@ -1,19 +1,19 @@
-/* Smoke test of an installed cqr from a downstream project: one call into the
+/* Smoke test of an installed cbk from a downstream project: one call into the
  * portable C API and, when the MKL extension is installed, one into the
  * MKL-style API with the format MKL reports for this CPU. Both factor V
  * interleaved copies of 3 * I, which a QR leaves as they are (every
  * sub-diagonal column is already zero, so tau = 0 and R = A). Exit status 0 on
  * success. */
 
-#include "cqr_compact.h"
+#include "cbk.h"
 
 #include <cstdio>
 #include <vector>
 
-#ifdef CQR_CONSUMER_WITH_MKL
+#ifdef CBK_CONSUMER_WITH_MKL
 #include <mkl_compact.h>
 
-#include "cqr_mkl_ext.h"
+#include "cbk_compat.h"
 #endif
 
 namespace {
@@ -49,17 +49,17 @@ int main()
     constexpr int V = 2;
     std::vector<double> ap = identity3(V), taup(n * V);
     const int info = dgeqrf_compact('C', n, n, ap.data(), n, taup.data(), V, nm);
-    const bool ok_compact = report("cqr_compact.h", info, ap, V);
+    const bool ok_compact = report("cbk.h", info, ap, V);
 
-#ifdef CQR_CONSUMER_WITH_MKL
+#ifdef CBK_CONSUMER_WITH_MKL
     const MKL_COMPACT_PACK format = mkl_get_format_compact();
-    const int VM = (int)cqr::detail::vlen_for_format<double>(format);
+    const int VM = (int)cbk::detail::vlen_for_format<double>(format);
     std::vector<double> apm = identity3(VM), taupm(n * VM);
     MKL_INT minfo = -1;
     double work[1];
-    cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, n, n, apm.data(), n, taupm.data(), work, 1,
-                           &minfo, format, nm);
-    const bool ok_mkl = report("cqr_mkl_ext.h", (int)minfo, apm, VM);
+    cbk_dgeqrf_compact(MKL_COL_MAJOR, n, n, apm.data(), n, taupm.data(), work, 1, &minfo,
+                       format, nm);
+    const bool ok_mkl = report("cbk_compat.h", (int)minfo, apm, VM);
 #else
     const bool ok_mkl = true;
 #endif

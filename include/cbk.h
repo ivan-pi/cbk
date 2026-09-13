@@ -1,0 +1,336 @@
+#ifndef CBK_H
+#define CBK_H
+
+/* cbk.h -- Compact Batch Kernels: the portable, FFI-stable C API for this
+ * project's batched QR, Cholesky, LDL^T and triangular-solve kernels:
+ * dense factorizations (and the solves that close a linear solve) of many
+ * small matrices stored in the compact (interleaved) format, with an explicit
+ * interleave width V.
+ *
+ *   dgeqrf_compact   / sgeqrf_compact    -- QR factorization  A = Q R
+ *   dormqr_compact   / sormqr_compact    -- apply Q or Q^T from the left, B := op(Q) B
+ *   dorgqr_compact   / sorgqr_compact    -- form the explicit Q of a QR, in place
+ *   dpotrf_compact   / spotrf_compact    -- Cholesky factorization  A = L L^T or U^T U
+ *   dpotrs_compact   / spotrs_compact    -- solve A X = B from a Cholesky factor
+ *   dposv_compact    / sposv_compact     -- Cholesky factor + solve, fused per group
+ *   dsytrfnp_compact / ssytrfnp_compact  -- LDL^T factorization, no pivoting
+ *   dsytrsnp_compact / ssytrsnp_compact  -- solve A X = B from an LDL^T factor
+ *   dsysvnp_compact  / ssysvnp_compact   -- LDL^T factor + solve, fused per group
+ *   dtrsm_compact    / strsm_compact     -- triangular solve  op(A) X = alpha B, etc.
+ *   dgels_compact    / sgels_compact     -- least-squares / minimum-norm solve  op(A) X = B
+ *
+ * Compact layout; group g = idx/V, slot v = idx%V:
+ *   A_v(i,j)  = ap [ g*ldap*ncol*V + (j*ldap + i)*V + v ]   (column-major)
+ *   tau_v(kk) = taup[ g*k*V         +  kk*V          + v ]
+ *   B_v(i,j)  = bp [ g*ldbp*nrhs*V  + (j*ldbp + i)*V + v ]
+ * where ncol is n for ?geqrf (the full matrix), k for ?ormqr (A is the
+ * (ldap, k) reflector batch, exactly as LAPACK ?ormqr's A(LDA,K)), and n for
+ * ?orgqr (the m x n Q it generates in place). Row-major ?geqrf swaps the
+ * in-matrix index roles (i -> i*ldap + j).
+ *
+ * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
+ * AVX512 d=8/s=16; any of these also work on NEON/SVE as unrolled bursts).
+ * Pointer arguments are not inspected in release builds (LAPACK convention). An
+ * empty problem is a valid no-op returning 0. The routines never abort the
+ * calling process.
+ *
+ * Threading: built with OpenMP (the default, -DCBK_WITH_OPENMP=ON), each routine
+ * runs its loop over groups of V matrices as a static-schedule parallel loop on
+ * a team of min(ngroups, omp_get_max_threads()) threads, active only when the
+ * call has at least two groups and enough work (about 2e5 flops, the measured
+ * fork/join break-even; -DCBK_OMP_MIN_FLOPS overrides). The thread count is the
+ * one OpenMP reports at the current nesting level, so calling these routines
+ * from your own parallel loop leaves the inner loop serial (no competing pools)
+ * unless you enable nested parallelism, e.g. OMP_NUM_THREADS=8,2
+ * OMP_MAX_ACTIVE_LEVELS=2. Results do not depend on the thread count.
+ *
+ * Alignment: the compact buffers may start at any address aligned to the scalar
+ * type (the SIMD element carries relaxed alignment, so loads and stores never
+ * fault); results are identical regardless. For full speed, align each buffer's
+ * base to the pack width in bytes -- 64 covers every format (V*sizeof(T) <= 64),
+ * e.g. posix_memalign or std::aligned_alloc. Because every element sits at a
+ * pack-multiple offset, a pack-aligned base keeps every vector access on one
+ * cache line; a non-pack-aligned base splits each access across two lines,
+ * costing up to ~40% on small, cache-resident sizes.
+ *
+ * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4.8
+ */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* QR factorization: on exit ap holds R (on/above the diagonal) and the
+ * Householder vectors (below), taup holds the k = min(m,n) reflector scalars --
+ * the LAPACK ?geqrf storage convention, one matrix per compact lane.
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   m, n     rows, columns of A
+ *   ap       compact A (m x n); overwritten with (R, Householder vectors)
+ *   ldap     compact leading dimension (>= m col-major, >= n row-major)
+ *   taup     compact tau output (k = min(m,n) per matrix, ld = k)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Returns 0, or -j (LAPACK sign convention) for an illegal j-th argument:
+ *   -1 layout   -2 m (<0)   -3 n (<0)   -5 ldap   -7 V (not 2/4/8/16)   -8 nm (<0)
+ */
+int dgeqrf_compact(char layout, int m, int n, double *ap, int ldap, double *taup, int V,
+                   int nm);
+
+int sgeqrf_compact(char layout, int m, int n, float *ap, int ldap, float *taup, int V,
+                   int nm);
+
+/* Apply Q (or Q^T) of a compact QR to a compact RHS block from the left,
+ * B := op(Q) B -- the reflector-application (side='L') step between a compact
+ * QR factorization (?geqrf_compact) and a triangular solve.
+ *   trans    'T' (Q^T B, the solve case) or 'N' (Q B)
+ *   m, nrhs  rows of B (and A); columns of B
+ *   k        number of reflectors (min(m,n) of the factorization)
+ *   ap       compact reflectors from ?geqrf_compact, (ldap, k) per matrix
+ *   ldap     compact leading dimension of A (>= m)
+ *   taup     compact tau (k per matrix, ld = k)
+ *   bp       compact B (m x nrhs), overwritten with op(Q) B
+ *   ldbp     compact leading dimension of B (>= m)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 trans   -2 m (<0)   -3 nrhs (<0)   -4 k (<0 or >m)   -6 ldap
+ *   -9 ldbp    -10 V (not 2/4/8/16)   -11 nm (<0)
+ */
+int dormqr_compact(char trans, int m, int nrhs, int k, const double *ap, int ldap,
+                   const double *taup, double *bp, int ldbp, int V, int nm);
+
+int sormqr_compact(char trans, int m, int nrhs, int k, const float *ap, int ldap,
+                   const float *taup, float *bp, int ldbp, int V, int nm);
+
+/* Generate the explicit orthogonal factor of a compact QR: the first n columns
+ * of Q = H(0) H(1) ... H(k-1) (m >= n >= k), formed in place over the
+ * reflectors and scalars that ?geqrf_compact left in ap and taup -- LAPACK
+ * ?orgqr, one matrix per compact lane. On entry columns 0..k-1 of each matrix
+ * hold the reflectors below the diagonal; everything else (the upper triangle,
+ * and columns k..n-1 entirely) need not be set. On exit each matrix holds n
+ * orthonormal columns; the factorization, R included, is overwritten, so
+ * extract R first if it is still needed.
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   m, n     rows of Q; columns of Q to generate (m >= n >= 0)
+ *   k        number of reflectors (n >= k >= 0; k = 0 seeds Q = I(:, 0:n-1))
+ *   ap       compact reflectors from ?geqrf_compact, packed m x n;
+ *            overwritten with Q
+ *   ldap     compact leading dimension (>= m col-major, >= n row-major)
+ *   taup     compact tau (k per matrix, ld = k), as ?geqrf_compact wrote it
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout   -2 m (<0)   -3 n (<0 or >m)   -4 k (<0 or >n)   -6 ldap
+ *   -8 V (not 2/4/8/16)   -9 nm (<0)
+ */
+int dorgqr_compact(char layout, int m, int n, int k, double *ap, int ldap,
+                   const double *taup, int V, int nm);
+
+int sorgqr_compact(char layout, int m, int n, int k, float *ap, int ldap,
+                   const float *taup, int V, int nm);
+
+/* Cholesky factorization of a batch of symmetric positive-definite n x n
+ * matrices A: A = L L^T (uplo 'L') or A = U^T U (uplo 'U'), one matrix per
+ * compact lane. On exit the named triangle of ap holds its Cholesky factor; the
+ * strictly-opposite triangle is neither referenced nor modified.
+ *   layout   'C'/'c' column-major (tuned when lower) or 'R'/'r' row-major
+ *   uplo     'L'/'l' factor/store the lower triangle L, or 'U'/'u' the upper U
+ *   n        order of each A
+ *   ap       compact A (n x n); the named triangle is overwritten with L or U
+ *   ldap     compact leading dimension (>= n)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Positive-definiteness is assumed, not checked: a non-SPD lane yields NaN/Inf
+ * in its factor rather than an error (see cbk_dpotrf_compact_design.md 6.2).
+ * Returns 0, or -j (LAPACK sign convention) for an illegal j-th argument:
+ *   -1 layout   -2 uplo   -3 n (<0)   -5 ldap (< max(1,n))
+ *   -6 V (not 2/4/8/16)   -7 nm (<0)
+ */
+int dpotrf_compact(char layout, char uplo, int n, double *ap, int ldap, int V, int nm);
+
+int spotrf_compact(char layout, char uplo, int n, float *ap, int ldap, int V, int nm);
+
+/* Solve A X = B from the Cholesky factor produced by ?potrf_compact -- the
+ * step that closes the batched SPD solve. Runs the two in-place substitution
+ * sweeps per matrix (B is overwritten by X):
+ *   uplo 'L' (A = L L^T):  L z = B;    L^T X = z
+ *   uplo 'U' (A = U^T U):  U^T z = B;  U   X = z
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   uplo     triangle holding the factor, as passed to ?potrf_compact
+ *   n, nrhs  order of each A; number of right-hand sides (columns of B)
+ *   ap       compact factored A from ?potrf_compact (n x n per matrix)
+ *   ldap     compact leading dimension of A (>= max(1, n))
+ *   bp       compact B (n x nrhs), overwritten with X
+ *   ldbp     compact leading dimension of B (>= n col-major, >= nrhs row-major)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * A lane whose factor carries NaN/Inf (a non-SPD input to ?potrf_compact)
+ * yields NaN/Inf in that lane's solution, not an error. Returns 0, or -j for
+ * an illegal j-th argument:
+ *   -1 layout   -2 uplo   -3 n (<0)   -4 nrhs (<0)   -6 ldap
+ *   -8 ldbp     -9 V (not 2/4/8/16)   -10 nm (<0)
+ */
+int dpotrs_compact(char layout, char uplo, int n, int nrhs, const double *ap, int ldap,
+                   double *bp, int ldbp, int V, int nm);
+
+int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap, int ldap,
+                   float *bp, int ldbp, int V, int nm);
+
+/* Symmetric positive-definite solve A X = B in one pass: ?potrf_compact
+ * followed by ?potrs_compact, fused per group of V matrices so each factor is
+ * solved with while still cache-resident and the whole solve is one threaded
+ * group loop. Same arguments and error codes as ?potrs_compact, except that
+ * ap is the SPD input A on entry and holds its Cholesky factor on exit
+ * (exactly as ?potrf_compact leaves it); bp is overwritten with X. The result
+ * is bit-identical to the two separate calls. The LAPACK ?posv analogue --
+ * including for nrhs = 0, which still factors ap (LAPACK ?posv calls ?potrf
+ * unconditionally; the nrhs quick return is ?potrs's): bp is then never
+ * referenced, though Fortran semantics still want it present (a dummy
+ * suffices). */
+int dposv_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
+                  double *bp, int ldbp, int V, int nm);
+
+int sposv_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap, float *bp,
+                  int ldbp, int V, int nm);
+
+/* LDL^T factorization, without pivoting, of a batch of symmetric n x n
+ * matrices A: A = L D L^T (uplo 'L') or A = U^T D U (uplo 'U'), one matrix per
+ * compact lane. L (U) is unit lower (upper) triangular and D diagonal. On exit
+ * the diagonal of ap holds D and the strict off-diagonal of the named triangle
+ * holds L or U (the unit diagonal is implied, not stored); the strictly-opposite
+ * triangle is neither referenced nor modified. Note the upper convention is the
+ * transpose dual A = U^T D U (as ?potrf's A = U^T U), not LAPACK ?sytrf's
+ * A = U D U^T.
+ *   layout   'C'/'c' column-major (tuned when lower) or 'R'/'r' row-major
+ *   uplo     'L'/'l' factor/store the lower triangle, or 'U'/'u' the upper
+ *   n        order of each A
+ *   ap       compact A (n x n); the named triangle is overwritten with (D, L|U)
+ *   ldap     compact leading dimension (>= n)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Indefinite matrices factor fine (no sqrt, so negative pivots are legal), but
+ * there is no pivoting: a zero pivot -- a singular leading principal minor, not
+ * merely a zero on the input diagonal -- yields Inf/NaN in that lane rather than
+ * an error (see docs/cbk_dsytrfnp_compact_design.md 6.2).
+ * Returns 0, or -j (LAPACK sign convention) for an illegal j-th argument:
+ *   -1 layout   -2 uplo   -3 n (<0)   -5 ldap (< max(1,n))
+ *   -6 V (not 2/4/8/16)   -7 nm (<0)
+ */
+int dsytrfnp_compact(char layout, char uplo, int n, double *ap, int ldap, int V, int nm);
+
+int ssytrfnp_compact(char layout, char uplo, int n, float *ap, int ldap, int V, int nm);
+
+/* Solve A X = B from the unpivoted LDL^T factor produced by ?sytrfnp_compact --
+ * the step that closes the batched symmetric solve. Runs the three in-place
+ * substitution sweeps per matrix (B is overwritten by X):
+ *   uplo 'L' (A = L D L^T):  L z = B;   D w = z;   L^T X = w
+ *   uplo 'U' (A = U^T D U):  U^T z = B; D w = z;   U   X = w
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   uplo     triangle holding the factor, as passed to ?sytrfnp_compact
+ *   n, nrhs  order of each A; number of right-hand sides (columns of B)
+ *   ap       compact factored A from ?sytrfnp_compact (n x n per matrix)
+ *   ldap     compact leading dimension of A (>= max(1, n))
+ *   bp       compact B (n x nrhs), overwritten with X
+ *   ldbp     compact leading dimension of B (>= n col-major, >= nrhs row-major)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * A zero D(i) (singular lane) yields Inf/NaN in that lane's solution, not an
+ * error. Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout   -2 uplo   -3 n (<0)   -4 nrhs (<0)   -6 ldap
+ *   -8 ldbp     -9 V (not 2/4/8/16)   -10 nm (<0)
+ */
+int dsytrsnp_compact(char layout, char uplo, int n, int nrhs, const double *ap, int ldap,
+                     double *bp, int ldbp, int V, int nm);
+
+int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap, int ldap,
+                     float *bp, int ldbp, int V, int nm);
+
+/* Symmetric solve A X = B in one pass, without pivoting: ?sytrfnp_compact
+ * followed by ?sytrsnp_compact, fused per group of V matrices so each factor is
+ * solved with while still cache-resident and the whole solve is one threaded
+ * group loop. Same arguments and error codes as ?sytrsnp_compact, except that
+ * ap is the symmetric input A on entry and holds its (D, L|U) factor on exit
+ * (exactly as ?sytrfnp_compact leaves it); bp is overwritten with X. The
+ * result is bit-identical to the two separate calls. The LAPACK ?sysv
+ * analogue, minus ipiv and workspace -- including for nrhs = 0, which still
+ * factors ap (LAPACK ?sysv calls ?sytrf unconditionally; the nrhs quick
+ * return is ?sytrs's): bp is then never referenced, though Fortran semantics
+ * still want it present (a dummy suffices). */
+int dsysvnp_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
+                    double *bp, int ldbp, int V, int nm);
+
+int ssysvnp_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap,
+                    float *bp, int ldbp, int V, int nm);
+
+/* Triangular solve with multiple right-hand sides -- the portable form of
+ * mkl_?trsm_compact, the step that closes the batched QR solve. Solves in place
+ *   op(A) X = alpha B   (side='L')   or   X op(A) = alpha B   (side='R'),
+ * with A the order-s (s = m for side='L', n for side='R') unit/non-unit,
+ * upper/lower triangular factor and op(A) = A ('N') or A^T ('T'/'C'). B (m x n)
+ * is overwritten by X.
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   side     'L' (op(A) X = alpha B) or 'R' (X op(A) = alpha B)
+ *   uplo     'U' A upper triangular or 'L' A lower triangular
+ *   transa   'N' (A) or 'T'/'C' (A^T; 'C' == 'T' for the real types)
+ *   diag     'U' A has a unit diagonal (not read) or 'N' non-unit
+ *   m, n     rows, columns of B (A is s x s, s = m for 'L', n for 'R')
+ *   alpha    scalar multiplying B; alpha = 0 sets B := 0 (A not referenced)
+ *   ap       compact triangular A (s x s per matrix)
+ *   ldap     compact leading dimension of A (>= max(1, s))
+ *   bp       compact B (m x n), overwritten with X
+ *   ldbp     compact leading dimension of B (>= m col-major, >= n row-major)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout  -2 side   -3 uplo   -4 transa   -5 diag   -6 m (<0)   -7 n (<0)
+ *   -10 ldap   -12 ldbp  -13 V (not 2/4/8/16)  -14 nm (<0)
+ * (alpha, ap and bp are never inspected, matching LAPACK/BLAS.) */
+int dtrsm_compact(char layout, char side, char uplo, char transa, char diag, int m, int n,
+                  double alpha, const double *ap, int ldap, double *bp, int ldbp, int V,
+                  int nm);
+
+int strsm_compact(char layout, char side, char uplo, char transa, char diag, int m, int n,
+                  float alpha, const float *ap, int ldap, float *bp, int ldbp, int V,
+                  int nm);
+
+/* Least-squares / minimum-norm solve of a batch of full-rank systems
+ *   op(A) X = B,   op(A) = A ('N') or A^T ('T'/'C'),   A is m x n,
+ * in one call per batch -- the compact form of LAPACK ?gels. With more rows than
+ * columns op(A) X = B is overdetermined and X is the least-squares solution;
+ * with more columns than rows it is underdetermined and X is the minimum-norm
+ * solution. Per group of V matrices the routine factors A (QR when m >= n, LQ
+ * when m < n), applies Q to B (fused into the factorization in the
+ * least-squares case) and back-substitutes, on the group's cache-resident
+ * buffers; a whole-batch ?geqrf_compact -> ?ormqr_compact -> ?trsm_compact
+ * chain streams the batch three times instead.
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   trans    'N' (A X = B) or 'T'/'C' (A^T X = B)
+ *   m, n     rows, columns of A
+ *   nrhs     columns of B and X
+ *   ap       compact A (m x n); overwritten with its QR (m >= n) or LQ (m < n)
+ *            factorization in the LAPACK ?geqrf / ?gelqf storage convention
+ *   ldap     compact leading dimension of A (>= m col-major, >= n row-major)
+ *   bp       compact B, max(m,n) x nrhs per matrix: on entry rows 0 .. (rows of
+ *            op(A))-1 hold B; on exit rows 0 .. (columns of op(A))-1 hold X and,
+ *            in the least-squares case, the remaining rows the residual (the
+ *            squared column norms of rows n..m-1 are the residual sums of squares)
+ *   ldbp     compact leading dimension of B (>= max(m,n) col-major, >= nrhs row-major)
+ *   taup     compact tau output, exactly as ?geqrf_compact's (k = min(m,n) per
+ *            matrix, ld = k): the reflector scalars of the factorization left in
+ *            ap, so (ap, taup) is the (H, tau) that ?ormqr_compact accepts
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does;
+ * ap and taup are then not referenced, though Fortran semantics still want
+ * them present (a dummy suffices). nrhs = 0 computes
+ * nothing at all: LAPACK ?gels's quick return covers min(m, n, nrhs) = 0, so
+ * -- unlike ?posv/?sysv -- no factorization is performed (measured, not just
+ * read from the reference source).
+ * Rank deficiency is not detected (no info > 0): a zero diagonal of R divides
+ * through to Inf/NaN in that lane, as in ?trsm.
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout   -2 trans   -3 m (<0)   -4 n (<0)   -5 nrhs (<0)   -7 ldap
+ *   -9 ldbp     -11 V (not 2/4/8/16)   -12 nm (<0)
+ */
+int dgels_compact(char layout, char trans, int m, int n, int nrhs, double *ap, int ldap,
+                  double *bp, int ldbp, double *taup, int V, int nm);
+
+int sgels_compact(char layout, char trans, int m, int n, int nrhs, float *ap, int ldap,
+                  float *bp, int ldbp, float *taup, int V, int nm);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* CBK_H */

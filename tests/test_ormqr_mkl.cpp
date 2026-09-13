@@ -1,0 +1,239 @@
+/* test_ormqr_mkl.cpp
+ *
+ * Validation of cbk_dormqr_compact against real Intel MKL, implementing
+ * the two test suites of cbk_dormqr_compact_design.md section 7 through
+ * the genuine MKL Compact pipeline (mkl_dgepack_compact / mkl_dgeqrf_compact /
+ * mkl_dtrsm_compact). This is the design document's "hard correctness gate
+ * against standard dense LAPACK equivalents" (section 7.4).
+ *
+ * Suite 1 (section 7.1) -- Isolated Q application (Q^T B):
+ *   A generated Householder representation (H, tau) and a target batch B are
+ *   packed into MKL Compact format. cbk_dormqr_compact computes Q^T B in
+ *   place. The checker materializes the dense reference Q^T B per matrix via
+ *   dense LAPACK (LAPACKE_dormqr) and gates the application residual at
+ *   rtol = 20 * n * eps (relative to the matrix L1 norm).
+ *
+ * Suite 2 (section 7.2) -- End-to-end AX = B solver:
+ *   A known X (X(:,j) = j+1) defines B = A X. The compact pipeline runs
+ *   mkl_dgeqrf_compact -> compat<T>::ormqr('T') -> mkl_dtrsm_compact and
+ *   the checker gates the forward error (Xhat - X) and the system residual
+ *   (A Xhat - B) at rtol = 100 * n * eps (relative to the matrix L1 norm).
+ *
+ * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
+ *
+ * Assisted-by: Claude:claude-opus-4.8
+ */
+
+#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */
+
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <limits>
+#include <vector>
+#include <algorithm>
+
+using namespace cbk::test;
+
+namespace {
+
+/* ---------------- Suite 1: isolated op(Q) C (section 7.1) -------------- */
+
+/* Generalized Suite 1: validate cbk_dormqr_compact's op(Q) application
+ * for any (layout, side, trans) against dense LAPACKE_dormqr. A is the s x k
+ * reflector batch with s = m (side='L') or n (side='R'); C is m x n. */
+template <class T>
+int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    const bool left = (side == 'L' || side == 'l');
+    const int s = left ? m : n; /* A is s x k, Q is s x s */
+    const int lap = rowmajor ? LAPACK_ROW_MAJOR : LAPACK_COL_MAJOR;
+    const int ldH = rowmajor ? k : s; /* dense leading dims */
+    const int ldC = rowmajor ? n : m;
+
+    MatrixBatch<T> H(nm, s, k), tau(nm, k, 1), B(nm, m, n), Bref(nm, m, n),
+        Bout(nm, m, n);
+
+    for (int v = 0; v < nm; ++v) {
+        T *Hv = H[v], *tv = tau[v];
+        T *Bv = B[v], *Rv = Bref[v];
+        for (size_t i = 0; i < H.stride(); ++i)
+            Hv[i] = frand<T>();
+        /* boost the diagonal; H is dense in `layout`, which its view carries */
+        const auto Hm = H.view(v, rowmajor);
+        for (int d = 0; d < std::min(s, k); ++d)
+            Hm(d, d) += T(2);
+        /* turn H into a real Householder representation via dense QR */
+        lapack<T>::geqrf(lap, s, k, Hv, ldH, tv);
+        for (size_t i = 0; i < B.stride(); ++i)
+            Bv[i] = frand<T>();
+        std::copy(Bv, Bv + B.stride(), Rv);
+        /* dense reference: op(Q) C */
+        lapack<T>::ormqr(lap, side, trans, m, n, k, Hv, ldH, tv, Rv, ldC);
+    }
+
+    /* pack into MKL Compact format (tau is a vector: layout-agnostic) */
+    auto Hp = H.base_ptrs();
+    auto Tp = tau.base_ptrs();
+    auto Bp = B.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(s, k, fmt, nm);
+    MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
+    MKL_INT sz_c = mkl<T>::get_size(m, n, fmt, nm);
+    auto ap_buf = cbk::detail::mkl_alloc_bytes<T>(sz_a);
+    auto taup_buf = cbk::detail::mkl_alloc_bytes<T>(sz_t);
+    auto cp_buf = cbk::detail::mkl_alloc_bytes<T>(sz_c);
+    T *ap = ap_buf.get(), *taup = taup_buf.get(), *cp = cp_buf.get();
+
+    const MKL_INT ldap = rowmajor ? k : s; /* compact leading dims */
+    const MKL_INT ldcp = rowmajor ? n : m;
+    mkl<T>::gepack(layout, s, k, Hp.data(), ldH, ap, ldap, fmt, nm);
+    mkl<T>::gepack(MKL_COL_MAJOR, k, 1, Tp.data(), k, taup, k, fmt, nm);
+    mkl<T>::gepack(layout, m, n, Bp.data(), ldC, cp, ldcp, fmt, nm);
+
+    /* routine under test (workspace query, then compute). info is a single
+     * scalar (MKL Compact convention), not a per-matrix array. */
+    MKL_INT info = 99;
+    T wq;
+    compat<T>::ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, &wq, -1,
+                     &info, fmt, nm);
+    compat<T>::ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, &wq,
+                     (MKL_INT)wq, &info, fmt, nm);
+
+    /* unpack and compare against the dense reference */
+    auto Op = Bout.base_ptrs();
+    mkl<T>::geunpack(layout, m, n, Op.data(), ldC, cp, ldcp, fmt, nm);
+
+    int fails = 0;
+    if (info != 0) {
+        ++fails;
+        std::printf("    info = %ld (expected 0)\n", (long)info);
+    }
+    double worst = 0;
+    for (int v = 0; v < nm; ++v) {
+        const T *Bo = Bout[v], *Rv = Bref[v];
+        double resid = max_abs_diff(Bo, Rv, B.stride());
+        /* the reference is stored in `layout`, which its view carries */
+        double rel = resid / std::max(norm1(Bref.view(v, rowmajor)), norm_floor);
+        worst = std::max(worst, rel);
+    }
+    const double rtol = 20.0 * s * eps;
+    bool ok = (worst <= rtol);
+    fails += !ok;
+    std::printf("  [suite1] %s side=%c trans=%c V=%-2d nm=%-2d m=%-3d n=%-3d k=%-3d | "
+                "rel resid %.2e (rtol %.2e) %s\n",
+                rowmajor ? "row" : "col", side, trans, V, nm, m, n, k, worst, rtol,
+                ok ? "OK" : "FAIL");
+
+    return fails;
+}
+
+/* ---------------- Suite 2: end-to-end AX = B (section 7.2) ------------- */
+
+template <class T> int suite2(int nm, int n, int nrhs)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+    const int m = n, k = n;
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+
+    /* each batch in one contiguous column-major buffer, matrix v at v*stride */
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    for (int v = 0; v < nm; ++v) {
+        gen_boosted(A.view(v));          /* diagonal boost tames cond */
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
+    }
+
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
+    MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
+    MKL_INT sz_c = mkl<T>::get_size(m, nrhs, fmt, nm);
+    auto ap_buf = cbk::detail::mkl_alloc_bytes<T>(sz_a);
+    auto taup_buf = cbk::detail::mkl_alloc_bytes<T>(sz_t);
+    auto cp_buf = cbk::detail::mkl_alloc_bytes<T>(sz_c);
+    T *ap = ap_buf.get(), *taup = taup_buf.get(), *cp = cp_buf.get();
+
+    mkl<T>::gepack(MKL_COL_MAJOR, m, n, Ap.data(), m, ap, m, fmt, nm);
+    mkl<T>::gepack(MKL_COL_MAJOR, m, nrhs, Bp.data(), m, cp, m, fmt, nm);
+
+    MKL_INT info = 99; /* compact info is a single scalar (MKL convention) */
+
+    /* 1. compact QR: ap <- (H, R), taup <- tau   (workspace query first) */
+    T wq;
+    mkl<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq, -1, &info, fmt, nm);
+    MKL_INT lwork = (MKL_INT)wq;
+    std::vector<T> work((size_t)std::max<MKL_INT>(lwork, 1));
+    mkl<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, work.data(), lwork, &info, fmt, nm);
+
+    /* 2. routine under test: cp <- Q^T B */
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq, -1,
+                     &info, fmt, nm);
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq,
+                     (MKL_INT)wq, &info, fmt, nm);
+
+    /* 3. compact upper-triangular solve: cp <- R^{-1} (Q^T B) = Xhat */
+    mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n, nrhs,
+                 T(1), ap, m, cp, m, fmt, nm);
+
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
+    mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, cp, m, fmt, nm);
+
+    int fails = 0;
+    if (info != 0) {
+        ++fails;
+        std::printf("    info = %ld (expected 0)\n", (long)info);
+    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
+    const double rtol = 100.0 * n * eps;
+    bool ok = (worst_fwd <= rtol && worst_res <= rtol);
+    fails += !ok;
+    std::printf("  [suite2] V=%-2d nm=%-2d n=%-3d nrhs=%d | fwd err %.2e res %.2e (rtol "
+                "%.2e) %s\n",
+                V, nm, n, nrhs, worst_fwd, worst_res, rtol, ok ? "OK" : "FAIL");
+
+    return fails;
+}
+
+} /* anonymous namespace */
+
+template <class T> int run_suites()
+{
+    std::printf("\n== %s: MKL compact format = %d, V = %d ==\n", compact<T>::name,
+                (int)mkl_get_format_compact(), mkl<T>::vlen(mkl_get_format_compact()));
+
+    int fails = 0;
+    /* Suite 1: isolated op(Q) C over the full feature matrix
+     * (layout x side x trans), across batch sizes / shapes. */
+    for (MKL_LAYOUT lay : {MKL_COL_MAJOR, MKL_ROW_MAJOR})
+        for (char side : {'L', 'R'})
+            for (char tr : {'N', 'T'}) {
+                /* side='L': A,Q are m x m (k<=m); side='R': n x n (k<=n) */
+                fails += suite1<T>(lay, side, tr, 8, 43, 5, side == 'L' ? 43 : 5);
+                fails += suite1<T>(lay, side, tr, 16, 32, 8, side == 'L' ? 32 : 8);
+                /* k < dim, padded partial last group */
+                fails += suite1<T>(lay, side, tr, 11, 32, 6, side == 'L' ? 20 : 4);
+            }
+
+    /* Suite 2: end-to-end solver, shapes from section 7.3 (32..512) */
+    fails += suite2<T>(8, 32, 5);
+    fails += suite2<T>(8, 64, 4);
+    fails += suite2<T>(16, 128, 3);
+    fails += suite2<T>(7, 32, 6); /* padded partial last group */
+
+    return fails;
+}
+
+int main()
+{
+    const int fails = run_suites<double>() + run_suites<float>();
+    return finish(fails);
+}

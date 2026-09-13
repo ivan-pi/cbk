@@ -4,7 +4,7 @@
  * many small symmetric indefinite matrices, comparing the fused compact solver
  * with the conventional per-matrix LAPACK driver:
  *
- *   cqr-compact  cqr_mkl_dsysvnp_compact  (this project's fused unpivoted LDL^T
+ *   cbk-compact  cbk_dsysvnp_compact  (this project's fused unpivoted LDL^T
  *                                          factor + solve, one call on the pool)
  *   per-matrix   LAPACKE_dsysv            (Bunch-Kaufman LDL^T factor + solve,
  *                                          one matrix at a time)
@@ -19,7 +19,7 @@
  *
  * To measure the solvers rather than data movement, the pool is packed into
  * compact form once, up front (A and B); only the solve is timed, and the
- * destroyed input is restored (untimed) before each pass. The cqr path is one
+ * destroyed input is restored (untimed) before each pass. The cbk path is one
  * call on the whole pool -- the routine threads its own loop over groups, and
  * factors and solves each group while its factor is cache-resident. The
  * per-matrix LAPACK path is driven from an OpenMP loop of the same thread
@@ -29,11 +29,11 @@
  *                              [--simdlen=2|4|8] [nmat] [reps]
  *         (defaults: 1 right-hand side, 512 matrices, 3 reps)
  *
- * With no --size-sweep it runs the cqr-vs-LAPACK comparison; with it, a
- * cqr-only throughput scan over the size range. --simdlen forces the interleave
+ * With no --size-sweep it runs the cbk-vs-LAPACK comparison; with it, a
+ * cbk-only throughput scan over the size range. --simdlen forces the interleave
  * width (2/4/8) instead of the host's widest.
  *
- * Build: needs Intel MKL plus this repo's cqr_mkl_ext; wired up by CMakeLists.txt
+ * Build: needs Intel MKL plus this repo's MKL-style API; wired up by CMakeLists.txt
  * as the `bench_sysvnp_compact` target. OpenMP is used when available. Build with
  * host-tuned flags (e.g. `-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the open
  * compact kernel emits the full vector width.
@@ -54,7 +54,7 @@
 
 namespace {
 
-using namespace cqr::bench;
+using namespace cbk::bench;
 
 /* Flop count of the unpivoted LDL^T solve in GFLOP: the factorization
  * (chol_gflop -- the same count as Cholesky, the n reciprocals uncounted as
@@ -89,8 +89,8 @@ void solve_compact(double *ap, double *bp, int n, int nrhs, int nmat,
                    MKL_COMPACT_PACK fmt)
 {
     MKL_INT info;
-    cqr_mkl_dsysvnp_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt,
-                            nmat);
+    cbk_dsysvnp_compact(MKL_COL_MAJOR, MKL_LOWER, n, nrhs, ap, n, bp, n, &info, fmt,
+                        nmat);
 }
 
 /* Per-matrix LAPACK ?sysv (Bunch-Kaufman) of a standard-layout pool copy in
@@ -118,12 +118,12 @@ void solve_unbatched(double *a, double *b, int n, int nrhs, int nmat, MKL_INT *i
 void run_sweep(int nmat, int reps, int nrhs, int nmin, int nmax, int stride,
                MKL_COMPACT_PACK fmt, int V, int nthreads)
 {
-    std::printf("Symmetric solve size sweep: cqr_mkl_dsysvnp_compact only (throughput, "
+    std::printf("Symmetric solve size sweep: cbk_dsysvnp_compact only (throughput, "
                 "no cross-check)\n");
     std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
                 "(indefinite, col-major lower, pre-packed)\n\n",
                 nmat, nrhs, reps, V, compact_format_name(fmt), nthreads);
-    std::printf("   n |  total (s) | cqr GFLOP/s |   cqr mat/s\n");
+    std::printf("   n |  total (s) | cbk GFLOP/s |   cbk mat/s\n");
     std::printf("-----+------------+-------------+-------------\n");
 
     for (int n = nmin; n <= nmax; n += stride) {
@@ -167,7 +167,7 @@ int main(int argc, char **argv)
     constexpr std::array sizes = {8,  16,  24,  30,  32,  45,  48,  60, 64,
                                   96, 105, 128, 168, 170, 256, 384, 500};
 
-    std::printf("Symmetric solve throughput: cqr_mkl_dsysvnp_compact (fused unpivoted "
+    std::printf("Symmetric solve throughput: cbk_dsysvnp_compact (fused unpivoted "
                 "LDL^T) vs per-matrix LAPACKE_dsysv (Bunch-Kaufman)\n");
     std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
                 "(indefinite, col-major lower, pre-packed)\n\n",
@@ -175,8 +175,8 @@ int main(int argc, char **argv)
     /* Throughput as matrices/second (scientific) so it stays legible across the
      * whole size range. The error columns are forward errors against the known
      * solution, one per path. */
-    std::printf("   n | cqr GFLOP/s |   cqr mat/s | lapack mat/s | cqr/lap | "
-                "fwderr(cqr) | fwderr(lapack)\n");
+    std::printf("   n | cbk GFLOP/s |   cbk mat/s | lapack mat/s | cbk/lap | "
+                "fwderr(cbk) | fwderr(lapack)\n");
     std::printf("-----+-------------+-------------+--------------+---------+"
                 "-------------+---------------\n");
 
@@ -188,7 +188,7 @@ int main(int argc, char **argv)
         const Systems P(n, nmat, nrhs);
         PackedSystems pk(P.a, P.b, fmt);
 
-        /* working copies: compact (cqr) and standard layout (LAPACK) */
+        /* working copies: compact (cbk) and standard layout (LAPACK) */
         auto ap = pk.a.work();
         auto bp = pk.b.work();
         aligned_vector<double> a_work, b_work;
@@ -201,7 +201,7 @@ int main(int argc, char **argv)
             b_work = P.b.storage();
         };
 
-        double t_cqr = best_time(reps, restore_compact, [&] {
+        double t_cbk = best_time(reps, restore_compact, [&] {
             solve_compact(ap.get(), bp.get(), n, nrhs, nmat, fmt);
         });
         double t_lap = best_time(reps, restore_dense, [&] {
@@ -210,21 +210,21 @@ int main(int argc, char **argv)
 
         /* correctness gates: both paths vs the known solution, each read from
          * the X its last timed pass left behind (t_lap does not touch bp) */
-        const double err_cqr = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
+        const double err_cbk = unpacked_forward_error(bp.get(), n, nrhs, nmat, fmt);
         const double err_lap = forward_error(b_work.data(), n, nrhs, nmat);
-        check(err_cqr <= 1e-9, "compact solve recovers the known solution");
+        check(err_cbk <= 1e-9, "compact solve recovers the known solution");
         check(err_lap <= 1e-9, "LAPACK solve recovers the known solution");
 
-        const double sp = t_lap / t_cqr;
-        const double gflops_cqr = nmat * sysv_gflop(n, nrhs) / t_cqr;
+        const double sp = t_lap / t_cbk;
+        const double gflops_cbk = nmat * sysv_gflop(n, nrhs) / t_cbk;
         log_speed += std::log(sp);
         std::printf("%4d | %11.2f | %11.2e | %12.2e | %6.2fx | %11.2e | %13.2e\n", n,
-                    gflops_cqr, nmat / t_cqr, nmat / t_lap, sp, err_cqr, err_lap);
+                    gflops_cbk, nmat / t_cbk, nmat / t_lap, sp, err_cbk, err_lap);
     }
 
     std::printf("-----+-------------+-------------+--------------+---------+"
                 "-------------+---------------\n");
-    std::printf("geometric-mean speedup (cqr fused compact solve vs per-matrix "
+    std::printf("geometric-mean speedup (cbk fused compact solve vs per-matrix "
                 "LAPACKE_dsysv): %.2fx\n",
                 std::exp(log_speed / sizes.size()));
     return 0;

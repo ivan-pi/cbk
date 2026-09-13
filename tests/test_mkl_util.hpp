@@ -3,8 +3,8 @@
 // Scalar-type dispatch for the MKL-backed suites, so each suite is written once
 // as a template and runs in FP64 and FP32:
 //
-//   cqr_mkl<T>  the routines under test,
-//               cqr_mkl_?{geqrf,ormqr,orgqr,potrf,potrs,posv,sytrfnp,sytrsnp,
+//   compat<T>  the routines under test,
+//               cbk_?{geqrf,ormqr,orgqr,potrf,potrs,posv,sytrfnp,sytrsnp,
 //               sysvnp,trsm,gels}_compact
 //   mkl<T>      MKL's Compact API: sizes, pack/unpack, and MKL's own compact
 //               kernels as references
@@ -23,74 +23,74 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_ext.h"
-#include "cqr_mkl_alloc.h"
+#include "cbk_compat.h"
+#include "cbk_mkl_alloc.h"
 #include "test_compact_util.hpp"
 
-namespace cqr::test {
+namespace cbk::test {
 
-template <class T> struct cqr_mkl;
+template <class T> struct compat;
 template <class T> struct mkl;
 template <class T> struct lapack;
 
 // clang-format off
 // NOLINTBEGIN(bugprone-macro-parentheses): T is a type name, p a token to paste
-#define CQR_TEST_MKL_DISPATCH(T, p, P)                                                     \
-template <> struct cqr_mkl<T> {                                                            \
+#define CBK_TEST_COMPAT_DISPATCH(T, p, P)                                                     \
+template <> struct compat<T> {                                                            \
     static void geqrf(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, T *ap, MKL_INT ldap,       \
                       T *taup, T *work, MKL_INT lwork, MKL_INT *info,                      \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
-    { cqr_mkl_##p##geqrf_compact(layout, m, n, ap, ldap, taup, work, lwork, info, fmt, nm); } \
+    { cbk_##p##geqrf_compact(layout, m, n, ap, ldap, taup, work, lwork, info, fmt, nm); } \
     static void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n,     \
                       MKL_INT k, const T *ap, MKL_INT ldap, const T *taup, T *cp,          \
                       MKL_INT ldcp, T *work, MKL_INT lwork, MKL_INT *info,                 \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
-    { cqr_mkl_##p##ormqr_compact(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp,   \
+    { cbk_##p##ormqr_compact(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp,   \
                                  work, lwork, info, fmt, nm); }                            \
     static void orgqr(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, T *ap,          \
                       MKL_INT ldap, const T *taup, T *work, MKL_INT lwork, MKL_INT *info,  \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
-    { cqr_mkl_##p##orgqr_compact(layout, m, n, k, ap, ldap, taup, work, lwork, info, fmt,  \
+    { cbk_##p##orgqr_compact(layout, m, n, k, ap, ldap, taup, work, lwork, info, fmt,  \
                                  nm); }                                                    \
     static void potrf(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,   \
                       MKL_INT *info, MKL_COMPACT_PACK fmt, MKL_INT nm)                     \
-    { cqr_mkl_##p##potrf_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }              \
+    { cbk_##p##potrf_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }              \
     static void potrs(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,          \
                       const T *ap, MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,       \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
-    { cqr_mkl_##p##potrs_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,     \
+    { cbk_##p##potrs_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,     \
                                  nm); }                                                    \
     static void posv(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,    \
                      MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,                     \
                      MKL_COMPACT_PACK fmt, MKL_INT nm)                                     \
-    { cqr_mkl_##p##posv_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,      \
+    { cbk_##p##posv_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,      \
                                 nm); }                                                     \
     static void sytrfnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap, \
                         MKL_INT *info, MKL_COMPACT_PACK fmt, MKL_INT nm)                   \
-    { cqr_mkl_##p##sytrfnp_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }            \
+    { cbk_##p##sytrfnp_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }            \
     static void sytrsnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,        \
                         const T *ap, MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,     \
                         MKL_COMPACT_PACK fmt, MKL_INT nm)                                  \
-    { cqr_mkl_##p##sytrsnp_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,   \
+    { cbk_##p##sytrsnp_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,   \
                                    nm); }                                                  \
     static void sysvnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,  \
                        MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,                   \
                        MKL_COMPACT_PACK fmt, MKL_INT nm)                                   \
-    { cqr_mkl_##p##sysvnp_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,    \
+    { cbk_##p##sysvnp_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,    \
                                   nm); }                                                   \
     static void trsm(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE tr,   \
                      MKL_DIAG diag, MKL_INT m, MKL_INT n, T alpha, const T *ap,            \
                      MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_COMPACT_PACK fmt, MKL_INT nm)  \
-    { cqr_mkl_##p##trsm_compact(layout, side, uplo, tr, diag, m, n, alpha, ap, ldap, bp,   \
+    { cbk_##p##trsm_compact(layout, side, uplo, tr, diag, m, n, alpha, ap, ldap, bp,   \
                                 ldbp, fmt, nm); }                                          \
     static void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs,   \
                      T *ap, MKL_INT ldap, T *bp, MKL_INT ldbp, T *work, MKL_INT lwork,     \
                      MKL_INT *info, MKL_COMPACT_PACK fmt, MKL_INT nm)                      \
-    { cqr_mkl_##p##gels_compact(layout, trans, m, n, nrhs, ap, ldap, bp, ldbp, work,       \
+    { cbk_##p##gels_compact(layout, trans, m, n, nrhs, ap, ldap, bp, ldbp, work,       \
                                 lwork, info, fmt, nm); }                                   \
 };                                                                                         \
 template <> struct mkl<T> {                                                                \
-    static int vlen(MKL_COMPACT_PACK fmt) { return cqr::detail::vlen_for_format<T>(fmt); } \
+    static int vlen(MKL_COMPACT_PACK fmt) { return cbk::detail::vlen_for_format<T>(fmt); } \
     static MKL_INT get_size(MKL_INT m, MKL_INT n, MKL_COMPACT_PACK fmt, MKL_INT nm)        \
     { return mkl_##p##get_size_compact(m, n, fmt, nm); }                                   \
     static void gepack(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, const T *const *a,        \
@@ -143,9 +143,9 @@ template <> struct lapack<T> {                                                  
 // NOLINTEND(bugprone-macro-parentheses)
 // clang-format on
 
-CQR_TEST_MKL_DISPATCH(double, d, D)
-CQR_TEST_MKL_DISPATCH(float, s, S)
-#undef CQR_TEST_MKL_DISPATCH
+CBK_TEST_COMPAT_DISPATCH(double, d, D)
+CBK_TEST_COMPAT_DISPATCH(float, s, S)
+#undef CBK_TEST_COMPAT_DISPATCH
 
 // Absolute tolerance for the cross-checks against MKL's own compact kernels on
 // the same packed input: the two implementations share the algorithm and sign
@@ -161,6 +161,6 @@ template <> inline double cross_tol<float>()
     return 1e-4;
 }
 
-} // namespace cqr::test
+} // namespace cbk::test
 
 #endif // TEST_MKL_UTIL_HPP

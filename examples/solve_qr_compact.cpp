@@ -8,14 +8,14 @@
  * is exactly the sequence the design document validates (section 7.2):
  *
  *     mkl_dgeqrf_compact      A = Q R                    (factor the batch)
- *     cqr_mkl_dormqr_compact  B <- Q^T B                 (apply Q^T -- the
+ *     cbk_dormqr_compact  B <- Q^T B                 (apply Q^T -- the
  *                                                         routine this repo
  *                                                         adds to MKL)
- *     cqr_mkl_dtrsm_compact   R X = (Q^T B)              (triangular solve --
+ *     cbk_dtrsm_compact   R X = (Q^T B)              (triangular solve --
  *                                                         also from this repo)
  *
  * For a square, full-rank A this recovers X = R^{-1} Q^T B. The same solve is
- * then run as one call, cqr_mkl_dgels_compact -- the compact form of LAPACK's
+ * then run as one call, cbk_dgels_compact -- the compact form of LAPACK's
  * dgels, which does the three steps per group of V matrices while they are
  * cache-resident (and also handles over- and underdetermined shapes). The
  * naive baseline runs LAPACKE_dgels('N') on each matrix separately (which
@@ -24,7 +24,7 @@
  * exact solution.
  *
  * Build: needs Intel MKL (the compact API is an MKL extension) plus this
- * repo's cqr_mkl_ext library; wired up by CMakeLists.txt as the
+ * repo's MKL-style API (cbk_compat.h); wired up by CMakeLists.txt as the
  * `solve_qr_compact` target.
  *
  * Assisted-by: Claude:claude-opus-4.8
@@ -33,9 +33,9 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_ext.h"
-#include "cqr_mkl_alloc.h"     /* mkl_alloc_bytes (calls mkl_malloc; links MKL) */
-#include "cqr_matrix_view.hpp" /* MatrixView, shared with the tests and benchmarks */
+#include "cbk_compat.h"
+#include "cbk_mkl_alloc.h"     /* mkl_alloc_bytes (calls mkl_malloc; links MKL) */
+#include "cbk_matrix_view.hpp" /* MatrixView, shared with the tests and benchmarks */
 
 #include <cassert>
 #include <cstdio>
@@ -48,9 +48,9 @@
 
 namespace {
 
-using cqr::detail::ConstMatrixView;
-using cqr::detail::mat_view;
-using cqr::detail::MatrixView;
+using cbk::detail::ConstMatrixView;
+using cbk::detail::mat_view;
+using cbk::detail::MatrixView;
 
 /* Deterministic uniform reals in [-1, 1), seeded once for reproducibility. */
 std::mt19937_64 rng(42);
@@ -103,7 +103,7 @@ class Matrix {
     double  operator()(int i, int j) const { return a_[i + j * rows_]; }
     // clang-format on
 
-    /* The same storage as a MatrixView (src/cqr_matrix_view.hpp), for handing
+    /* The same storage as a MatrixView (src/cbk_matrix_view.hpp), for handing
      * to anything that takes the library's dense view -- the strided element
      * access the test suites and benchmarks address their matrices through.
      * The view owns nothing: it stays valid only while this Matrix does. */
@@ -178,11 +178,11 @@ void batch_solve(int nm, int n, int nrhs)
      * geqrf_compact -> dormqr_compact -> dtrsm_compact, all on the         *
      * interleaved buffers ap / taup / bp.                                  */
     const int compact_align = 64; /* byte alignment for the compact buffers */
-    auto ap_buf = cqr::detail::mkl_alloc_bytes<double>(
+    auto ap_buf = cbk::detail::mkl_alloc_bytes<double>(
         mkl_dget_size_compact(n, n, fmt, nm), compact_align);
-    auto taup_buf = cqr::detail::mkl_alloc_bytes<double>(
+    auto taup_buf = cbk::detail::mkl_alloc_bytes<double>(
         mkl_dget_size_compact(n, 1, fmt, nm), compact_align);
-    auto bp_buf = cqr::detail::mkl_alloc_bytes<double>(
+    auto bp_buf = cbk::detail::mkl_alloc_bytes<double>(
         mkl_dget_size_compact(n, nrhs, fmt, nm), compact_align);
     double *ap = ap_buf.get(), *taup = taup_buf.get(), *bp = bp_buf.get();
 
@@ -213,13 +213,13 @@ void batch_solve(int nm, int n, int nrhs)
      *    lwork is 1 -- the same quick-return value reference LAPACK dormqr
      *    reports -- and no query is required. */
     double dummy;
-    cqr_mkl_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup, bp, n,
-                           &dummy, 1, info, fmt, nm);
-    check_info(info[0], "cqr_mkl_dormqr_compact");
+    cbk_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup, bp, n, &dummy, 1,
+                       info, fmt, nm);
+    check_info(info[0], "cbk_dormqr_compact");
 
     /* 3. triangular solve: bp <- R^{-1} (Q^T B) = Xhat   (this repo's extension) */
-    cqr_mkl_dtrsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n,
-                          nrhs, 1.0, ap, n, bp, n, fmt, nm);
+    cbk_dtrsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n,
+                      nrhs, 1.0, ap, n, bp, n, fmt, nm);
 
     std::vector<Matrix> Xc(nm, Matrix(n, nrhs));
     {
@@ -227,19 +227,19 @@ void batch_solve(int nm, int n, int nrhs)
         mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xcptr.data(), n, bp, n, fmt, nm);
     }
 
-    /* ===== Path 2: the same solve as one call, cqr_mkl_dgels_compact ==== *
+    /* ===== Path 2: the same solve as one call, cbk_dgels_compact ==== *
      * One call factors, applies Q^T and back-substitutes each group in      *
      * place: B <- X, A <- (H, R).                                            */
     pack_inputs();
     /* gels does use its workspace -- as the tau scratch of the factorization,
      * one slot per group (the size of a compact tau buffer) -- so query it. */
-    cqr_mkl_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n, &wq, -1, info,
-                          fmt, nm);
-    check_info(info[0], "cqr_mkl_dgels_compact (workspace query)");
+    cbk_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n, &wq, -1, info, fmt,
+                      nm);
+    check_info(info[0], "cbk_dgels_compact (workspace query)");
     std::vector<double> work_gels((size_t)std::max<MKL_INT>((MKL_INT)wq, 1));
-    cqr_mkl_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n, work_gels.data(),
-                          (MKL_INT)work_gels.size(), info, fmt, nm);
-    check_info(info[0], "cqr_mkl_dgels_compact");
+    cbk_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, bp, n, work_gels.data(),
+                      (MKL_INT)work_gels.size(), info, fmt, nm);
+    check_info(info[0], "cbk_dgels_compact");
 
     std::vector<Matrix> Xg(nm, Matrix(n, nrhs));
     {
@@ -282,8 +282,8 @@ void batch_solve(int nm, int n, int nrhs)
 
 int main()
 {
-    std::printf("Compact batch QR solve: mkl_dgeqrf_compact -> cqr_mkl_dormqr_compact "
-                "-> cqr_mkl_dtrsm_compact,\n  the one-call cqr_mkl_dgels_compact, and "
+    std::printf("Compact batch QR solve: mkl_dgeqrf_compact -> cbk_dormqr_compact "
+                "-> cbk_dtrsm_compact,\n  the one-call cbk_dgels_compact, and "
                 "per-matrix LAPACKE_dgels\n");
     std::printf("(compact format = %d)\n", (int)mkl_get_format_compact());
 

@@ -3,7 +3,7 @@
  * Throughput benchmark of the QR *factorization* over pools of many small
  * matrices, comparing three implementations of the same LAPACK ?geqrf math:
  *
- *   cqr-compact  cqr_mkl_dgeqrf_compact   (this project's batched SIMD kernel)
+ *   cbk-compact  cbk_dgeqrf_compact   (this project's batched SIMD kernel)
  *   mkl-compact  mkl_dgeqrf_compact       (Intel MKL's batched compact kernel)
  *   per-matrix   LAPACKE_dgeqrf           (conventional one-matrix-at-a-time)
  *
@@ -12,7 +12,7 @@
  * benchmarks are documented in examples/BENCHMARKS.md). To measure the
  * factorization kernels rather than data movement, the pool is packed into
  * compact form once, up front; only the factorization is timed, and the
- * destroyed input is restored (untimed) before each pass. The cqr path is one
+ * destroyed input is restored (untimed) before each pass. The cbk path is one
  * call on the whole pool -- the routine threads its own loop over groups. MKL's
  * compact kernel is not threaded here (sequential MKL; its threading is pinned
  * to 1 in any case), so it and the per-matrix LAPACK path are driven from an
@@ -23,11 +23,11 @@
  * Usage:  bench_geqrf_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8]
  *         [nmat] [reps]      (defaults: 512 matrices, 3 reps)
  *
- * With no --size-sweep it runs the 3-way comparison (cqr vs mkl_dgeqrf_compact
- * vs per-matrix LAPACK); with it, a cqr-only throughput scan over the size range.
+ * With no --size-sweep it runs the 3-way comparison (cbk vs mkl_dgeqrf_compact
+ * vs per-matrix LAPACK); with it, a cbk-only throughput scan over the size range.
  * --simdlen forces the interleave width (2/4/8) instead of the host's widest.
  *
- * Build: needs Intel MKL plus this repo's cqr_mkl_ext; wired up by CMakeLists.txt
+ * Build: needs Intel MKL plus this repo's MKL-style API; wired up by CMakeLists.txt
  * as the `bench_geqrf_compact` target. OpenMP is used when available.
  *
  * Assisted-by: Claude:claude-opus-4.8
@@ -36,7 +36,7 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_alloc.h"
+#include "cbk_mkl_alloc.h"
 #include "bench_util.hpp"
 
 #include <array>
@@ -49,7 +49,7 @@
 
 namespace {
 
-using namespace cqr::bench;
+using namespace cbk::bench;
 
 /* Standard LAPACK ?geqrf flop count (m >= n), in GFLOP. */
 double geqrf_gflop(int m, int n)
@@ -74,18 +74,18 @@ MatrixPool make_pool(int m, int n, int nmat)
     return P;
 }
 
-/* Factor a pre-packed compact pool of nmat matrices in place. cqr: one call on
+/* Factor a pre-packed compact pool of nmat matrices in place. cbk: one call on
  * the whole pool, threaded inside the library. MKL: an OpenMP loop over the
  * groups of V (its compact kernel is not threaded in this build), so both paths
  * run on the same thread count. */
-void factor_compact(bool use_cqr, double *ap, double *taup, int m, int n, int nmat, int V,
+void factor_compact(bool use_cbk, double *ap, double *taup, int m, int n, int nmat, int V,
                     MKL_COMPACT_PACK fmt, MKL_INT lwork)
 {
-    if (use_cqr) {
+    if (use_cbk) {
         std::vector<double> work((size_t)std::max<MKL_INT>(lwork, 1));
         MKL_INT info;
-        cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, m, n, ap, m, taup, work.data(), lwork,
-                               &info, fmt, nmat);
+        cbk_dgeqrf_compact(MKL_COL_MAJOR, m, n, ap, m, taup, work.data(), lwork, &info,
+                           fmt, nmat);
         return;
     }
     const int k = std::min(m, n), ngroups = (nmat + V - 1) / V;
@@ -129,12 +129,12 @@ double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT
     auto ap = pristine.work();
     pristine.restore_into(ap.get());
     MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-    auto tp = cqr::detail::mkl_alloc_bytes<double>(sz_t);
+    auto tp = cbk::detail::mkl_alloc_bytes<double>(sz_t);
 
     MKL_INT lwork = -1, info;
     double wq;
-    cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, m, n, ap.get(), m, tp.get(), &wq, -1, &info,
-                           fmt, V);
+    cbk_dgeqrf_compact(MKL_COL_MAJOR, m, n, ap.get(), m, tp.get(), &wq, -1, &info, fmt,
+                       V);
     lwork = (MKL_INT)wq;
     factor_compact(true, ap.get(), tp.get(), m, n, nmat, V, fmt, lwork);
 
@@ -161,7 +161,7 @@ double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT
     return worst;
 }
 
-/* Single-kernel size sweep: factor a pre-packed pool with cqr at each n in
+/* Single-kernel size sweep: factor a pre-packed pool with cbk at each n in
  * [nmin, nmax] (step stride) and print throughput only -- no MKL/LAPACK
  * cross-check, so it stays cheap and isolates the kernel. The point is the
  * staircase: n that is / is not a multiple of the interleave width V. The raw
@@ -171,12 +171,12 @@ double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT
 void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_PACK fmt,
                int V, int nthreads)
 {
-    std::printf("QR factorization size sweep: cqr_mkl_dgeqrf_compact only "
+    std::printf("QR factorization size sweep: cbk_dgeqrf_compact only "
                 "(throughput, no cross-check)\n");
     std::printf("matrices=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  (square, "
                 "pre-packed)\n\n",
                 nmat, reps, V, compact_format_name(fmt), nthreads);
-    std::printf("   n |  total (s) | cqr GFLOP/s |   cqr mat/s\n");
+    std::printf("   n |  total (s) | cbk GFLOP/s |   cbk mat/s\n");
     std::printf("-----+------------+-------------+-------------\n");
 
     for (int n = nmin; n <= nmax; n += stride) {
@@ -186,12 +186,12 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
         const PackedPool pristine(P, fmt);
         auto work_ap = pristine.work();
         MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-        auto taup = cqr::detail::mkl_alloc_bytes<double>(sz_t);
+        auto taup = cbk::detail::mkl_alloc_bytes<double>(sz_t);
 
         double wq;
         MKL_INT info;
-        cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, m, n, work_ap.get(), m, taup.get(), &wq, -1,
-                               &info, fmt, V);
+        cbk_dgeqrf_compact(MKL_COL_MAJOR, m, n, work_ap.get(), m, taup.get(), &wq, -1,
+                           &info, fmt, V);
         const MKL_INT lwork = (MKL_INT)wq;
 
         auto restore = [&] { pristine.restore_into(work_ap.get()); };
@@ -228,11 +228,11 @@ int main(int argc, char **argv)
      * sizes that are not multiples of the SIMD width V -- 30, 45, 60, 105, 168,
      * from 2-D/3-D RBF-FD stencils -- with the round powers, so the remainder
      * handling (the staircase SIMD effect) is visible; then a few larger sizes for
-     * the crossover. Use --size-sweep for a finer cqr-only scan. */
+     * the crossover. Use --size-sweep for a finer cbk-only scan. */
     constexpr std::array sizes = {8,  16,  24,  30,  32,  45,  48,  60, 64,
                                   96, 105, 128, 168, 170, 256, 384, 500};
 
-    std::printf("QR factorization throughput: cqr_mkl_dgeqrf_compact vs "
+    std::printf("QR factorization throughput: cbk_dgeqrf_compact vs "
                 "mkl_dgeqrf_compact vs per-matrix LAPACKE_dgeqrf\n");
     std::printf("matrices=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  (square, "
                 "pre-packed)\n\n",
@@ -240,8 +240,8 @@ int main(int argc, char **argv)
     /* Throughput as matrices/second (scientific) so it stays legible across the
      * whole size range; three speedup ratios show where the wins come from. The
      * error column is elementwise (H, tau) vs per-matrix LAPACKE_dgeqrf. */
-    std::printf("   n | cqr GFLOP/s |   cqr mat/s |   mkl mat/s | lapack mat/s | "
-                "cqr/lap | mkl/lap | cqr/mkl | relerr(vs LAPACK)\n");
+    std::printf("   n | cbk GFLOP/s |   cbk mat/s |   mkl mat/s | lapack mat/s | "
+                "cbk/lap | mkl/lap | cbk/mkl | relerr(vs LAPACK)\n");
     std::printf(
         "-----+-------------+-------------+-------------+--------------+---------+"
         "---------+---------+------------------\n");
@@ -255,15 +255,15 @@ int main(int argc, char **argv)
         const PackedPool pristine(P, fmt);
         auto work_ap = pristine.work();
         MKL_INT sz_t = mkl_dget_size_compact(k, 1, fmt, nmat);
-        auto taup = cqr::detail::mkl_alloc_bytes<double>(sz_t);
+        auto taup = cbk::detail::mkl_alloc_bytes<double>(sz_t);
 
         /* Each routine reports its own optimal lwork (MKL's compact geqrf needs
          * real scratch; ours needs none). Query both and size per path. */
         double wq;
         MKL_INT info;
-        cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, m, n, work_ap.get(), m, taup.get(), &wq, -1,
-                               &info, fmt, V);
-        const MKL_INT lwork_cqr = (MKL_INT)wq;
+        cbk_dgeqrf_compact(MKL_COL_MAJOR, m, n, work_ap.get(), m, taup.get(), &wq, -1,
+                           &info, fmt, V);
+        const MKL_INT lwork_cbk = (MKL_INT)wq;
         mkl_dgeqrf_compact(MKL_COL_MAJOR, m, n, work_ap.get(), m, taup.get(), &wq, -1,
                            &info, fmt, V);
         const MKL_INT lwork_mkl = (MKL_INT)wq;
@@ -274,9 +274,9 @@ int main(int argc, char **argv)
          * (untimed) before each timed pass */
         auto restore = [&] { pristine.restore_into(work_ap.get()); };
 
-        double t_cqr = best_time(reps, restore, [&] {
+        double t_cbk = best_time(reps, restore, [&] {
             factor_compact(true, work_ap.get(), taup.get(), m, n, nmat, V, fmt,
-                           lwork_cqr);
+                           lwork_cbk);
         });
         double t_mkl = best_time(reps, restore, [&] {
             factor_compact(false, work_ap.get(), taup.get(), m, n, nmat, V, fmt,
@@ -289,21 +289,21 @@ int main(int argc, char **argv)
         const double rel = factor_error(P, pristine, fmt, V);
         check(rel <= 1e-9, "compact factorization matches LAPACK");
 
-        const double sp_lap = t_lap / t_cqr;     /* cqr speedup over LAPACK */
+        const double sp_lap = t_lap / t_cbk;     /* cbk speedup over LAPACK */
         const double sp_mkl_lap = t_lap / t_mkl; /* MKL speedup over LAPACK */
-        const double sp_mkl = t_mkl / t_cqr;     /* cqr speedup over MKL    */
-        const double gflops_cqr = nmat * geqrf_gflop(m, n) / t_cqr;
+        const double sp_mkl = t_mkl / t_cbk;     /* cbk speedup over MKL    */
+        const double gflops_cbk = nmat * geqrf_gflop(m, n) / t_cbk;
         log_speed_vs_lapack += std::log(sp_lap);
         std::printf("%4d | %11.2f | %11.2e | %11.2e | %12.2e | %6.2fx | %6.2fx | "
                     "%6.2fx | %.2e\n",
-                    n, gflops_cqr, nmat / t_cqr, nmat / t_mkl, nmat / t_lap, sp_lap,
+                    n, gflops_cbk, nmat / t_cbk, nmat / t_mkl, nmat / t_lap, sp_lap,
                     sp_mkl_lap, sp_mkl, rel);
     }
 
     std::printf(
         "-----+-------------+-------------+-------------+--------------+---------+"
         "---------+---------+------------------\n");
-    std::printf("geometric-mean speedup (cqr compact vs per-matrix LAPACK): %.2fx\n",
+    std::printf("geometric-mean speedup (cbk compact vs per-matrix LAPACK): %.2fx\n",
                 std::exp(log_speed_vs_lapack / sizes.size()));
     return 0;
 }

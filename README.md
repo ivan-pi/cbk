@@ -1,9 +1,10 @@
-# cqr - batched compact-format factorizations
+# cbk - Compact Batch Kernels
 
 Batched QR, Cholesky and LDL^T factorizations, and the solves built on them, for
 many small matrices stored in the **compact** (interleaved) format: element
 `(i,j)` of `V` consecutive matrices sits side by side, so one SIMD instruction
-advances all `V` factorizations in lockstep. **cqr** is a standalone library
+advances all `V` factorizations in lockstep. **cbk** (Compact Batch Kernels,
+libcbk) is a standalone library
 with a portable C API and no external dependencies; its kernels are written with
 GNU vector types, which the compiler lowers to SSE, AVX, or AVX-512 -- one
 source for every width. An optional Intel MKL-style API drops the same kernels
@@ -17,19 +18,19 @@ into MKL's Compact ecosystem on Intel CPUs.
 
 | Routine (`s`/`d`) | What it does |
 |-------------------|--------------|
-| [`?geqrf_compact`](docs/cqr_mkl_dgeqrf_compact_design.md) | QR factorization |
-| [`?ormqr_compact`](docs/cqr_mkl_dormqr_compact_design.md) | apply `Q` or `Q^T` to a batch |
-| [`?orgqr_compact`](docs/cqr_mkl_dorgqr_compact_design.md) | form the explicit (thin) `Q` |
-| [`?potrf` / `?potrs` / `?posv_compact`](docs/cqr_mkl_dpotrf_compact_design.md) | Cholesky factorization, solve, fused factor-and-solve |
-| [`?sytrfnp` / `?sytrsnp` / `?sysvnp_compact`](docs/cqr_mkl_dsytrfnp_compact_design.md) | unpivoted LDL^T factorization, solve, fused factor-and-solve |
-| [`?trsm_compact`](docs/cqr_mkl_dtrsm_compact_design.md) | triangular solve |
-| [`?gels_compact`](docs/cqr_mkl_dgels_compact_design.md) | least-squares / minimum-norm solve `op(A) X = B` in one call |
+| [`?geqrf_compact`](docs/cbk_dgeqrf_compact_design.md) | QR factorization |
+| [`?ormqr_compact`](docs/cbk_dormqr_compact_design.md) | apply `Q` or `Q^T` to a batch |
+| [`?orgqr_compact`](docs/cbk_dorgqr_compact_design.md) | form the explicit (thin) `Q` |
+| [`?potrf` / `?potrs` / `?posv_compact`](docs/cbk_dpotrf_compact_design.md) | Cholesky factorization, solve, fused factor-and-solve |
+| [`?sytrfnp` / `?sytrsnp` / `?sysvnp_compact`](docs/cbk_dsytrfnp_compact_design.md) | unpivoted LDL^T factorization, solve, fused factor-and-solve |
+| [`?trsm_compact`](docs/cbk_dtrsm_compact_design.md) | triangular solve |
+| [`?gels_compact`](docs/cbk_dgels_compact_design.md) | least-squares / minimum-norm solve `op(A) X = B` in one call |
 
 Each routine links to its design document.
 
-The C API (`include/cqr_compact.h`) takes the interleave width `V` explicitly
+The C API (`include/cbk.h`) takes the interleave width `V` explicitly
 and validates its arguments LAPACK-style. Every routine threads its loop over
-groups of `V` matrices with OpenMP (`-DCQR_WITH_OPENMP=OFF` disables it).
+groups of `V` matrices with OpenMP (`-DCBK_WITH_OPENMP=OFF` disables it).
 
 ## Getting started
 
@@ -42,17 +43,17 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-march=native` lets the kernels use the host's widest vectors; drop it for a
-generic build. Link the `cqr::cqr` target and include `cqr_compact.h`.
+generic build. Link the `cbk::cbk` target and include `cbk.h`.
 `cmake --install build --prefix <dir>` installs the library, the headers and a
-CMake package (`find_package(cqr CONFIG)`); see [Building](docs/building.md).
+CMake package (`find_package(cbk CONFIG)`); see [Building](docs/building.md).
 
 ## Intel MKL extension
 
 The project began as a set of extensions to Intel MKL's Compact API, which ships
 `mkl_?geqrf_compact`, `mkl_?potrf_compact` and `mkl_?trsm_compact` but no way
 to apply or form `Q`, no Cholesky or LDL^T solve, and no `gels`. That API
-survives as an optional layer, `-DCQR_WITH_MKL=ON`: `cqr_mkl_?*_compact` entry
-points (`include/cqr_mkl_ext.h`) that take MKL's `MKL_LAYOUT` and
+survives as an optional layer, `-DCBK_WITH_MKL=ON`: `cbk_?*_compact` entry
+points (`include/cbk_compat.h`) that take MKL's `MKL_LAYOUT` and
 `MKL_COMPACT_PACK` arguments, so they mix freely with MKL's own compact routines,
 its pack/unpack helpers, and `mkl_?gemm_compact`.
 

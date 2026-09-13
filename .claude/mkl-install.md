@@ -7,7 +7,7 @@ versions and paths below are what they installed then.
 
 ```sh
 sudo apt-get install libmkl-dev          # MKL 2020.0.4 (Debian 2020.4.304-4)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCQR_WITH_MKL=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_WITH_MKL=ON
 ```
 
 Headers land in `/usr/include/mkl`, libraries in `/usr/lib/x86_64-linux-gnu`,
@@ -50,8 +50,8 @@ libraries in the same prefix order (package root, `$MKLROOT`, default paths,
 no mixed build. Point it at oneAPI with either form:
 
 ```sh
-MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCQR_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release
-cmake -S . -B build-oneapi -DCQR_WITH_MKL=ON -DMKLCompact_ROOT=/opt/intel/oneapi/mkl/latest -DCMAKE_BUILD_TYPE=Release
+MKLROOT=/opt/intel/oneapi/mkl/latest cmake -S . -B build-oneapi -DCBK_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build-oneapi -DCBK_WITH_MKL=ON -DMKLCompact_ROOT=/opt/intel/oneapi/mkl/latest -DCMAKE_BUILD_TYPE=Release
 cmake --build build-oneapi -j
 ctest --test-dir build-oneapi          # 17/17 on 2026.1
 ```
@@ -91,7 +91,7 @@ full path, which needs neither the flag nor the group.
 ### Build options
 
 - **`-DMKLCompact_THREADING=sequential`** (default): links `mkl_sequential`.
-  MKL runs single-threaded inside each call; cqr's own group loops provide the
+  MKL runs single-threaded inside each call; cbk's own group loops provide the
   parallelism. This is what CI and the benchmarks use.
 - **`-DMKLCompact_THREADING=threaded`**: links MKL's OpenMP layer matched to
   the compiler's own OpenMP runtime, so a process never carries two runtimes:

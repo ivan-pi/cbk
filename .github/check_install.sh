@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Verify an installed cqr: the expected files are present, what should not be
-# is absent, and a downstream project can find_package(cqr) and link cqr::cqr.
+# Verify an installed cbk: the expected files are present, what should not be
+# is absent, and a downstream project can find_package(cbk) and link cbk::cbk.
 #
 #   .github/check_install.sh <prefix> <mkl ON|OFF> <shared ON|OFF>
 #
-# <prefix> is where `cmake --install <build> --prefix <prefix>` put cqr; the
-# two flags say what that build was configured with (CQR_WITH_MKL and
+# <prefix> is where `cmake --install <build> --prefix <prefix>` put cbk; the
+# two flags say what that build was configured with (CBK_WITH_MKL and
 # BUILD_SHARED_LIBS). Run by .github/workflows/install.yml.
 set -euo pipefail
 
@@ -23,22 +23,22 @@ expect_absent() {
 }
 
 echo "== install tree under $prefix (MKL=$mkl, shared=$shared)"
-# The package lives in <libdir>/cmake/cqr, whatever GNUInstallDirs named libdir.
-config=$(find "$prefix" -name cqrConfig.cmake | head -n 1)
-expect "${config:-$prefix/lib/cmake/cqr/cqrConfig.cmake}"
+# The package lives in <libdir>/cmake/cbk, whatever GNUInstallDirs named libdir.
+config=$(find "$prefix" -name cbkConfig.cmake | head -n 1)
+expect "${config:-$prefix/lib/cmake/cbk/cbkConfig.cmake}"
 cmakedir=$(dirname "$config")
 libdir=$(dirname "$(dirname "$cmakedir")")
-expect "$cmakedir/cqrConfigVersion.cmake"
-expect "$cmakedir/cqrTargets.cmake"
-expect "$prefix/include/cqr_compact.h"
+expect "$cmakedir/cbkConfigVersion.cmake"
+expect "$cmakedir/cbkTargets.cmake"
+expect "$prefix/include/cbk.h"
 if [ "$shared" = ON ]; then
-    expect "$libdir/libcqr.so"
-    expect_absent "$libdir/libcqr.a"
+    expect "$libdir/libcbk.so"
+    expect_absent "$libdir/libcbk.a"
 else
-    expect "$libdir/libcqr.a"
-    expect_absent "$libdir/libcqr.so"
+    expect "$libdir/libcbk.a"
+    expect_absent "$libdir/libcbk.so"
 fi
-for f in include/cqr_mkl_ext.h include/cqr_mkl_alloc.h "${cmakedir#"$prefix/"}/FindMKLCompact.cmake"; do
+for f in include/cbk_compat.h include/cbk_mkl_alloc.h "${cmakedir#"$prefix/"}/FindMKLCompact.cmake"; do
     if [ "$mkl" = ON ]; then expect "$prefix/$f"; else expect_absent "$prefix/$f"; fi
 done
 
@@ -50,8 +50,8 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "== downstream project against the install"
-consumer=${CQR_CONSUMER_BUILD_DIR:-$root/build-consumer}
-cmake -S "$root/tests/install" -B "$consumer" -DCMAKE_PREFIX_PATH="$prefix" -DCQR_WITH_MKL="$mkl"
+consumer=${CBK_CONSUMER_BUILD_DIR:-$root/build-consumer}
+cmake -S "$root/tests/install" -B "$consumer" -DCMAKE_PREFIX_PATH="$prefix" -DCBK_WITH_MKL="$mkl"
 cmake --build "$consumer"
 "$consumer/consumer"
 echo "install check passed"

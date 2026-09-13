@@ -37,7 +37,7 @@ jobs:
         run: >
           CXX=clang++ cmake -S . -B build-tidy -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCQR_WITH_MKL=ON
+          -DCBK_WITH_MKL=ON
 
       - name: Check
         run: pre-commit run --hook-stage manual clang-tidy --all-files

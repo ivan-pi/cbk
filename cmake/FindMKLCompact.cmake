@@ -21,7 +21,7 @@
 #
 #   find_package(MKLCompact COMPONENTS Headers) stops at the include dir: no
 #   library search, no link test, MKL::CompactHeaders only (what the installed
-#   cqr package needs). A later full find_package adds MKL::Compact.
+#   cbk package needs). A later full find_package adds MKL::Compact.
 #
 # Intel's own MKLConfig.cmake is deliberately not used: only oneAPI ships it
 # (the Debian/Ubuntu libmkl-dev that CI builds against does not), it is not
@@ -117,7 +117,7 @@ include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(MKLCompact
   REQUIRED_VARS ${_mkl_required} ${_mkl_check}
   REASON_FAILURE_MESSAGE
-    "Install Intel MKL (Debian/Ubuntu: libmkl-dev, or intel-oneapi-mkl-devel from apt.repos.intel.com) and, for a non-default location, set MKLROOT or -DMKLCompact_ROOT=<prefix> (see .claude/mkl-install.md). Or build without the MKL extension: -DCQR_WITH_MKL=OFF.")
+    "Install Intel MKL (Debian/Ubuntu: libmkl-dev, or intel-oneapi-mkl-devel from apt.repos.intel.com) and, for a non-default location, set MKLROOT or -DMKLCompact_ROOT=<prefix> (see .claude/mkl-install.md). Or build without the MKL extension: -DCBK_WITH_MKL=OFF.")
 
 if(MKLCompact_FOUND AND NOT TARGET MKL::CompactHeaders)
   add_library(MKL::CompactHeaders INTERFACE IMPORTED)

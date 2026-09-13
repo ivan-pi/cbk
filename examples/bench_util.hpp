@@ -15,13 +15,13 @@
  * Assisted-by: Claude:claude-opus-4.8 Claude
  */
 
-#ifndef CQR_BENCH_UTIL_HPP
-#define CQR_BENCH_UTIL_HPP
+#ifndef CBK_BENCH_UTIL_HPP
+#define CBK_BENCH_UTIL_HPP
 
-#include "cqr_mkl_ext.h"
-#include "cqr_mkl_alloc.h" /* mkl_alloc_bytes / mkl_buffer, for PackedPool */
-#include "cqr_matrix_batch.hpp"
-#include "cqr_matrix_view.hpp"
+#include "cbk_compat.h"
+#include "cbk_mkl_alloc.h" /* mkl_alloc_bytes / mkl_buffer, for PackedPool */
+#include "cbk_matrix_batch.hpp"
+#include "cbk_matrix_view.hpp"
 
 #include <mkl.h>         /* cblas_dgemm, for the known-solution RHS */
 #include <mkl_compact.h> /* mkl_dget_size_compact / mkl_dgepack_compact */
@@ -40,13 +40,13 @@
 #include <omp.h>
 #endif
 
-namespace cqr::bench {
+namespace cbk::bench {
 
-using cqr::detail::compact_format_name; /* format -> "SSE"/"AVX"/"AVX512" */
-using cqr::detail::format_for_vlen;     /* interleave width -> pack format */
-using cqr::detail::mat_view;            /* dense strided view (cqr_matrix_view.hpp) */
-using cqr::detail::MatrixView;
-using cqr::detail::vlen_for_format; /* pack format -> interleave width */
+using cbk::detail::compact_format_name; /* format -> "SSE"/"AVX"/"AVX512" */
+using cbk::detail::format_for_vlen;     /* interleave width -> pack format */
+using cbk::detail::mat_view;            /* dense strided view (cbk_matrix_view.hpp) */
+using cbk::detail::MatrixView;
+using cbk::detail::vlen_for_format; /* pack format -> interleave width */
 
 /* Denominator floor for relative errors: the same divide-by-zero guard, value
  * and rationale as the test suites' norm_floor (tests/test_compact_util.hpp);
@@ -81,7 +81,7 @@ template <typename T> struct aligned_allocator {
 };
 template <typename T> using aligned_vector = std::vector<T, aligned_allocator<T>>;
 
-/* The batch every benchmark measures on: MatrixBatch (src/cqr_matrix_batch.hpp,
+/* The batch every benchmark measures on: MatrixBatch (src/cbk_matrix_batch.hpp,
  * shared with the test suites), allocated pack-aligned so a dense pool and its
  * LAPACK working copies start aligned like the compact buffers. The benchmarks
  * differ in what they put in their matrices, so a fill unique to one benchmark
@@ -89,7 +89,7 @@ template <typename T> using aligned_vector = std::vector<T, aligned_allocator<T>
  * Cholesky and LDL^T benchmarks share is fill_sym_dd below. A right-hand-side
  * block is the same thing with cols = nrhs, so the benchmarks that solve keep
  * two of these (fill_known_rhs pairs the RHS with forward_error). */
-using MatrixPool = cqr::detail::MatrixBatch<double, aligned_allocator<double>>;
+using MatrixPool = cbk::detail::MatrixBatch<double, aligned_allocator<double>>;
 
 /* Fill a square pool with symmetric, strictly diagonally dominant matrices:
  * random off-diagonals in [-1,1] mirrored across the diagonal, and a diagonal
@@ -167,11 +167,11 @@ inline double chol_gflop(int n)
  * timed pass (the pack itself stays untimed). */
 struct PackedPool {
     MKL_INT bytes; /* mkl_dget_size_compact reports bytes */
-    cqr::detail::mkl_buffer<double> p;
+    cbk::detail::mkl_buffer<double> p;
 
     PackedPool(const MatrixPool &P, MKL_COMPACT_PACK fmt)
         : bytes(mkl_dget_size_compact(P.rows(), P.cols(), fmt, P.count())),
-          p(cqr::detail::mkl_alloc_bytes<double>(bytes))
+          p(cbk::detail::mkl_alloc_bytes<double>(bytes))
     {
         auto ptrs = P.base_ptrs();
         mkl_dgepack_compact(MKL_COL_MAJOR, P.rows(), P.cols(), ptrs.data(), P.rows(),
@@ -179,9 +179,9 @@ struct PackedPool {
     }
 
     /* An uninitialized working buffer of the same size. */
-    cqr::detail::mkl_buffer<double> work() const
+    cbk::detail::mkl_buffer<double> work() const
     {
-        return cqr::detail::mkl_alloc_bytes<double>(bytes);
+        return cbk::detail::mkl_alloc_bytes<double>(bytes);
     }
     void restore_into(double *dst) const { std::memcpy(dst, p.get(), bytes); }
 };
@@ -249,7 +249,7 @@ inline int omp_threads()
 }
 
 /* Command line of the factorization and solve benchmarks: positional [nmat]
- * [reps], plus --size-sweep=nmin:nmax[:stride] (cqr-only scan), --simdlen=2|4|8
+ * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan), --simdlen=2|4|8
  * (force the interleave width instead of the host default) and --nrhs=k (right-
  * hand sides; the factorization benchmarks ignore it). The constructor parses
  * and validates and resolves the pack format; hold the object const. */
@@ -306,6 +306,6 @@ struct CmdArgs {
     }
 };
 
-} /* namespace cqr::bench */
+} /* namespace cbk::bench */
 
-#endif /* CQR_BENCH_UTIL_HPP */
+#endif /* CBK_BENCH_UTIL_HPP */

@@ -1,7 +1,7 @@
 # Intel MKL Compact routines: measured behavior
 
 Empirical notes on how MKL's own compact routines treat their arguments, gathered
-while settling the `info`/`work` contract of `cqr_mkl_ext.cpp` (PR #38). The
+while settling the `info`/`work` contract of `cbk_compat.cpp` (PR #38). The
 MKL documentation leaves most of this unstated ("info is reserved", "no error
 checking"), so these were measured directly. Everything below is from small C
 probes against the installed library; nothing is inferred from documentation.
@@ -52,9 +52,9 @@ threading only. Which compact routines MKL ships at all is answered by
   detectable only by inspecting the output.
 - **`taup` always receives the reflector scalars**; a null `taup` is not "skip
   the copy".
-- **Consequence for cqr**: the MKL-style wrappers write `*info` and `work[0]`
+- **Consequence for cbk**: the MKL-style wrappers write `*info` and `work[0]`
   without null checks, matching MKL; a null pointer fails loudly at the first
-  write, which is the benign failure mode. cqr keeps `info = 0` on success and
+  write, which is the benign failure mode. cbk keeps `info = 0` on success and
   a poisoned lane on numerical failure, and adds `info = -1` for an
   unrecognized `format`, the one failure its dispatch can see.
 
@@ -84,7 +84,7 @@ Rule that follows: **query each routine, size its buffer from that routine's
 own answer, never reuse one routine's buffer for another.** Under a threaded MKL
 layer add: **query and call under the same thread count** (section 3).
 
-*cqr's own policy here is not settled and may change.* As of PR #38:
+*cbk's own policy here is not settled and may change.* As of PR #38:
 `?gels_compact`'s `work` is the tau buffer for the whole batch,
 `min(m,n) * V * ceil(nm/V)` scalars, and like every compact routine it does not
 check `lwork`, so it carries the same CWE-787 hazard and must be sized from its
@@ -115,7 +115,7 @@ AVX-512 format, best of five:
   1, and the query stays `n * V`.
 - **The repo currently links the sequential layer** (the default
   `MKLCompact_THREADING=sequential`) and the benchmarks thread over groups with their own OpenMP
-  loop, so every path (cqr, MKL compact, per-matrix LAPACK) runs on the same
+  loop, so every path (cbk, MKL compact, per-matrix LAPACK) runs on the same
   caller-controlled thread count. Measured against MKL's internal threading
   that loop is a fair proxy at n >= 16 (whole-batch at 4 threads: 143k vs 147k
   matrices/s at n=64, 1.12M vs 1.06M at n=32). *This choice may change*: using
@@ -140,7 +140,7 @@ AVX-512 format, best of five:
   thread's `n*V` slice while MKL ran on four -- the out-of-bounds write of
   section 2, surfacing as heap corruption at `exit()`. With correctly sized
   buffers the same programs exit cleanly. (Two OpenMP runtimes in one process,
-  libgomp for cqr's loops and libiomp5 for `mkl_intel_thread`, remain invalid;
+  libgomp for cbk's loops and libiomp5 for `mkl_intel_thread`, remain invalid;
   the find module picks MKL's layer from the compiler so that cannot happen.)
 
 ### 3a. Calls from inside an OpenMP parallel region
@@ -189,16 +189,16 @@ own runtime: `mkl_gnu_thread` under GCC and clang (the GOMP ABI), and
 never carries two OpenMP runtimes. Intel's `MKLConfig.cmake` is deliberately
 not used (its header comment says why). See `.claude/mkl-install.md`.
 
-## 4. `geqrf` compared with cqr's
+## 4. `geqrf` compared with cbk's
 
 What is observable: MKL's query is `n * V` per thread and a real call writes
 `(n-1) * V` of it, which is the size of a `w = v^T C` row vector over the
 trailing columns, one lane per slot -- consistent with a `dlarf`-style update
 that forms `w` explicitly before the rank-one update. The algorithm inside MKL
-is not visible; that is an inference from the scratch size. cqr's `larf`
+is not visible; that is an inference from the scratch size. cbk's `larf`
 fuses the dot products and the rank-one update over four columns at a time,
 one pass, no scratch. Measured with `bench_geqrf_compact` (square, pre-packed,
-sequential MKL driven one group per call), cqr/MKL throughput:
+sequential MKL driven one group per call), cbk/MKL throughput:
 
 | n | 1 thread, 512 matrices | 4 threads, 128 matrices |
 |---|---|---|
@@ -211,7 +211,7 @@ sequential MKL driven one group per call), cqr/MKL throughput:
 | 500 | 1.45x | 1.48x |
 
 - **n=8 note.** With the original 2e5 flop gate this row read 0.6-0.8x: 128
-  matrices are 131k estimated flops, so cqr's launcher ran serial while the
+  matrices are 131k estimated flops, so cbk's launcher ran serial while the
   benchmark's MKL loop forked. The gate is now 5e4 and the row reads 1.3-1.4x
   when the machine is quiet, but at ~10 us of work per path it is below the
   measurement VM's noise floor (two of five runs stalled by milliseconds,

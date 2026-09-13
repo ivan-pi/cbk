@@ -1,0 +1,206 @@
+/* test_trsm_mkl.cpp
+ *
+ * Validation of cbk_?trsm_compact against real Intel MKL, through the genuine
+ * MKL Compact pipeline (mkl_dgepack_compact / mkl_dgeunpack_compact).
+ *
+ * Suite 1 (design doc section 7.2) -- cross-check vs mkl_?trsm_compact over the
+ *   full feature matrix (layout x side x uplo x transa x diag): both solve the
+ *   same packed batch and the compact results are compared elementwise (relative,
+ *   working precision).
+ * Suite 2 (design doc section 7.3) -- end-to-end AX = B with no MKL compute
+ *   kernel: the open pipeline cbk_dgeqrf_compact -> compat<T>::ormqr('L','T')
+ *   -> cbk_dtrsm_compact must recover a known X (gates forward error and
+ *   residual). See cbk_dtrsm_compact_design.md.
+ *
+ * Build: needs Intel MKL; wired up by CMakeLists.txt.
+ *
+ * Assisted-by: Claude:claude-opus-4.8
+ */
+
+#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */
+
+#include <cstdio>
+#include <cstdlib>
+#include <cmath>
+#include <limits>
+#include <vector>
+#include <algorithm>
+
+using namespace cbk::test;
+
+namespace {
+
+template <class T> double maxabs(const T *a, size_t n)
+{
+    double d = 0;
+    for (size_t i = 0; i < n; ++i)
+        d = std::max<double>(d, std::abs(a[i]));
+    return d;
+}
+
+/* ---------------- Suite 1: cross-check vs mkl_?trsm_compact ------------ */
+
+template <class T>
+int suite1(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo, MKL_TRANSPOSE transa,
+           MKL_DIAG diag, int nm, int m, int n)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+    const bool rowmajor = (layout == MKL_ROW_MAJOR);
+    const bool left = (side == MKL_LEFT);
+    const int s = left ? m : n; /* A is s x s */
+    const T alpha = T(0.5) + frand<T>();
+
+    MatrixBatch<T> A(nm, s, s), B(nm, m, n);
+    for (int v = 0; v < nm; ++v) {
+        gen_tri(A.view(v, rowmajor), uplo == MKL_UPPER);
+        T *Bv = B[v];
+        for (size_t e = 0; e < B.stride(); ++e)
+            Bv[e] = frand<T>();
+    }
+
+    /* dense leading dims for pack (a is stored in `layout`) */
+    const MKL_INT ldA = s;                /* s x s */
+    const MKL_INT ldB = rowmajor ? n : m; /* m x n */
+    const MKL_INT ldap = s;               /* compact leading dims */
+    const MKL_INT ldbp = rowmajor ? n : m;
+
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(s, s, fmt, nm);
+    MKL_INT sz_b = mkl<T>::get_size(m, n, fmt, nm);
+    auto ap = cbk::detail::mkl_alloc_bytes<T>(sz_a);
+    auto bp_cbk = cbk::detail::mkl_alloc_bytes<T>(sz_b);
+    auto bp_mkl = cbk::detail::mkl_alloc_bytes<T>(sz_b);
+    mkl<T>::gepack(layout, s, s, Ap.data(), ldA, ap.get(), ldap, fmt, nm);
+    mkl<T>::gepack(layout, m, n, Bp.data(), ldB, bp_cbk.get(), ldbp, fmt, nm);
+    mkl<T>::gepack(layout, m, n, Bp.data(), ldB, bp_mkl.get(), ldbp, fmt, nm);
+
+    /* routine under test and the MKL reference on identical inputs */
+    compat<T>::trsm(layout, side, uplo, transa, diag, m, n, alpha, ap.get(), ldap,
+                    bp_cbk.get(), ldbp, fmt, nm);
+    mkl<T>::trsm(layout, side, uplo, transa, diag, m, n, alpha, ap.get(), ldap,
+                 bp_mkl.get(), ldbp, fmt, nm);
+
+    /* compare the two compact result buffers elementwise */
+    const size_t nB = (size_t)sz_b / sizeof(double);
+    double da = max_abs_diff(bp_cbk.get(), bp_mkl.get(), nB);
+    double rel = da / std::max(maxabs(bp_mkl.get(), nB), norm_floor);
+
+    const double rtol = 50.0 * s * eps;
+    bool ok = (rel <= rtol);
+    std::printf(
+        "  [suite1] %s side=%c uplo=%c tr=%c diag=%c V=%-2d nm=%-2d m=%-3d n=%-3d "
+        "| rel %.2e (rtol %.1e) %s\n",
+        rowmajor ? "row" : "col", left ? 'L' : 'R', uplo == MKL_UPPER ? 'U' : 'L',
+        transa == MKL_NOTRANS ? 'N' : 'T', diag == MKL_UNIT ? 'U' : 'N', V, nm, m, n, rel,
+        rtol, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+/* ---------------- Suite 2: end-to-end AX = B, no MKL kernel ------------ */
+
+template <class T> int suite2(int nm, int n, int nrhs)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt), m = n, k = n;
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    for (int v = 0; v < nm; ++v) {
+        gen_boosted(A.view(v));          /* diagonal boost tames conditioning */
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
+    }
+    auto Ap = A.base_ptrs();
+    auto Bp = B.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
+    MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
+    MKL_INT sz_c = mkl<T>::get_size(m, nrhs, fmt, nm);
+    auto ap_buf = cbk::detail::mkl_alloc_bytes<T>(sz_a);
+    auto taup_buf = cbk::detail::mkl_alloc_bytes<T>(sz_t);
+    auto cp_buf = cbk::detail::mkl_alloc_bytes<T>(sz_c);
+    T *ap = ap_buf.get(), *taup = taup_buf.get(), *cp = cp_buf.get();
+    mkl<T>::gepack(MKL_COL_MAJOR, m, n, Ap.data(), m, ap, m, fmt, nm);
+    mkl<T>::gepack(MKL_COL_MAJOR, m, nrhs, Bp.data(), m, cp, m, fmt, nm);
+
+    MKL_INT info = 99;
+
+    /* 1. our compact QR (own workspace from its own lwork query) */
+    T wq_geqrf;
+    compat<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq_geqrf, -1, &info, fmt, nm);
+    std::vector<T> work_geqrf((size_t)std::max<MKL_INT>((MKL_INT)wq_geqrf, 1));
+    compat<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, work_geqrf.data(),
+                     (MKL_INT)work_geqrf.size(), &info, fmt, nm);
+
+    /* 2. our compact apply Q^T (own workspace) */
+    T wq_ormqr;
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq_ormqr,
+                     -1, &info, fmt, nm);
+    std::vector<T> work_ormqr((size_t)std::max<MKL_INT>((MKL_INT)wq_ormqr, 1));
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m,
+                     work_ormqr.data(), (MKL_INT)work_ormqr.size(), &info, fmt, nm);
+
+    /* 3. our compact triangular solve R X = Q^T B (no workspace, no info) */
+    compat<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n, nrhs,
+                    T(1), ap, m, cp, m, fmt, nm);
+
+    MatrixBatch<T> Xhat(nm, n, nrhs);
+    auto Op = Xhat.base_ptrs();
+    mkl<T>::geunpack(MKL_COL_MAJOR, n, nrhs, Op.data(), n, cp, m, fmt, nm);
+
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
+    const double rtol = 100.0 * n * eps;
+    bool ok = (info == 0) && (worst_fwd <= rtol) && (worst_res <= rtol);
+    std::printf(
+        "  [suite2] V=%-2d nm=%-2d n=%-3d nrhs=%d | fwd %.2e res %.2e (rtol %.1e) "
+        "%s\n",
+        V, nm, n, nrhs, worst_fwd, worst_res, rtol, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+} /* anonymous namespace */
+
+template <class T> int run_suites()
+{
+    std::printf("\n== %s: MKL compact format = %d, V = %d ==\n", compact<T>::name,
+                (int)mkl_get_format_compact(), mkl<T>::vlen(mkl_get_format_compact()));
+
+    int fails = 0;
+
+    /* Suite 1: cross-check vs mkl_?trsm_compact over the full feature matrix. */
+    for (MKL_LAYOUT lay : {MKL_COL_MAJOR, MKL_ROW_MAJOR})
+        for (MKL_SIDE side : {MKL_LEFT, MKL_RIGHT})
+            for (MKL_UPLO uplo : {MKL_UPPER, MKL_LOWER})
+                for (MKL_TRANSPOSE tr : {MKL_NOTRANS, MKL_TRANS})
+                    for (MKL_DIAG diag : {MKL_NONUNIT, MKL_UNIT})
+                        fails += suite1<T>(lay, side, uplo, tr, diag, 8, 12, 5);
+    /* a couple of larger / padded batches */
+    fails += suite1<T>(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, 16,
+                       32, 4);
+    fails += suite1<T>(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, 11,
+                       20, 6);
+    /* few-RHS no-transpose left (n < 4): the column-axpy kernel route */
+    for (int nrhs : {1, 2, 3})
+        for (MKL_UPLO uplo : {MKL_UPPER, MKL_LOWER})
+            for (MKL_DIAG diag : {MKL_NONUNIT, MKL_UNIT})
+                fails += suite1<T>(MKL_COL_MAJOR, MKL_LEFT, uplo, MKL_NOTRANS, diag, 8,
+                                   24, nrhs);
+
+    /* Suite 2: end-to-end solver with no MKL compute kernel. */
+    fails += suite2<T>(8, 32, 5);
+    fails += suite2<T>(8, 64, 4);
+    fails += suite2<T>(7, 32, 6); /* padded partial last group */
+
+    return fails;
+}
+
+int main()
+{
+    const int fails = run_suites<double>() + run_suites<float>();
+    return finish(fails);
+}
