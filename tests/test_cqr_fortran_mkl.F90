@@ -11,17 +11,29 @@
 ! MKL_COMPACT_SSE packs V = 2 doubles or 4 floats, so nmat = 3 leaves a
 ! padding lane in both precisions.
 !
+! Compiled with CQR_ILP64 defined (an ilp64 library build,
+! -DMKLCompact_INTERFACE=ilp64) the same test runs through
+! cqr_mkl_ext_ilp64.fi: the include file and the integer kind ik of
+! every MKL_INT actual argument are the only differences.
+!
 ! Assisted-by: Claude:claude-fable-5
 
 program test_cqr_fortran_mkl
-   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_float
+   use, intrinsic :: iso_c_binding, only: c_int, c_long_long, c_double, &
+                                          c_float
    implicit none
+#ifdef CQR_ILP64
+   include 'cqr_mkl_ext_ilp64.fi'
+   integer, parameter :: ik = c_long_long ! MKL_INT under MKL_ILP64
+#else
    include 'cqr_mkl_ext.fi'
+   integer, parameter :: ik = c_int       ! LP64 MKL_INT
+#endif
 
-   integer(c_int), parameter :: nmat = 3, n = 3, nrhs = 2
-   integer(c_int), parameter :: vwd = 2, vws = 4 ! MKL_COMPACT_SSE widths
-   integer(c_int), parameter :: ngd = (nmat + vwd - 1) / vwd
-   integer(c_int), parameter :: ngs = (nmat + vws - 1) / vws
+   integer(ik), parameter :: nmat = 3, n = 3, nrhs = 2
+   integer(ik), parameter :: vwd = 2, vws = 4 ! MKL_COMPACT_SSE widths
+   integer(ik), parameter :: ngd = (nmat + vwd - 1) / vwd
+   integer(ik), parameter :: ngs = (nmat + vws - 1) / vws
 
    call test_double()
    call test_single()
@@ -61,7 +73,7 @@ contains
    end subroutine fill_d
 
    function pack_d(dense, ncol, pad) result(packed)
-      integer, intent(in) :: ncol
+      integer(ik), intent(in) :: ncol
       real(c_double), intent(in) :: dense(n, ncol, nmat), pad(n, ncol)
       real(c_double) :: packed(vwd, n, ncol, ngd)
       packed = reshape(reshape(dense, [n, ncol, vwd, ngd], pad=pad), &
@@ -83,7 +95,7 @@ contains
       real(c_double) :: taup(vwd, n, ngd), work(vwd*n*ngd)
       real(c_double) :: af(vwd, n, n, ngd), xf(vwd, n, nrhs, ngd)
       real(c_double), parameter :: tol = 1.0e-11_c_double
-      integer(c_int) :: info
+      integer(ik) :: info
       integer :: i
 
       call fill_d(a, x, b)
@@ -98,17 +110,17 @@ contains
       ap = pack_d(a, n, eye)
       bp = pack_d(b, nrhs, zed)
       call cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &
-                                  work, -1, info, MKL_COMPACT_SSE, nmat)
+                                  work, -1_ik, info, MKL_COMPACT_SSE, nmat)
       call check(info == 0 .and. nint(work(1)) == 1, 'dgeqrf lwork query')
       call cqr_mkl_dgeqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &
-                                  work, 1, info, MKL_COMPACT_SSE, nmat)
+                                  work, 1_ik, info, MKL_COMPACT_SSE, nmat)
       call check(info == 0, 'cqr_mkl_dgeqrf_compact info')
       call cqr_mkl_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, &
-                                  ap, n, taup, bp, n, work, -1, info, &
+                                  ap, n, taup, bp, n, work, -1_ik, info, &
                                   MKL_COMPACT_SSE, nmat)
       call check(info == 0 .and. nint(work(1)) == 1, 'dormqr lwork query')
       call cqr_mkl_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, &
-                                  ap, n, taup, bp, n, work, 1, info, &
+                                  ap, n, taup, bp, n, work, 1_ik, info, &
                                   MKL_COMPACT_SSE, nmat)
       call check(info == 0, 'cqr_mkl_dormqr_compact info')
       call cqr_mkl_dtrsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, &
@@ -122,7 +134,7 @@ contains
       ap = pack_d(a, n, eye)
       bp = pack_d(b, nrhs, zed)
       call cqr_mkl_dgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, &
-                                 bp, n, work, -1, info, &
+                                 bp, n, work, -1_ik, info, &
                                  MKL_COMPACT_SSE, nmat)
       call check(info == 0 .and. nint(work(1)) == n * vwd * ngd, &
                  'dgels lwork query')
@@ -196,7 +208,7 @@ contains
    end subroutine fill_s
 
    function pack_s(dense, ncol, pad) result(packed)
-      integer, intent(in) :: ncol
+      integer(ik), intent(in) :: ncol
       real(c_float), intent(in) :: dense(n, ncol, nmat), pad(n, ncol)
       real(c_float) :: packed(vws, n, ncol, ngs)
       packed = reshape(reshape(dense, [n, ncol, vws, ngs], pad=pad), &
@@ -218,7 +230,7 @@ contains
       real(c_float) :: taup(vws, n, ngs), work(vws*n*ngs)
       real(c_float) :: af(vws, n, n, ngs), xf(vws, n, nrhs, ngs)
       real(c_float), parameter :: tol = 1.0e-3_c_float
-      integer(c_int) :: info
+      integer(ik) :: info
       integer :: i
 
       call fill_s(a, x, b)
@@ -231,13 +243,13 @@ contains
       ap = pack_s(a, n, eye)
       bp = pack_s(b, nrhs, zed)
       call cqr_mkl_sgeqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &
-                                  work, -1, info, MKL_COMPACT_SSE, nmat)
+                                  work, -1_ik, info, MKL_COMPACT_SSE, nmat)
       call check(info == 0 .and. nint(work(1)) == 1, 'sgeqrf lwork query')
       call cqr_mkl_sgeqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, &
-                                  work, 1, info, MKL_COMPACT_SSE, nmat)
+                                  work, 1_ik, info, MKL_COMPACT_SSE, nmat)
       call check(info == 0, 'cqr_mkl_sgeqrf_compact info')
       call cqr_mkl_sormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, &
-                                  ap, n, taup, bp, n, work, 1, info, &
+                                  ap, n, taup, bp, n, work, 1_ik, info, &
                                   MKL_COMPACT_SSE, nmat)
       call check(info == 0, 'cqr_mkl_sormqr_compact info')
       call cqr_mkl_strsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, &
@@ -249,7 +261,7 @@ contains
       ap = pack_s(a, n, eye)
       bp = pack_s(b, nrhs, zed)
       call cqr_mkl_sgels_compact(MKL_COL_MAJOR, 'N', n, n, nrhs, ap, n, &
-                                 bp, n, work, -1, info, &
+                                 bp, n, work, -1_ik, info, &
                                  MKL_COMPACT_SSE, nmat)
       call check(info == 0 .and. nint(work(1)) == n * vws * ngs, &
                  'sgels lwork query')
@@ -300,7 +312,7 @@ contains
    ! An unrecognized pack format is the one condition info reports (-1).
    subroutine test_format_check()
       real(c_double) :: ap(vwd, n, n, ngd)
-      integer(c_int) :: info
+      integer(ik) :: info
       ap = 0.0_c_double
       call cqr_mkl_dpotrf_compact(MKL_COL_MAJOR, MKL_LOWER, n, ap, n, &
                                   info, 999, nmat)

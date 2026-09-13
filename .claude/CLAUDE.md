@@ -213,10 +213,18 @@ workspace contract, or the benchmarks' threading.
   a continuation in free form) and its continuation carries `&` in column 6
   (a continuation in fixed form, stripped in free form), comments start with
   `!` in column 1. Keep those columns when editing -- CI compiles each file
-  both ways (`tests/test_cqr_fortran_*.f90` free form, `*.f` fixed form,
+  both ways (`tests/test_cqr_fortran_*` in free and fixed form,
   `-DCQR_BUILD_FORTRAN_TESTS=ON`), which is what enforces the discipline.
   Every dummy argument is declared under `use, intrinsic :: iso_c_binding`
   plus `implicit none` inside each interface body.
+  `include/cqr_mkl_ext_ilp64.fi` is the ILP64 twin of `cqr_mkl_ext.fi`
+  (MKL's `_lp64`/`_ilp64` interface-file convention; the includer picks the
+  one matching the library's `MKLCompact_INTERFACE`): `MKL_INT` dummies and
+  `info` are `integer(c_long_long)` there, the enums stay `integer(c_int)`
+  (a C enum does not widen under ILP64), and *nothing else* may differ --
+  edit the two files in step. The MKL Fortran tests are preprocessed
+  (`.F90`/`.F`) and switch include file and integer kind on `CQR_ILP64`,
+  which CMake defines under an ilp64 build; CI's ilp64 leg runs them.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th

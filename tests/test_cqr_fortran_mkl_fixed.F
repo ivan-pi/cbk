@@ -3,17 +3,27 @@
 ! test_cqr_fortran_mkl.f90, includes the same file as free form and owns
 ! the real numerics). Cholesky of identity matrices leaves the factor
 ! exactly the identity; an unrecognized pack format reports info = -1.
+! Compiled with CQR_ILP64 defined (an ilp64 library build) the same
+! test runs through cqr_mkl_ext_ilp64.fi, with integer kind ik for
+! every MKL_INT actual argument.
 !
 ! Assisted-by: Claude:claude-fable-5
 
       program tmklfix
-      use, intrinsic :: iso_c_binding, only: c_int, c_double
+      use, intrinsic :: iso_c_binding, only: c_int, c_long_long,
+     &    c_double
       implicit none
+#ifdef CQR_ILP64
+      include 'cqr_mkl_ext_ilp64.fi'
+      integer, parameter :: ik = c_long_long
+#else
       include 'cqr_mkl_ext.fi'
-      integer(c_int), parameter :: vw = 2, nmat = 2, n = 2
+      integer, parameter :: ik = c_int
+#endif
+      integer(ik), parameter :: vw = 2, nmat = 2, n = 2
       real(c_double) :: ap(n*n*nmat)
       real(c_double), parameter :: tol = 1.0e-14_c_double
-      integer(c_int) :: info
+      integer(ik) :: info
       integer i, im
 
 ! One full MKL_COMPACT_SSE group of vw doubles; lane im holds the

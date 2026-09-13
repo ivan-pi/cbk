@@ -142,12 +142,18 @@ if(CQR_BUILD_TESTS)
 
     if(CQR_WITH_MKL)
       # The MKL-style tests pack their compact buffers by hand, so they link
-      # only cqr_mkl_ext (no MKL: like the header, the .fi needs none).
+      # only cqr_mkl_ext (no MKL: like the header, the .fi needs none). The
+      # .F90/.F sources are preprocessed: under an ilp64 library build they
+      # switch to cqr_mkl_ext_ilp64.fi and 64-bit MKL_INT actual arguments.
       list(APPEND fortran_tests test_cqr_fortran_mkl test_cqr_fortran_mkl_fixed)
-      add_executable(test_cqr_fortran_mkl tests/test_cqr_fortran_mkl.f90)
-      add_executable(test_cqr_fortran_mkl_fixed tests/test_cqr_fortran_mkl_fixed.f)
-      target_link_libraries(test_cqr_fortran_mkl PRIVATE cqr_mkl_ext)
-      target_link_libraries(test_cqr_fortran_mkl_fixed PRIVATE cqr_mkl_ext)
+      add_executable(test_cqr_fortran_mkl tests/test_cqr_fortran_mkl.F90)
+      add_executable(test_cqr_fortran_mkl_fixed tests/test_cqr_fortran_mkl_fixed.F)
+      foreach(t test_cqr_fortran_mkl test_cqr_fortran_mkl_fixed)
+        target_link_libraries(${t} PRIVATE cqr_mkl_ext)
+        if(MKLCompact_INTERFACE STREQUAL "ilp64")
+          target_compile_definitions(${t} PRIVATE CQR_ILP64)
+        endif()
+      endforeach()
     endif()
 
     foreach(t IN LISTS fortran_tests)
