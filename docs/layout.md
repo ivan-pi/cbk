@@ -15,13 +15,14 @@ The headers under `include/` are the project's API, the only files users need:
 
 | File | Role |
 |------|------|
-| `include/cqr_mkl_ext.h` | The MKL-style API: `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?orgqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?potrs_compact`, `cqr_mkl_?posv_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
-| `include/cqr_compact.h` | The portable C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. |
+| `include/cqr_compact.h` | The library's C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. Built as `cqr::compact`. |
+| `include/cqr_mkl_ext.h` | The optional MKL-style API (`-DCQR_WITH_MKL=ON`, built as `cqr::mkl_ext`): `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?orgqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?potrs_compact`, `cqr_mkl_?posv_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_LAYOUT` and `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
 | `include/cqr_mkl_alloc.h` | Optional RAII buffer helpers (`mkl_alloc_bytes`, `mkl_buffer`) wrapping `mkl_malloc`/`mkl_free`. |
 
-The two APIs differ in argument checking: the MKL-style one skips validation
-like MKL's own compact routines (`info` is a scalar, `0` on success); the
-portable C API validates LAPACK-style, returning `-j` for a bad j-th argument.
+The two APIs share the kernels and differ in argument checking: the portable
+C API validates LAPACK-style, returning `-j` for a bad j-th argument; the
+MKL-style one skips validation like MKL's own compact routines (`info` is a
+scalar, `0` on success).
 
 ## Internals
 

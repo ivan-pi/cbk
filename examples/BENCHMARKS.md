@@ -24,7 +24,7 @@ the same folder; see [`docs/examples.md`](../docs/examples.md).
 
 ## Running them
 
-The benchmarks are built by the standard MKL build (see
+The benchmarks are built by the MKL build, `-DCQR_WITH_MKL=ON` (see
 [`docs/building.md`](../docs/building.md)). From a configured tree:
 
 ```sh
@@ -42,7 +42,7 @@ compact kernels dispatch to the host's widest vectors (AVX-512) at runtime -- an
 unfair matchup. Pass host-tuned flags so the open kernels emit the full width:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCQR_WITH_MKL=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
 Correctness (the gate each benchmark carries) is independent of these flags; only

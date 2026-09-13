@@ -4,7 +4,7 @@
 
 | Page | Contents |
 |------|----------|
-| [building.md](building.md) | Prerequisites, locating MKL, the workspace contract under a threaded MKL, performance builds, CMake options. |
+| [building.md](building.md) | The default portable build, the optional MKL build (locating MKL, the workspace contract under a threaded MKL), performance builds, CMake options. |
 | [threading.md](threading.md) | How the routines thread their loop over groups, and how they compose with a caller's parallel loop. |
 | [layout.md](layout.md) | The source tree: the public headers, the kernels, the test and benchmark helpers. |
 | [examples.md](examples.md) | The worked solve and the benchmarks, and their CTest registration. |

@@ -1,7 +1,8 @@
 # Examples and benchmarks
 
-All programs under `examples/` need the MKL build (`CQR_WITH_MKL=ON`, the
-default), since they compare against MKL's compact kernels and LAPACKE.
+All programs under `examples/` need the MKL build (`-DCQR_WITH_MKL=ON`, off by
+default), since they pack with MKL's compact routines and compare against
+MKL's compact kernels and LAPACKE.
 
 ## Worked example
 

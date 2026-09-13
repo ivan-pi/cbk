@@ -1,18 +1,11 @@
 # Building
 
-## Prerequisites
+## The portable library (default)
 
-* **CMake >= 3.18**, a **C++17 compiler** (GCC/Clang) and a build tool (Make/Ninja).
-* **Intel MKL** - provides the Compact-format extension (`mkl_compact.h`,
-  `mkl_*geqrf_compact`, ...) that this project builds on. Any MKL works:
-  * oneAPI MKL - `source /opt/intel/oneapi/setvars.sh` (sets `MKLROOT`), or
-  * Debian/Ubuntu - `sudo apt-get install libmkl-dev` (headers in
-    `/usr/include/mkl`, LP64 libs in the default library path).
-
-`-DCQR_WITH_MKL=OFF` builds the portable kernels alone: no MKL, no MKL-backed
-tests, examples or benchmarks.
-
-## Configure, build, test
+Requires **CMake >= 3.18**, a **C++17 compiler** (GCC/Clang) and a build tool
+(Make/Ninja). Nothing else: the default configure builds the `cqr::compact`
+library (the C API of `include/cqr_compact.h`) and its BLAS-free test suites,
+which check every kernel against a scalar reference of the same algorithm.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -20,7 +13,26 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-## Locating MKL
+## The Intel MKL extension (`-DCQR_WITH_MKL=ON`)
+
+`-DCQR_WITH_MKL=ON` adds the MKL-style API (`cqr::mkl_ext`, the
+`cqr_mkl_?*_compact` entry points of `include/cqr_mkl_ext.h`), the MKL-backed
+test suites (cross-checked against MKL's own compact kernels and dense
+LAPACK/LAPACKE), the worked example and the benchmarks. It needs **Intel MKL**,
+which provides the Compact-format API (`mkl_compact.h`, `mkl_?gepack_compact`,
+`mkl_?geqrf_compact`, ...). Any MKL works:
+
+* oneAPI MKL - `source /opt/intel/oneapi/setvars.sh` (sets `MKLROOT`), or
+* Debian/Ubuntu - `sudo apt-get install libmkl-dev` (headers in
+  `/usr/include/mkl`, LP64 libs in the default library path).
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCQR_WITH_MKL=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+### Locating MKL
 
 `cmake/FindMKLCompact.cmake` locates Intel MKL directly (the compact API is an
 MKL extension no other BLAS provides): the distro package is found on its own,
@@ -63,12 +75,12 @@ benchmarks in particular need them for a fair comparison against MKL (see
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `CQR_WITH_MKL` | `ON` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks. `OFF` leaves the portable kernels and their BLAS-free tests. |
+| `CQR_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CQR_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
 | `CQR_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
-| `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set. |
-| `MKLCompact_THREADING` | `sequential` | `threaded` links MKL's internally threaded layer. |
-| `MKLCompact_INTERFACE` | `lp64` | `ilp64` selects MKL's 64-bit integer interface (and defines `MKL_ILP64`). |
+| `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set (MKL build only). |
+| `MKLCompact_THREADING` | `sequential` | `threaded` links MKL's internally threaded layer (MKL build only). |
+| `MKLCompact_INTERFACE` | `lp64` | `ilp64` selects MKL's 64-bit integer interface and defines `MKL_ILP64` (MKL build only). |
 
 The threading gate's flop threshold is a preprocessor macro, not a CMake
 option: `-DCMAKE_CXX_FLAGS="-DCQR_OMP_MIN_FLOPS=1e5"` overrides the default
