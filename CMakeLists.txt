@@ -134,21 +134,36 @@ if(CQR_BUILD_TESTS)
     # CMake links these with the C++ driver (CXX, propagated from the kernel
     # libraries, outranks Fortran in linker preference) and adds the Fortran
     # runtime itself, so both languages' runtimes arrive without extra flags.
-    set(fortran_tests test_cqr_fortran_compact test_cqr_fortran_compact_fixed)
-    add_executable(test_cqr_fortran_compact tests/test_cqr_fortran_compact.f90)
+    #
+    # The free-form sources (.F90) are precision-generic -- generic interfaces
+    # over the .fi files' specific names resolve every call against the work
+    # precision wp -- and are compiled once per precision: CQR_SINGLE sets wp
+    # to c_float (default c_double). The fixed-form includers (.f/.F) exist
+    # to prove the .fi files read as fixed-form source; one precision there
+    # suffices.
+    set(fortran_tests test_cqr_fortran_compact_d test_cqr_fortran_compact_s
+                      test_cqr_fortran_compact_fixed)
+    foreach(prec d s)
+      add_executable(test_cqr_fortran_compact_${prec} tests/test_cqr_fortran_compact.F90)
+      target_link_libraries(test_cqr_fortran_compact_${prec} PRIVATE cqr_compact)
+    endforeach()
+    target_compile_definitions(test_cqr_fortran_compact_s PRIVATE CQR_SINGLE)
     add_executable(test_cqr_fortran_compact_fixed tests/test_cqr_fortran_compact_fixed.f)
-    target_link_libraries(test_cqr_fortran_compact PRIVATE cqr_compact)
     target_link_libraries(test_cqr_fortran_compact_fixed PRIVATE cqr_compact)
 
     if(CQR_WITH_MKL)
       # The MKL-style tests pack their compact buffers by hand, so they link
-      # only cqr_mkl_ext (no MKL: like the header, the .fi needs none). The
-      # .F90/.F sources are preprocessed: under an ilp64 library build they
-      # switch to cqr_mkl_ext_ilp64.fi and 64-bit MKL_INT actual arguments.
-      list(APPEND fortran_tests test_cqr_fortran_mkl test_cqr_fortran_mkl_fixed)
-      add_executable(test_cqr_fortran_mkl tests/test_cqr_fortran_mkl.F90)
+      # only cqr_mkl_ext (no MKL: like the header, the .fi needs none). Under
+      # an ilp64 library build CQR_ILP64 switches them to cqr_mkl_ext_ilp64.fi
+      # and 64-bit MKL_INT actual arguments.
+      list(APPEND fortran_tests test_cqr_fortran_mkl_d test_cqr_fortran_mkl_s
+                                test_cqr_fortran_mkl_fixed)
+      foreach(prec d s)
+        add_executable(test_cqr_fortran_mkl_${prec} tests/test_cqr_fortran_mkl.F90)
+      endforeach()
+      target_compile_definitions(test_cqr_fortran_mkl_s PRIVATE CQR_SINGLE)
       add_executable(test_cqr_fortran_mkl_fixed tests/test_cqr_fortran_mkl_fixed.F)
-      foreach(t test_cqr_fortran_mkl test_cqr_fortran_mkl_fixed)
+      foreach(t test_cqr_fortran_mkl_d test_cqr_fortran_mkl_s test_cqr_fortran_mkl_fixed)
         target_link_libraries(${t} PRIVATE cqr_mkl_ext)
         if(MKLCompact_INTERFACE STREQUAL "ilp64")
           target_compile_definitions(${t} PRIVATE CQR_ILP64)

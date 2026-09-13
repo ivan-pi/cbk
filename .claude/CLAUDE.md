@@ -52,8 +52,10 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs;
-           test_cqr_fortran_* are the Fortran-interface tests (free-form .f90
-           and fixed-form .f includers of the .fi files)
+           test_cqr_fortran_* are the Fortran-interface tests: the free-form
+           .F90 sources are precision-generic (generic interfaces over the
+           .fi specifics; CQR_SINGLE picks wp) and built once per precision,
+           the fixed-form .f/.F includers prove the dual-form layout
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine
 ```
@@ -225,6 +227,13 @@ workspace contract, or the benchmarks' threading.
   edit the two files in step. The MKL Fortran tests are preprocessed
   (`.F90`/`.F`) and switch include file and integer kind on `CQR_ILP64`,
   which CMake defines under an ilp64 build; CI's ilp64 leg runs them.
+  The free-form test programs are precision-generic: they declare generic
+  interfaces over the `.fi` specifics (`interface geqrf_compact` /
+  `procedure sgeqrf_compact, dgeqrf_compact` -- the pattern a user copies)
+  and write one body in the work precision `wp`, which `CQR_SINGLE` sets
+  to `c_float`; CMake builds each source as a `_d` and an `_s` executable.
+  Generic resolution requires the actuals' rank to match the assumed-size
+  dummies, so the compact buffers in these tests stay rank-1.
 - **Argument checking.** The MKL-style API (`cqr_mkl_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cqr_compact.h`) validates LAPACK-style, returning `-j` for a bad j-th
