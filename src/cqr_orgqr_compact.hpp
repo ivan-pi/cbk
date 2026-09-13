@@ -95,6 +95,10 @@ void orgqr_compact(bool rowmajor, Int m, Int n, Int k, T *ap, Int ldap, const T 
     const std::size_t str_a = group_stride(rowmajor, ldap, m, n, V);
     const std::size_t str_t = (std::size_t)k * V;
 
+    /* ~org2r flops per group: sum_j 4(m-j)(n-j) in closed form */
+    const double flops =
+        (4.0 * m * n * k - 2.0 * (m + n) * (double)k * k + (4.0 / 3.0) * k * k * k) * V;
+
     for_each_group<V>(
         nm,
         [&](Int g) {
@@ -102,8 +106,7 @@ void orgqr_compact(bool rowmajor, Int m, Int n, Int k, T *ap, Int ldap, const T 
                 m, n, k, make_view<T, V, Int>(ap + g * str_a, rowmajor, ldap),
                 taup + g * str_t);
         },
-        /* ~org2r flops per group: sum_j 4(m-j)(n-j) in closed form */
-        (4.0 * m * n * k - 2.0 * (m + n) * (double)k * k + (4.0 / 3.0) * k * k * k) * V);
+        flops);
 }
 
 } /* namespace cqr::detail */
