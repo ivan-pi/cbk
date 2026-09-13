@@ -23,9 +23,18 @@
  *   mkl<T>::trsm('L','L','T') must recover X. Gates forward error and the
  *   system residual at 100 n eps.
  *
+ * Suite 4 (section 7.5) -- The packaged solve: cqr_mkl<T>::potrf ->
+ *   cqr_mkl<T>::potrs must recover X, over both uplo and both layouts, with
+ *   the same 100 n eps gates as suite 3; and cqr_mkl<T>::posv on the same
+ *   packed input must reproduce the two-step factor and X bit-for-bit.
+ *
+ * Suite 5 -- nrhs = 0: cqr_mkl<T>::posv must still factor (LAPACK ?posv calls
+ *   ?potrf unconditionally; the nrhs quick return is ?potrs's), bit-identical
+ *   to cqr_mkl<T>::potrf, with a never-referenced dummy bp.
+ *
  * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
  *
- * Assisted-by: Claude:claude-opus-4.8
+ * Assisted-by: Claude:claude-opus-4.8 Claude
  */
 
 #include "test_mkl_util.hpp" /* cqr_mkl<T>, mkl<T>, lapack<T> + the MKL-free helpers */
@@ -226,6 +235,120 @@ template <class T> int suite3(int nm, int n, int nrhs)
     return fails;
 }
 
+/* ------- Suite 4: potrs / posv, both uplo and layouts, fused identity ---- */
+
+template <class T> int suite4(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, int nrhs)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+    const bool row = (layout == MKL_ROW_MAJOR);
+    const char ul = (uplo == MKL_UPPER) ? 'U' : 'L';
+
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    for (int v = 0; v < nm; ++v) {
+        gen_spd(A.view(v), 0.0);
+        matmul(A.view(v), X, B.view(v)); /* B = A X */
+    }
+    auto Ap = A.base_ptrs();
+
+    /* mkl_?ge(un)pack_compact read/write the dense side in `layout` too, so the
+     * row-major runs pack from (and unpack to) a row-major staging copy of the
+     * non-square B with ld = nrhs. The symmetric square A needs no staging: its
+     * row-major image is itself. */
+    MatrixBatch<T> Bsrc(row ? nm : 0, n, nrhs);
+    for (int v = 0; v < Bsrc.count(); ++v) /* same matrices, the other layout */
+        copy_matrix(B.view(v), Bsrc.view(v, /*rowmajor=*/true));
+    auto Bp = row ? Bsrc.base_ptrs() : B.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
+    MKL_INT sz_b = mkl<T>::get_size(n, nrhs, fmt, nm);
+    auto ap_buf = cqr::detail::mkl_alloc_bytes<T>(sz_a);
+    auto bp_buf = cqr::detail::mkl_alloc_bytes<T>(sz_b);
+    auto ap2_buf = cqr::detail::mkl_alloc_bytes<T>(sz_a); /* the fused call's copies */
+    auto bp2_buf = cqr::detail::mkl_alloc_bytes<T>(sz_b);
+    T *ap = ap_buf.get(), *bp = bp_buf.get(), *ap2 = ap2_buf.get(), *bp2 = bp2_buf.get();
+    const MKL_INT ldb = row ? nrhs : n;
+    mkl<T>::gepack(layout, n, n, Ap.data(), n, ap, n, fmt, nm);
+    mkl<T>::gepack(layout, n, nrhs, Bp.data(), ldb, bp, ldb, fmt, nm);
+    mkl<T>::gepack(layout, n, n, Ap.data(), n, ap2, n, fmt, nm);
+    mkl<T>::gepack(layout, n, nrhs, Bp.data(), ldb, bp2, ldb, fmt, nm);
+
+    MKL_INT info_f = 99, info_s = 99, info_v = 99;
+    cqr_mkl<T>::potrf(layout, uplo, n, ap, n, &info_f, fmt, nm);
+    cqr_mkl<T>::potrs(layout, uplo, n, nrhs, ap, n, bp, ldb, &info_s, fmt, nm);
+    cqr_mkl<T>::posv(layout, uplo, n, nrhs, ap2, n, bp2, ldb, &info_v, fmt, nm);
+
+    /* fused vs two-step: the same kernels in the same order -> the same bits,
+     * over the whole compact buffers (padded lanes included) */
+    const size_t na = (size_t)sz_a / sizeof(T), nb = (size_t)sz_b / sizeof(T);
+    const bool fused_same = std::equal(ap, ap + na, ap2) && std::equal(bp, bp + nb, bp2);
+
+    MatrixBatch<T> Xout(nm, n, nrhs), Xhat(nm, n, nrhs);
+    auto Op = Xout.base_ptrs();
+    mkl<T>::geunpack(layout, n, nrhs, Op.data(), ldb, bp, ldb, fmt, nm);
+    if (row) { /* stage back to column-major for the checks */
+        for (int v = 0; v < nm; ++v)
+            copy_matrix(Xout.view(v, /*rowmajor=*/true), Xhat.view(v));
+    }
+    else {
+        Xhat = Xout;
+    }
+
+    int fails = 0;
+    if (info_f != 0 || info_s != 0 || info_v != 0) {
+        ++fails;
+        std::printf("    info = %ld/%ld/%ld (expected 0/0/0)\n", (long)info_f,
+                    (long)info_s, (long)info_v);
+    }
+    const auto [worst_fwd, worst_res] = solve_errors(A, B, Xhat, X);
+    const double rtol = 100.0 * n * eps;
+    bool ok = (worst_fwd <= rtol && worst_res <= rtol && fused_same);
+    fails += !ok;
+    std::printf("  [suite4] %s uplo=%c V=%-2d nm=%-2d n=%-3d nrhs=%d | fwd %.2e "
+                "res %.2e (rtol %.2e) posv==trf+trs:%s %s\n",
+                row ? "row" : "col", ul, V, nm, n, nrhs, worst_fwd, worst_res, rtol,
+                fused_same ? "yes" : "NO", ok ? "OK" : "FAIL");
+    return fails;
+}
+
+/* ------ Suite 5: nrhs = 0 still factors (LAPACK ?posv contract) --------- */
+
+template <class T> int suite5(int nm, int n)
+{
+    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
+    const int V = mkl<T>::vlen(fmt);
+
+    MatrixBatch<T> A(nm, n, n);
+    for (int v = 0; v < nm; ++v)
+        gen_spd(A.view(v), 0.0);
+    auto Ap = A.base_ptrs();
+
+    MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
+    auto ap1 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
+    auto ap2 = cqr::detail::mkl_alloc_bytes<T>(sz_a);
+    mkl<T>::gepack(MKL_COL_MAJOR, n, n, Ap.data(), n, ap1.get(), n, fmt, nm);
+    mkl<T>::gepack(MKL_COL_MAJOR, n, n, Ap.data(), n, ap2.get(), n, fmt, nm);
+
+    MKL_INT info_f = 99, info_v = 99;
+    cqr_mkl<T>::potrf(MKL_COL_MAJOR, MKL_LOWER, n, ap1.get(), n, &info_f, fmt, nm);
+    T b_dummy = 0; /* never referenced at nrhs = 0, present per Fortran semantics */
+    cqr_mkl<T>::posv(MKL_COL_MAJOR, MKL_LOWER, n, /*nrhs=*/0, ap2.get(), n, &b_dummy, n,
+                     &info_v, fmt, nm);
+
+    const size_t na = (size_t)sz_a / sizeof(T);
+    const bool same = std::equal(ap1.get(), ap1.get() + na, ap2.get());
+    bool ok = (info_f == 0) && (info_v == 0) && same;
+    std::printf("  [suite5] nrhs=0 V=%-2d nm=%-2d n=%-3d | posv==potrf:%s info=%ld/%ld "
+                "%s\n",
+                V, nm, n, same ? "yes" : "NO", (long)info_f, (long)info_v,
+                ok ? "OK" : "FAIL");
+    return !ok;
+}
+
 } /* anonymous namespace */
 
 template <class T> int run_suites()
@@ -259,6 +382,19 @@ template <class T> int run_suites()
     fails += suite3<T>(8, 30, 5);
     fails += suite3<T>(16, 60, 4);
     fails += suite3<T>(7, 32, 6); /* padded partial group */
+
+    /* Suite 4: the packaged potrs / posv solve, both uplo and layouts,
+     * two-step and fused */
+    for (MKL_LAYOUT L : lays)
+        for (MKL_UPLO U : ups)
+            fails += suite4<T>(L, U, 8, 30, 5);
+    fails += suite4<T>(MKL_COL_MAJOR, MKL_LOWER, 16, 60, 4);
+    fails += suite4<T>(MKL_COL_MAJOR, MKL_LOWER, 7, 32, 6); /* padded partial group */
+    fails += suite4<T>(MKL_COL_MAJOR, MKL_UPPER, 6, 25, 1); /* single RHS */
+
+    /* Suite 5: nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to
+     * potrf, bp a never-referenced dummy */
+    fails += suite5<T>(8, 30);
 
     return fails;
 }

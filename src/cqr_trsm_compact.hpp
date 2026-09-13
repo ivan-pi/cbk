@@ -233,7 +233,7 @@ void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int
  * reached through a transposed view, as gels's LQ path does) -- and to the
  * strided kernel otherwise. One branch per group, outside every kernel loop.
  * The per-group entry point the fused solves (gels, and through the pointer
- * form below, the LDL^T solve) compose their sweeps from. */
+ * form below, the Cholesky and LDL^T solves) compose their sweeps from. */
 template <typename T, int V, typename Int = int>
 inline void trsm_compact_group(bool left, bool upper, bool tran, bool unit, Int m, Int n,
                                T alpha, ConstBatchView<T, V, Int> A,

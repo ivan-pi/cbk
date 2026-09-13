@@ -10,6 +10,8 @@
  *   dormqr_compact   / sormqr_compact    -- apply Q or Q^T from the left, B := op(Q) B
  *   dorgqr_compact   / sorgqr_compact    -- form the explicit Q of a QR, in place
  *   dpotrf_compact   / spotrf_compact    -- Cholesky factorization  A = L L^T or U^T U
+ *   dpotrs_compact   / spotrs_compact    -- solve A X = B from a Cholesky factor
+ *   dposv_compact    / sposv_compact     -- Cholesky factor + solve, fused per group
  *   dsytrfnp_compact / ssytrfnp_compact  -- LDL^T factorization, no pivoting
  *   dsytrsnp_compact / ssytrsnp_compact  -- solve A X = B from an LDL^T factor
  *   dsysvnp_compact  / ssysvnp_compact   -- LDL^T factor + solve, fused per group
@@ -143,6 +145,48 @@ int dpotrf_compact(char layout, char uplo, int n, double *ap, int ldap, int V, i
 
 int spotrf_compact(char layout, char uplo, int n, float *ap, int ldap, int V, int nm);
 
+/* Solve A X = B from the Cholesky factor produced by ?potrf_compact -- the
+ * step that closes the batched SPD solve. Runs the two in-place substitution
+ * sweeps per matrix (B is overwritten by X):
+ *   uplo 'L' (A = L L^T):  L z = B;    L^T X = z
+ *   uplo 'U' (A = U^T U):  U^T z = B;  U   X = z
+ *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
+ *   uplo     triangle holding the factor, as passed to ?potrf_compact
+ *   n, nrhs  order of each A; number of right-hand sides (columns of B)
+ *   ap       compact factored A from ?potrf_compact (n x n per matrix)
+ *   ldap     compact leading dimension of A (>= max(1, n))
+ *   bp       compact B (n x nrhs), overwritten with X
+ *   ldbp     compact leading dimension of B (>= n col-major, >= nrhs row-major)
+ *   V, nm    interleave width; total number of matrices (padded last group)
+ * A lane whose factor carries NaN/Inf (a non-SPD input to ?potrf_compact)
+ * yields NaN/Inf in that lane's solution, not an error. Returns 0, or -j for
+ * an illegal j-th argument:
+ *   -1 layout   -2 uplo   -3 n (<0)   -4 nrhs (<0)   -6 ldap
+ *   -8 ldbp     -9 V (not 2/4/8/16)   -10 nm (<0)
+ */
+int dpotrs_compact(char layout, char uplo, int n, int nrhs, const double *ap, int ldap,
+                   double *bp, int ldbp, int V, int nm);
+
+int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap, int ldap,
+                   float *bp, int ldbp, int V, int nm);
+
+/* Symmetric positive-definite solve A X = B in one pass: ?potrf_compact
+ * followed by ?potrs_compact, fused per group of V matrices so each factor is
+ * solved with while still cache-resident and the whole solve is one threaded
+ * group loop. Same arguments and error codes as ?potrs_compact, except that
+ * ap is the SPD input A on entry and holds its Cholesky factor on exit
+ * (exactly as ?potrf_compact leaves it); bp is overwritten with X. The result
+ * is bit-identical to the two separate calls. The LAPACK ?posv analogue --
+ * including for nrhs = 0, which still factors ap (LAPACK ?posv calls ?potrf
+ * unconditionally; the nrhs quick return is ?potrs's): bp is then never
+ * referenced, though Fortran semantics still want it present (a dummy
+ * suffices). */
+int dposv_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
+                  double *bp, int ldbp, int V, int nm);
+
+int sposv_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap, float *bp,
+                  int ldbp, int V, int nm);
+
 /* LDL^T factorization, without pivoting, of a batch of symmetric n x n
  * matrices A: A = L D L^T (uplo 'L') or A = U^T D U (uplo 'U'), one matrix per
  * compact lane. L (U) is unit lower (upper) triangular and D diagonal. On exit
@@ -200,7 +244,10 @@ int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap, i
  * ap is the symmetric input A on entry and holds its (D, L|U) factor on exit
  * (exactly as ?sytrfnp_compact leaves it); bp is overwritten with X. The
  * result is bit-identical to the two separate calls. The LAPACK ?sysv
- * analogue, minus ipiv and workspace. */
+ * analogue, minus ipiv and workspace -- including for nrhs = 0, which still
+ * factors ap (LAPACK ?sysv calls ?sytrf unconditionally; the nrhs quick
+ * return is ?sytrs's): bp is then never referenced, though Fortran semantics
+ * still want it present (a dummy suffices). */
 int dsysvnp_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
                     double *bp, int ldbp, int V, int nm);
 
@@ -263,7 +310,12 @@ int strsm_compact(char layout, char side, char uplo, char transa, char diag, int
  *            matrix, ld = k): the reflector scalars of the factorization left in
  *            ap, so (ap, taup) is the (H, tau) that ?ormqr_compact accepts
  *   V, nm    interleave width; total number of matrices (padded last group)
- * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does.
+ * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does;
+ * ap and taup are then not referenced, though Fortran semantics still want
+ * them present (a dummy suffices). nrhs = 0 computes
+ * nothing at all: LAPACK ?gels's quick return covers min(m, n, nrhs) = 0, so
+ * -- unlike ?posv/?sysv -- no factorization is performed (measured, not just
+ * read from the reference source).
  * Rank deficiency is not detected (no info > 0): a zero diagonal of R divides
  * through to Inf/NaN in that lane, as in ?trsm.
  * Returns 0, or -j for an illegal j-th argument:

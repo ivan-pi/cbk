@@ -15,6 +15,8 @@
 //      unchanged from the input (the routine must not reference or write it)
 //   4. end-to-end solve: factor + ?sytrsnp_compact recovers a known X, and
 //      ?sysvnp_compact reproduces that factor and X bit-for-bit
+//   5. nrhs = 0: ?sysvnp_compact still factors (LAPACK ?sysv), bit-identical
+//      to ?sytrfnp_compact, with a 1-element dummy bp (never referenced)
 // plus:
 //   - a zero on the *input* diagonal with nonsingular leading minors factors
 //     fine (the pivots are the updated Schur-complement entries),
@@ -29,8 +31,6 @@
 #include <vector>
 #include <limits>
 #include <algorithm>
-#include <functional>
-#include <utility>
 
 #include "test_compact_util.hpp" // compact<T>, gen_sym_ldlt, ldlt_reconstruct, pack/unpack
 
@@ -180,6 +180,35 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
     return !ok;
 }
 
+// ------------- nrhs = 0: the fused driver still factors --------------
+// LAPACK ?sysv calls ?sytrf unconditionally -- the nrhs = 0 quick return is
+// ?sytrs's -- so the fused driver must factor ap even with no right-hand
+// sides, bit-identically to ?sytrfnp_compact, without referencing bp (a
+// 1-element dummy here: Fortran semantics want the argument present).
+
+template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    MatrixBatch<T> A(nm, n, n);
+    for (int idx = 0; idx < nm; ++idx)
+        gen_sym_ldlt(A.view(idx));
+    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> ap2 = ap;
+
+    int info_f = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
+    T b_dummy = 0; // never referenced at nrhs = 0, present per Fortran semantics
+    int info_v =
+        compact<T>::sysvnp(layout, uplo, n, 0, ap2.data(), n, &b_dummy, n, V, nm);
+
+    const bool same = (ap == ap2);
+    bool ok = (info_f == 0) && (info_v == 0) && same;
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=0 | sysv==trf:%s "
+                "info=%d/%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, same ? "yes" : "NO", info_f,
+                info_v, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
 // -------- zero on the input diagonal, nonsingular leading minors -----
 // The pivots are the *updated* Schur-complement diagonal entries, so a zero on
 // the original diagonal is harmless as long as no leading principal minor
@@ -315,65 +344,16 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
 
 // --------------------- C API argument validation --------------------
 
+// The factor signature is shared with ?potrf and the solve signature with
+// ?potrs/?posv -- one validator each in cqr_compact.cpp -- so the tables live
+// in test_compact_util.hpp and are run here against this family's three entry
+// points.
 static int test_validation()
 {
-    const int n = 8, nrhs = 3, V = 4, nm = 4, ld = 8;
-    std::vector<double> ap((size_t)ld * n * V, 0), bp((size_t)ld * nrhs * V, 0);
-    // Seed a unit diagonal so factoring/solving is sane. The offset is the
-    // compact (interleaved) one, which is not a dense 2-D layout.
-    for (int v = 0; v < V; ++v)
-        for (int i = 0; i < n; ++i)
-            ap[((size_t)i * ld + i) * V + v] = 1.0;
-    auto callf = [&](char lay, char up, int n_, int ldap_, int V_, int nm_) {
-        return dsytrfnp_compact(lay, up, n_, ap.data(), ldap_, V_, nm_);
-    };
-    // ?sytrsnp and ?sysvnp share one signature and one validation, so one table
-    // of solve cases runs against both entry points
-    using solve_fn = std::function<int(char, char, int, int, int, int, int, int)>;
-    const std::pair<const char *, solve_fn> solvers[] = {
-        {"trs",
-         [&](char lay, char up, int n_, int nrhs_, int ldap_, int ldbp_, int V_,
-             int nm_) {
-             return dsytrsnp_compact(lay, up, n_, nrhs_, ap.data(), ldap_, bp.data(),
-                                     ldbp_, V_, nm_);
-         }},
-        {"sv",
-         [&](char lay, char up, int n_, int nrhs_, int ldap_, int ldbp_, int V_,
-             int nm_) {
-             return dsysvnp_compact(lay, up, n_, nrhs_, ap.data(), ldap_, bp.data(),
-                                    ldbp_, V_, nm_);
-         }},
-    };
     std::vector<ApiCheck> t;
-    // clang-format off
-    t.insert(t.end(), {
-        {"trf valid col L", callf('C', 'L', n,  ld,  V, nm),   0},
-        {"trf valid row U", callf('R', 'U', n,  ld,  V, nm),   0},
-        {"trf bad layout",  callf('X', 'L', n,  ld,  V, nm),  -1},
-        {"trf bad uplo",    callf('C', 'X', n,  ld,  V, nm),  -2},
-        {"trf n<0",         callf('C', 'L', -1, ld,  V, nm),  -3},
-        {"trf ldap<n",      callf('C', 'L', n,  n-1, V, nm),  -5},
-        {"trf bad V",       callf('C', 'L', n,  ld,  3, nm),  -6},
-        {"trf nm<0",        callf('C', 'L', n,  ld,  V, -1),  -7},
-        {"trf empty n=0",   callf('C', 'L', 0,  1,   V, nm),   0},
-        {"trf empty nm=0",  callf('C', 'L', n,  ld,  V, 0),    0},
-    });
-    for (const auto &[tag, calls] : solvers)
-        t.insert(t.end(), {
-            {"valid col L", calls('C', 'L', n, nrhs, ld, n,    V, nm),   0},
-            {"valid row U", calls('R', 'U', n, nrhs, ld, nrhs, V, nm),   0},
-            {"bad layout",  calls('X', 'L', n, nrhs, ld, n,    V, nm),  -1},
-            {"bad uplo",    calls('C', 'X', n, nrhs, ld, n,    V, nm),  -2},
-            {"n<0",         calls('C', 'L', -1, nrhs, ld, n,   V, nm),  -3},
-            {"nrhs<0",      calls('C', 'L', n, -1,  ld, n,     V, nm),  -4},
-            {"ldap<n",      calls('C', 'L', n, nrhs, n-1, n,   V, nm),  -6},
-            {"ldbp<n",      calls('C', 'L', n, nrhs, ld, n-1,  V, nm),  -8},
-            {"ldbp<nrhs R", calls('R', 'L', n, nrhs, ld, nrhs-1, V, nm), -8},
-            {"bad V",       calls('C', 'L', n, nrhs, ld, n,    3, nm),  -9},
-            {"nm<0",        calls('C', 'L', n, nrhs, ld, n,    V, -1), -10},
-            {"empty nrhs",  calls('C', 'L', n, 0,   ld, n,     V, nm),   0},
-        });
-    // clang-format on
+    append_factor_api_checks(t, "trf", dsytrfnp_compact);
+    append_solve_api_checks(t, "trs", dsytrsnp_compact);
+    append_solve_api_checks(t, "sv", dsysvnp_compact);
     return report_api_checks(t.data(), t.size());
 }
 
@@ -409,6 +389,11 @@ int main()
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
         }
+
+    // nrhs = 0 must factor anyway (LAPACK ?sysv), bit-identical to sytrfnp,
+    // bp a never-referenced dummy.
+    fails += run_nrhs0<double, 4>(6, 20, 'L', 'C');
+    fails += run_nrhs0<float, 8>(9, 16, 'U', 'R');
 
     // Zero on the input diagonal (nonsingular minors): must factor cleanly.
     for (char u : uplos)

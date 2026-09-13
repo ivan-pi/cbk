@@ -94,6 +94,13 @@ void potrf_compact_group(Int n, BatchView<T, V, Int> A)
     }
 }
 
+/* ~flops of the unblocked Cholesky of one group: n^3/3 per matrix, times V
+ * (shared with the fused posv driver). */
+template <typename Int> inline double potrf_flops(Int n, int V)
+{
+    return (double)n * n * n / 3.0 * V;
+}
+
 /* All groups, any layout / uplo. A padded partial last group is processed too,
  * harmlessly: the identity's Cholesky factor is the identity. */
 template <typename T, int V, typename Int = int>
@@ -111,7 +118,7 @@ void potrf_compact(bool rowmajor, bool upper, Int n, T *ap, Int ldap, Int nm)
             potrf_compact_group<T, V, Int>(
                 n, make_lower_view<T, V, Int>(ap + g * str_a, rowmajor, upper, ldap));
         },
-        (double)n * n * n / 3.0 * V /* ~potf2 flops per group */);
+        potrf_flops(n, V));
 }
 
 } /* namespace cqr::detail */

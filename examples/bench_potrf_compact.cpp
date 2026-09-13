@@ -45,14 +45,11 @@
 #include <mkl.h>
 #include <mkl_compact.h>
 
-#include "cqr_mkl_alloc.h"
 #include "bench_util.hpp"
 
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-#include <random>
 #include <vector>
 #include <algorithm>
 
@@ -60,39 +57,13 @@ namespace {
 
 using namespace cqr::bench;
 
-/* Standard LAPACK ?potrf flop count in GFLOP: n^3/3 + n^2/2 + n/6 (adds +
- * mults, the classic LAWN 41 count; the n square roots are not counted, as in
- * LAPACK's own timing). */
-double potrf_gflop(int n)
-{
-    const double dn = n;
-    return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0) * 1e-9;
-}
-
-/* A pool of `nmat` n x n symmetric positive-definite matrices. Each is built
- * symmetric with random off-diagonals in [-1,1] and a diagonal of 2n, so it is
- * strictly diagonally dominant (row off-diagonal magnitudes sum to at most
- * n-1 < 2n) and therefore SPD and well conditioned -- the O(n^2) analogue of
- * the geqrf pool's diagonal boost, without an O(n^3) M^T M product. The full
- * matrix is stored (both triangles) so the per-matrix LAPACK path and the
- * compact pack see identical symmetric input; each routine reads only the
- * lower triangle. */
+/* A pool of `nmat` n x n symmetric positive-definite matrices: bench_util's
+ * symmetric diagonally dominant fill with a positive diagonal -- SPD and well
+ * conditioned, the O(n^2) analogue of the geqrf pool's diagonal boost. */
 MatrixPool make_pool(int n, int nmat)
 {
     MatrixPool P(nmat, n, n);
-    std::mt19937_64 rng(2025);
-    std::uniform_real_distribution<double> dist(-1.0, 1.0);
-    for (int v = 0; v < nmat; ++v) {
-        const auto A = P.view(v);
-        for (int j = 0; j < n; ++j) {
-            for (int i = j + 1; i < n; ++i) {
-                double x = dist(rng);
-                A(i, j) = x; /* lower */
-                A(j, i) = x; /* mirror to upper (symmetric) */
-            }
-            A(j, j) = 2.0 * n; /* diagonal dominant -> SPD */
-        }
-    }
+    fill_sym_dd(P, /*indefinite=*/false);
     return P;
 }
 
@@ -190,7 +161,7 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
         auto restore = [&] { pristine.restore_into(work_ap.get()); };
         const double t = best_time(
             reps, restore, [&] { factor_compact(true, work_ap.get(), n, nmat, V, fmt); });
-        std::printf("%4d | %10.3e | %11.2f | %11.2e\n", n, t, nmat * potrf_gflop(n) / t,
+        std::printf("%4d | %10.3e | %11.2f | %11.2e\n", n, t, nmat * chol_gflop(n) / t,
                     nmat / t);
     }
     std::printf("-----+------------+-------------+-------------\n");
@@ -267,7 +238,7 @@ int main(int argc, char **argv)
         const double sp_lap = t_lap / t_cqr;     /* cqr speedup over LAPACK */
         const double sp_mkl_lap = t_lap / t_mkl; /* MKL speedup over LAPACK */
         const double sp_mkl = t_mkl / t_cqr;     /* cqr speedup over MKL    */
-        const double gflops_cqr = nmat * potrf_gflop(n) / t_cqr;
+        const double gflops_cqr = nmat * chol_gflop(n) / t_cqr;
         log_speed_vs_lapack += std::log(sp_lap);
         std::printf("%4d | %11.2f | %11.2e | %11.2e | %12.2e | %6.2fx | %6.2fx | "
                     "%6.2fx | %.2e\n",

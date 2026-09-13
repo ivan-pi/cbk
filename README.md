@@ -18,10 +18,12 @@ kernels behind an Intel MKL-style API:
   matrix (orthonormal bases, repeated products via `mkl_?gemm_compact`) rather
   than as an operator. See its
   [design document](docs/cqr_mkl_dorgqr_compact_design.md).
-* **`cqr_mkl_?potrf_compact`** - the batched **Cholesky factorization**
-  (`A = L L^T` / `U^T U`) of symmetric-positive-definite matrices: a portable,
-  vectorized alternative to `mkl_?potrf_compact`. Paired with
-  `cqr_mkl_?trsm_compact` it factors and solves batched SPD systems. See its
+* **`cqr_mkl_?potrf_compact`** / **`cqr_mkl_?potrs_compact`** /
+  **`cqr_mkl_?posv_compact`** - the batched **Cholesky factorization**
+  (`A = L L^T` / `U^T U`) of symmetric-positive-definite matrices - a portable,
+  vectorized alternative to `mkl_?potrf_compact` - plus the solve from that
+  factor and the fused factor-and-solve, the LAPACK `?potrs` / `?posv` pair MKL
+  has no compact form of. See their
   [design document](docs/cqr_mkl_dpotrf_compact_design.md).
 * **`cqr_mkl_?trsm_compact`** - an open drop-in for
   `mkl_?trsm_compact` (the batched triangular solve), so the whole `AX = B`
@@ -138,6 +140,14 @@ Results are independent of the thread count.
   lower, `A = L L^T`), reporting GFLOP/s and a geometric-mean speedup, checked
   elementwise against LAPACK (the SPD factor is unique). Same `--size-sweep` /
   `--simdlen` flags and the same `-march=native` caveat as `bench_geqrf_compact`.
+* `bench_posv_compact [--nrhs=k] [nmat] [reps]` - the end-to-end SPD *solve*:
+  `cqr_mkl_dposv_compact` (the fused Cholesky factor + solve, one call on the
+  pool) vs the same kernels as two whole-pool calls (`potrf` + `potrs` -- what
+  the fusion buys) vs MKL's compact pipeline (`mkl_dpotrf_compact` +
+  `mkl_dtrsm_compact` twice; MKL has no compact `potrs`/`posv`) vs per-matrix
+  `LAPACKE_dposv`, over the same square-size range on SPD diagonally dominant
+  pools, every path checked against the known solution. Same `--size-sweep` /
+  `--simdlen` flags and `-march=native` caveat.
 * `bench_sysvnp_compact [--nrhs=k] [nmat] [reps]` - the end-to-end symmetric
   *solve*: `cqr_mkl_dsysvnp_compact` (the fused unpivoted LDL^T factor + solve,
   one call on the pool) vs per-matrix `LAPACKE_dsysv` (Bunch-Kaufman), over the
@@ -147,7 +157,8 @@ Results are independent of the thread count.
 
 All are registered with CTest (`example_solve_qr_compact`,
 `bench_qr_compact_integration`, `bench_geqrf_compact_integration`,
-`bench_potrf_compact_integration`, `bench_sysvnp_compact_integration`). The four
+`bench_potrf_compact_integration`, `bench_posv_compact_integration`,
+`bench_sysvnp_compact_integration`). The five
 benchmarks -- what they measure,
 how to run them, the flags, and the `-march=native` caveat -- are documented in
 detail in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
@@ -168,8 +179,8 @@ The headers under `include/` are the project's API, the only files users need:
 
 | File | Role |
 |------|------|
-| `include/cqr_mkl_ext.h` | The MKL-style API: `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?orgqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
-| `include/cqr_compact.h` | The portable C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. |
+| `include/cqr_mkl_ext.h` | The MKL-style API: `cqr_mkl_?geqrf_compact`, `cqr_mkl_?ormqr_compact`, `cqr_mkl_?orgqr_compact`, `cqr_mkl_?potrf_compact`, `cqr_mkl_?potrs_compact`, `cqr_mkl_?posv_compact`, `cqr_mkl_?sytrfnp_compact`, `cqr_mkl_?sytrsnp_compact`, `cqr_mkl_?sysvnp_compact`, `cqr_mkl_?trsm_compact`, `cqr_mkl_?gels_compact`, taking `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
+| `include/cqr_compact.h` | The portable C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. |
 | `include/cqr_mkl_alloc.h` | Optional RAII buffer helpers (`mkl_alloc_bytes`, `mkl_buffer`) wrapping `mkl_malloc`/`mkl_free`. |
 
 ### Internals
@@ -182,13 +193,15 @@ The headers under `include/` are the project's API, the only files users need:
 | `src/cqr_ormqr_compact.hpp` | Apply-Q kernel (vectorized `dorm2r`) and the shared one-reflector update `larf`. |
 | `src/cqr_orgqr_compact.hpp` | Form-Q kernel (vectorized `dorg2r`): backward accumulation on `larf` over the trailing columns only, unit-seeded extra columns, sweep-free column formation. |
 | `src/cqr_potrf_compact.hpp` | Cholesky kernel (vectorized `potf2`); the four `(layout, uplo)` cases are one kernel over transposed views. |
+| `src/cqr_potrs_compact.hpp` | The Cholesky solve: two non-unit `trsm` group sweeps. |
+| `src/cqr_posv_compact.hpp` | The fused Cholesky factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
 | `src/cqr_sytrfnp_compact.hpp` | Unpivoted LDL^T kernel (the square-root-free `potf2`), over the same transposed views as `potrf`. |
 | `src/cqr_sytrsnp_compact.hpp` | The LDL^T solve: two unit-diagonal `trsm` group sweeps around a diagonal solve. |
 | `src/cqr_sysvnp_compact.hpp` | The fused factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
 | `src/cqr_trsm_compact.hpp` | Triangular-solve kernels: the tuned column-major `side='L'` row-dot path and the general strided kernel, behind the per-group `trsm_compact_group` the fused solves compose. |
 | `src/cqr_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf (with its fused right-hand-side panel), ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
-| `src/cqr_compact.cpp` | The portable C API: argument validation and `V` dispatch for all eighteen entry points. |
-| `src/cqr_mkl_ext.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all eighteen entry points. |
+| `src/cqr_compact.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
+| `src/cqr_mkl_ext.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |
 | `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, scalar reference kernels, Compact pack/unpack, `MatrixBatch`, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, no MKL. |
 | `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `cqr_mkl<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels), `lapack<T>` (LAPACKE/CBLAS references). |
 | `tests/test_cqr_*_compact.cpp` | Portable self-contained suites (no BLAS): each kernel vs its scalar reference, plus C API validation, in FP64 and FP32. |

@@ -4,7 +4,8 @@
 // as a template and runs in FP64 and FP32:
 //
 //   cqr_mkl<T>  the routines under test,
-//               cqr_mkl_?{geqrf,ormqr,orgqr,potrf,sytrfnp,sytrsnp,sysvnp,trsm,gels}_compact
+//               cqr_mkl_?{geqrf,ormqr,orgqr,potrf,potrs,posv,sytrfnp,sytrsnp,
+//               sysvnp,trsm,gels}_compact
 //   mkl<T>      MKL's Compact API: sizes, pack/unpack, and MKL's own compact
 //               kernels as references
 //   lapack<T>   dense LAPACKE / CBLAS references
@@ -54,6 +55,16 @@ template <> struct cqr_mkl<T> {                                                 
     static void potrf(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap,   \
                       MKL_INT *info, MKL_COMPACT_PACK fmt, MKL_INT nm)                     \
     { cqr_mkl_##p##potrf_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }              \
+    static void potrs(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,          \
+                      const T *ap, MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,       \
+                      MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
+    { cqr_mkl_##p##potrs_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,     \
+                                 nm); }                                                    \
+    static void posv(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs, T *ap,    \
+                     MKL_INT ldap, T *bp, MKL_INT ldbp, MKL_INT *info,                     \
+                     MKL_COMPACT_PACK fmt, MKL_INT nm)                                     \
+    { cqr_mkl_##p##posv_compact(layout, uplo, n, nrhs, ap, ldap, bp, ldbp, info, fmt,      \
+                                nm); }                                                     \
     static void sytrfnp(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, T *ap, MKL_INT ldap, \
                         MKL_INT *info, MKL_COMPACT_PACK fmt, MKL_INT nm)                   \
     { cqr_mkl_##p##sytrfnp_compact(layout, uplo, n, ap, ldap, info, fmt, nm); }            \
