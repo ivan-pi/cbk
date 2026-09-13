@@ -5,23 +5,11 @@
 ## 1. Overview
 
 Generate the explicit orthogonal factor `Q` of a compact QR factorization:
-the compact form of LAPACK `?orgqr`, which MKL's compact API does not ship
-(as it does not ship `?ormqr`; `cqr_mkl_?ormqr_compact` set the precedent
-this routine follows). It completes the standard QR trio -- factor
-(`?geqrf`), apply `Q` implicitly (`?ormqr`), form `Q` explicitly
+the compact form of LAPACK `?orgqr`, supplied by the `cqr` project on the
+precedent of `cqr_mkl_?ormqr_compact`. It completes the standard QR trio
+-- factor (`?geqrf`), apply `Q` implicitly (`?ormqr`), form `Q` explicitly
 (`?orgqr`) -- for batches of small matrices in Intel MKL's Compact
 (interleaved) format.
-
-The target user is anyone who needs `Q` as a matrix rather than as an
-operator: an explicit thin `Q` fed repeatedly to `mkl_?gemm_compact`, an
-orthonormal basis of each column space in a batch, an orthogonal
-similarity assembled once and reused. Today that user must pack a batch of
-identity matrices and run `cqr_mkl_?ormqr_compact('L','N', ...)` over it:
-an extra buffer, an extra pack pass, and up to twice the arithmetic,
-because the sweep applies every reflector to every column of the identity
-while `?orgqr`'s accumulation (LAPACK `?org2r`) exploits the zero
-structure. Forming `Q` in place over its own reflectors removes all three
-costs.
 
 ## 2. Syntax
 
@@ -137,7 +125,10 @@ are still to come and act on these columns through step 1 below. Then for
 Versus applying all `k` reflectors to all `n` columns of a packed
 identity (`?ormqr('L','N')`), the trailing-columns-only sweep and the
 sweep-free column formation cut the arithmetic to LAPACK's `?orgqr`
-count, `4mnk - 2(m + n)k^2 + (4/3)k^3` flops per matrix: about a third
+count -- the per-reflector updates `sum_{j=0}^{k-1} 4(m - j)(n - j)` in
+closed form, `4mnk - 2(m + n)k^2 + (4/3)k^3` flops per matrix (at `k = n`
+it reduces to `?geqrf`'s `2mn^2 - (2/3)n^3`, as it must: accumulating `Q`
+costs what factoring did): about a third
 less for a square `Q` (`m = n = k`), about half for a tall thin one
 (`m >> n = k`) -- on top of not packing, storing, or streaming the
 identity batch at all.
