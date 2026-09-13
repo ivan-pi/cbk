@@ -102,8 +102,8 @@ full path, which needs neither the flag nor the group.
   - Intel compilers: `mkl_intel_thread` on `libiomp5`.
   The full test suite passes threaded under g++ and clang++. MKL's workspace
   query then scales with its thread count, and `lwork` is never checked: size
-  every buffer from a query made under the thread count of the call (README,
-  "Build"; `.claude/mkl-compact-behavior.md`, section 2).
+  every buffer from a query made under the thread count of the call
+  (`docs/building.md`; `.claude/mkl-compact-behavior.md`, section 2).
 - **`-DMKLCompact_INTERFACE=lp64`** (default) or **`ilp64`**: the integer
   interface; `ilp64` also defines `MKL_ILP64` on the headers target.
 - **`-DMKLCompact_ROOT=<prefix>`** or **`MKLROOT`** in the environment: the

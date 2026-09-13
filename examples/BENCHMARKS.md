@@ -20,12 +20,12 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cqr_mkl_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
-the same folder; see the top-level [README](../README.md).
+the same folder; see [`docs/examples.md`](../docs/examples.md).
 
 ## Running them
 
-The benchmarks are built by the standard MKL build (see the
-[README](../README.md) / [CLAUDE.md](../.claude/CLAUDE.md)). From a configured tree:
+The benchmarks are built by the standard MKL build (see
+[`docs/building.md`](../docs/building.md)). From a configured tree:
 
 ```sh
 cmake --build build -j
@@ -47,9 +47,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=nat
 
 Correctness (the gate each benchmark carries) is independent of these flags; only
 throughput changes. Threading: the factorization benchmarks' cqr paths hand the
-whole pool to one call and let the library thread its loop over groups (README,
-"Threading"). The MKL compact paths link sequential MKL (no internal threading;
-`mkl_set_num_threads(1)` pins it regardless), so they and the per-matrix LAPACK
+whole pool to one call and let the library thread its loop over groups
+([`docs/threading.md`](../docs/threading.md)). The MKL compact paths link
+sequential MKL (no internal threading; `mkl_set_num_threads(1)` pins it
+regardless), so they and the per-matrix LAPACK
 path are driven from an OpenMP loop over groups / matrices with the same thread
 count -- every path gets the same parallelism. `bench_qr_compact` keeps its
 whole *pipeline* per group inside the caller's loop for both backends: the five

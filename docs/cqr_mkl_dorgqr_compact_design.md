@@ -178,7 +178,7 @@ where `?orgqr`'s shrinks with `kk`, and it has no column-formation step.
 ### 6.3 Threading
 
 One `for_each_group` over the batch, the body generating one group's `Q`.
-The gate is the toolkit's (README, "Threading"): static-schedule OpenMP,
+The gate is the toolkit's ([threading.md](threading.md)): static-schedule OpenMP,
 at most one thread per group, active only for two or more groups and
 enough work, with the per-group estimate
 `(4 m n k - 2 (m + n) k^2 + (4/3) k^3) * V`.

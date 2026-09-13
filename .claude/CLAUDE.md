@@ -50,7 +50,8 @@ tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
-docs/      one design document per routine
+docs/      one design document per routine, plus the guides README.md indexes
+           (building, threading, layout, examples, related work)
 ```
 
 ## Formatting and linting
