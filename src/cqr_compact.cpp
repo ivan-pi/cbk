@@ -223,7 +223,9 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
     if (ldbp < max1(row ? nrhs : mx)) return -9;
     if (!vlen_ok(V)) return -11;
     if (nm < 0) return -12;
-    if (nrhs == 0 || nm == 0) return 0; /* empty: nothing to compute */
+    if (nrhs == 0 || nm == 0 || mx == 0) return 0; /* empty: nothing to compute */
+    /* Fortran semantics: every array argument must be present, a dummy when its
+     * extent is zero (min(m, n) = 0 reads neither A nor tau, but B := 0). */
     assert(ap != nullptr && bp != nullptr && taup != nullptr);
 
     for_vlen(V, [&](auto v) {
