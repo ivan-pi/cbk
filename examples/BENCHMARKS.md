@@ -19,7 +19,10 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cqr_mkl_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
-the same folder; see the top-level [README](../README.md).
+the same folder; see the top-level [README](../README.md). A draft blog post
+built on these benchmarks -- the compact format, the library, and measurement
+sections for Intel Sapphire Rapids, NVIDIA Grace and Apple M2 Pro -- is
+[`BLOG.md`](BLOG.md).
 
 ## Running them
 
