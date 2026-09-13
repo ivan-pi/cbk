@@ -93,14 +93,9 @@ the exported target needs) through the `FindMKLCompact.cmake` installed beside
 it; a consumer that also calls MKL itself finds `MKL::Compact` with that module
 (`list(APPEND CMAKE_MODULE_PATH "${cqr_DIR}")`) or its own. A static cqr built
 with OpenMP needs the CXX language enabled in the consumer, as linking a C++
-static library does anyway. `tests/install/` holds a downstream consumer
-project and `check_install.sh`, the check CI runs against a fresh install for
-every MKL / static / shared combination (`.github/workflows/install.yml`):
-
-```sh
-cmake --install build --prefix /tmp/cqr-prefix
-tests/install/check_install.sh /tmp/cqr-prefix OFF OFF   # <prefix> <mkl> <shared>
-```
+static library does anyway. `tests/install/` is a downstream consumer project
+CI builds against a fresh install for every MKL / static / shared combination
+(`.github/workflows/install.yml`, through `.github/check_install.sh`).
 
 ## Options
 

@@ -2,17 +2,17 @@
 # Verify an installed cqr: the expected files are present, what should not be
 # is absent, and a downstream project can find_package(cqr) and link cqr::cqr.
 #
-#   tests/install/check_install.sh <prefix> <mkl ON|OFF> <shared ON|OFF>
+#   .github/check_install.sh <prefix> <mkl ON|OFF> <shared ON|OFF>
 #
 # <prefix> is where `cmake --install <build> --prefix <prefix>` put cqr; the
 # two flags say what that build was configured with (CQR_WITH_MKL and
-# BUILD_SHARED_LIBS). Run by .github/workflows/install.yml; usable by hand.
+# BUILD_SHARED_LIBS). Run by .github/workflows/install.yml.
 set -euo pipefail
 
 prefix=$(cd "$1" && pwd)
 mkl=$2
 shared=$3
-here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$(dirname "$0")/.." && pwd)
 
 fail=0
 expect() {
@@ -50,8 +50,8 @@ if [ "$fail" -ne 0 ]; then
 fi
 
 echo "== downstream project against the install"
-consumer=${CQR_CONSUMER_BUILD_DIR:-$here/../../build-consumer}
-cmake -S "$here" -B "$consumer" -DCMAKE_PREFIX_PATH="$prefix" -DCQR_WITH_MKL="$mkl"
+consumer=${CQR_CONSUMER_BUILD_DIR:-$root/build-consumer}
+cmake -S "$root/tests/install" -B "$consumer" -DCMAKE_PREFIX_PATH="$prefix" -DCQR_WITH_MKL="$mkl"
 cmake --build "$consumer"
 "$consumer/consumer"
 echo "install check passed"

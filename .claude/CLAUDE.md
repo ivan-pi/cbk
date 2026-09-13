@@ -26,9 +26,9 @@ Both APIs are one library target, `cqr` (`cqr::cqr`); `-DBUILD_SHARED_LIBS=ON`
 builds it shared. `cmake --install build --prefix <p>` installs it, the
 headers of what was built (the two MKL headers only with the extension), and a
 `find_package(cqr CONFIG)` package (`cmake/cqrConfig.cmake.in`).
-`tests/install/check_install.sh <prefix> <mkl> <shared>` verifies an install
-tree and builds the consumer project next to it against it; CI runs it for
-every combination (`.github/workflows/install.yml`).
+CI verifies an install tree and builds the consumer project in
+`tests/install/` against it for every combination (`.github/workflows/install.yml`
+and its `.github/check_install.sh`).
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
 Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's

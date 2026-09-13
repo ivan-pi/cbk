@@ -1,5 +1,5 @@
 # Consumer of an *installed* cqr: the install check of
-# .github/workflows/install.yml (see tests/install/check_install.sh) builds
+# .github/workflows/install.yml (see .github/check_install.sh) builds
 # this against the install prefix, out of tree, exactly as a downstream
 # project would:
 #
