@@ -1,0 +1,53 @@
+name: CI (ARM)
+
+# The portable (no-MKL) build and test suites on GitHub's free AArch64
+# runners: Intel MKL does not exist on ARM, so this runs exactly what
+# -DCQR_WITH_MKL=OFF documents. The `native` jobs add -mcpu=native so the
+# GNU-vector kernels are lowered for the runner's actual NEON/SVE units
+# rather than the baseline Armv8 ISA -- different codegen worth covering for
+# a SIMD library, and the alignment contracts of .claude/CLAUDE.md are
+# compiler-sensitive, so both gcc and clang run here as on x86. The manual
+# ArmPL benchmark workflow (armpl-bench.yml) is the performance companion.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer commit on the same ref cancels the in-progress run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.cxx }} / ${{ matrix.tune }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+        tune: [baseline, native]
+        include:
+          - { cc: gcc,   cxx: g++ }
+          - { cc: clang, cxx: clang++ }
+          - { tune: baseline, cxxflags: "" }
+          - { tune: native,   cxxflags: "-O3 -mcpu=native" }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCQR_WITH_MKL=OFF
+          -DCMAKE_CXX_FLAGS="${{ matrix.cxxflags }}"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

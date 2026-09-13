@@ -20,6 +20,17 @@ Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's
 threaded layer).
 
+On AArch64 (where MKL does not exist) `-DCQR_WITH_ARMPL=ON` adds
+`bench_geqrf_armpl`, the Arm Performance Libraries comparison benchmark.
+`cmake/FindArmPL.cmake` locates ArmPL from the environment its own setup
+exports (`module load armpl` or `armpl_env_vars.sh`: `$ARMPL_DIR`,
+`$ARMPL_INCLUDES`, `$ARMPL_LIBRARIES`) or from `/opt/arm`, and appends
+`gfortran` to the link only when the plain link fails (the gcc-variant
+packages need it; the flang variants do not). CI: `.github/workflows/ci.yml`
+runs the x86 matrix, `ci-arm.yml` the portable suites on GitHub's ARM runners
+(gcc/clang, baseline and `-mcpu=native`), and `armpl-bench.yml` -- manual
+dispatch only, it costs minutes per interleave width -- the ArmPL benchmark.
+
 ## Performance builds
 
 The library sets no `-march` of its own; optimization flags are the caller's to
@@ -48,7 +59,9 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
-examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
+examples/  the worked solve and the benchmarks (BENCHMARKS.md), on
+           bench_util.hpp (MKL) over bench_portable_util.hpp (its MKL-free
+           core, all bench_geqrf_armpl needs)
 docs/      one design document per routine
 ```
 

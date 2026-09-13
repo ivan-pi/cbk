@@ -1,0 +1,99 @@
+name: ArmPL benchmark
+
+# Manual dispatch only: a full run is minutes of compute per interleave
+# width, so it stays off push/PR -- the routine ARM coverage is ci-arm.yml.
+# Builds the portable kernels with -DCQR_WITH_ARMPL=ON on a free AArch64
+# runner and compares dgeqrf_compact against per-matrix LAPACKE_dgeqrf from
+# Arm Performance Libraries (examples/BENCHMARKS.md, `bench_geqrf_armpl`),
+# once per interleave width. Results land in the run's step summary and in
+# an uploaded artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      nmat:
+        description: "Matrices per pool"
+        default: "512"
+      reps:
+        description: "Timed passes per size (best-of)"
+        default: "3"
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      # The apt ArmPL is the gcc variant; its LAPACK needs gfortran's runtime
+      # on the link line, which the g++ driver resolves (cmake/FindArmPL.cmake).
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v4
+
+      # The documented apt install (https://learn.arm.com/install-guides/armpl/):
+      # the Arm Toolchains repository package, then the libraries. gfortran
+      # supplies the Fortran runtime ArmPL's LAPACK links against, and
+      # environment-modules the `module` command of ArmPL's environment setup.
+      - name: Install Arm Performance Libraries
+        run: |
+          curl -fsSL -O https://developer.arm.com/packages/arm-toolchains/ubuntu/pool/arm-toolchains-repository_2-2~noble_all.deb
+          sudo dpkg -i arm-toolchains-repository_2-2~noble_all.deb
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends arm-performance-libraries environment-modules gfortran
+
+      # `module load armpl` exports the ArmPL environment ($ARMPL_DIR and the
+      # $ARMPL_INCLUDES / $ARMPL_LIBRARIES pair FindArmPL.cmake reads) plus
+      # LD_LIBRARY_PATH; pass them on to the later steps. armpl-info verifies
+      # the install and logs the exact version, target and routine types
+      # (NEON/SVE) the numbers were measured against.
+      - name: Set up the ArmPL environment
+        run: |
+          source /usr/share/modules/init/bash
+          export MODULEPATH="$MODULEPATH:/opt/arm/modulefiles"
+          module load armpl
+          module list
+          test -n "$ARMPL_DIR"
+          "$ARMPL_DIR"/bin/armpl-info
+          {
+            echo "ARMPL_DIR=$ARMPL_DIR"
+            echo "ARMPL_INCLUDES=$ARMPL_INCLUDES"
+            echo "ARMPL_LIBRARIES=$ARMPL_LIBRARIES"
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+          } >> "$GITHUB_ENV"
+
+      # -mcpu=native for a fair comparison (BENCHMARKS.md): the library sets
+      # no -march/-mcpu of its own, while ArmPL ships kernels tuned for the
+      # host core.
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCQR_WITH_MKL=OFF
+          -DCQR_WITH_ARMPL=ON
+          -DCMAKE_CXX_FLAGS="-O3 -mcpu=native"
+
+      - name: Build
+        run: cmake --build build -j
+
+      # One run per interleave width: on NEON/SVE no width is the obvious
+      # winner a priori (the kernels run wider V as unrolled 128-bit bursts),
+      # so the sweep shows which V to pick on this core. Every run carries its
+      # own correctness gate against per-matrix LAPACK and fails the job on a
+      # mismatch.
+      - name: Benchmark
+        run: |
+          "$ARMPL_DIR"/bin/armpl-info | tee bench-results.txt
+          echo | tee -a bench-results.txt
+          for v in 2 4 8; do
+            ./build/bench_geqrf_armpl --simdlen="$v" "${{ inputs.nmat }}" "${{ inputs.reps }}" | tee -a bench-results.txt
+            echo | tee -a bench-results.txt
+          done
+
+      - name: Publish results in the run summary
+        run: |
+          { echo '```'; cat bench-results.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: armpl-bench-results
+          path: bench-results.txt
