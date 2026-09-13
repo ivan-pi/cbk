@@ -108,7 +108,8 @@ exactly as `cqr_mkl_?sytrfnp_compact` leaves it and `bp` holds `X`; the result
 is bit-identical to the two separate calls. As in LAPACK `?sysv` -- which
 calls `?sytrf` unconditionally; the `nrhs = 0` quick return belongs to
 `?sytrs` (measured against MKL's LAPACK) -- `nrhs = 0` still factors `ap`, and
-`bp` is then never referenced and may be null.
+`bp` is then never referenced (Fortran semantics still want it present; a
+dummy suffices).
 
 **Constraint note.** As with all Compact routines, every matrix in the call
 shares the same order `n`, leading dimensions, storage `layout`, and `format`.
@@ -359,7 +360,7 @@ the tamely generated batches). On the same packed input
 `cqr_mkl_?sysvnp_compact` must reproduce the two-step factor and `X`
 **bit-for-bit** over the whole compact buffers, padded lanes included. Both
 suites also gate the `nrhs = 0` contract of section 3: `?sysvnp` must factor
-`ap` bit-identically to `?sytrfnp`, with a null `bp`.
+`ap` bit-identically to `?sytrfnp`, `bp` a never-referenced dummy.
 
 ### 7.4 Portable self-test
 

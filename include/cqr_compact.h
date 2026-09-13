@@ -179,7 +179,8 @@ int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap, int
  * is bit-identical to the two separate calls. The LAPACK ?posv analogue --
  * including for nrhs = 0, which still factors ap (LAPACK ?posv calls ?potrf
  * unconditionally; the nrhs quick return is ?potrs's): bp is then never
- * referenced and may be null. */
+ * referenced, though Fortran semantics still want it present (a dummy
+ * suffices). */
 int dposv_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
                   double *bp, int ldbp, int V, int nm);
 
@@ -245,7 +246,8 @@ int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap, i
  * result is bit-identical to the two separate calls. The LAPACK ?sysv
  * analogue, minus ipiv and workspace -- including for nrhs = 0, which still
  * factors ap (LAPACK ?sysv calls ?sytrf unconditionally; the nrhs quick
- * return is ?sytrs's): bp is then never referenced and may be null. */
+ * return is ?sytrs's): bp is then never referenced, though Fortran semantics
+ * still want it present (a dummy suffices). */
 int dsysvnp_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
                     double *bp, int ldbp, int V, int nm);
 
@@ -309,7 +311,8 @@ int strsm_compact(char layout, char side, char uplo, char transa, char diag, int
  *            ap, so (ap, taup) is the (H, tau) that ?ormqr_compact accepts
  *   V, nm    interleave width; total number of matrices (padded last group)
  * min(m,n) = 0 sets B := 0 (the solution of an empty system), as LAPACK does;
- * ap and taup are then not referenced and may be null. nrhs = 0 computes
+ * ap and taup are then not referenced, though Fortran semantics still want
+ * them present (a dummy suffices). nrhs = 0 computes
  * nothing at all: LAPACK ?gels's quick return covers min(m, n, nrhs) = 0, so
  * -- unlike ?posv/?sysv -- no factorization is performed (measured, not just
  * read from the reference source).

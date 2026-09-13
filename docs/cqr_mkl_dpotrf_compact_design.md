@@ -113,7 +113,7 @@ holds the factor exactly as `cqr_mkl_?potrf_compact` leaves it and `bp` holds
 `?posv` -- which calls `?potrf` unconditionally; the `nrhs = 0` quick return
 belongs to `?potrs` (measured against MKL's LAPACK, not just read from the
 reference source) -- `nrhs = 0` still factors `ap`, and `bp` is then never
-referenced and may be null.
+referenced (Fortran semantics still want it present; a dummy suffices).
 
 **Constraint note.** As with all Compact routines, every matrix in the call
 shares the same order `n`, leading dimension `ldap`, storage `layout`, and
@@ -402,8 +402,8 @@ padded partial groups and RHS counts that exercise `trsm`'s 4/2/1 column
 blocks. On the same packed input `cqr_mkl_?posv_compact` must reproduce the
 two-step factor and `X` **bit-for-bit** over the whole compact buffers, padded
 lanes included (section 6.8). Both suites also gate the `nrhs = 0` contract of
-section 3: `?posv` must factor `ap` bit-identically to `?potrf`, with a null
-`bp`.
+section 3: `?posv` must factor `ap` bit-identically to `?potrf`, `bp` a
+never-referenced dummy.
 
 ## 8. Implementation Strategy
 

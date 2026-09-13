@@ -167,7 +167,7 @@ void cqr_mkl_spotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT
  * the Cholesky factor exactly as ?potrf leaves it and bp holds X; the result
  * is bit-identical to the two separate calls. As in LAPACK ?posv, nrhs = 0
  * still factors ap (the nrhs quick return is ?potrs's); bp is then never
- * referenced and may be null. */
+ * referenced. */
 void cqr_mkl_dposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
                            double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
                            MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
@@ -211,8 +211,8 @@ void cqr_mkl_ssytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_I
  * loop. LAPACK ?sysv minus ipiv and workspace. On exit ap holds the (D, L|U)
  * factor exactly as ?sytrfnp leaves it and bp holds X; the result is
  * bit-identical to the two separate calls. As in LAPACK ?sysv, nrhs = 0 still
- * factors ap (the nrhs quick return is ?sytrs's); bp is then never referenced
- * and may be null. */
+ * factors ap (the nrhs quick return is ?sytrs's); bp is then never
+ * referenced. */
 void cqr_mkl_dsysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
                              double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
                              MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);

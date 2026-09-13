@@ -16,7 +16,7 @@
 //   4. end-to-end solve: factor + ?potrs_compact recovers a known X, and
 //      ?posv_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?posv_compact still factors (LAPACK ?posv), bit-identical to
-//      ?potrf_compact, with a null bp
+//      ?potrf_compact, with a 1-element dummy bp (never referenced)
 // plus LAPACK-style argument validation of the three C APIs.
 //
 // Assisted-by: Claude:claude-opus-4.8 Claude
@@ -191,8 +191,8 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 // ------------- nrhs = 0: the fused driver still factors --------------
 // LAPACK ?posv calls ?potrf unconditionally -- the nrhs = 0 quick return is
 // ?potrs's -- so the fused driver must factor ap even with no right-hand
-// sides, bit-identically to ?potrf_compact, without referencing bp (null
-// here).
+// sides, bit-identically to ?potrf_compact, without referencing bp (a
+// 1-element dummy here: Fortran semantics want the argument present).
 
 template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char layout)
 {
@@ -204,7 +204,8 @@ template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char la
     std::vector<T> ap2 = ap;
 
     int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
-    int info_v = compact<T>::posv(layout, uplo, n, 0, ap2.data(), n, nullptr, n, V, nm);
+    T b_dummy = 0; // never referenced at nrhs = 0, present per Fortran semantics
+    int info_v = compact<T>::posv(layout, uplo, n, 0, ap2.data(), n, &b_dummy, n, V, nm);
 
     const bool same = (ap == ap2);
     bool ok = (info_f == 0) && (info_v == 0) && same;
@@ -332,7 +333,7 @@ int main()
         }
 
     // nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to potrf,
-    // with a null bp.
+    // bp a never-referenced dummy.
     fails += run_nrhs0<double, 4>(6, 20, 'L', 'C');
     fails += run_nrhs0<float, 8>(9, 16, 'U', 'R');
 

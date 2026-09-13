@@ -32,7 +32,7 @@
  *
  * Suite 4 -- nrhs = 0: cqr_mkl<T>::sysvnp must still factor (LAPACK ?sysv
  *   calls ?sytrf unconditionally; the nrhs quick return is ?sytrs's),
- *   bit-identical to cqr_mkl<T>::sytrfnp, with a null bp.
+ *   bit-identical to cqr_mkl<T>::sytrfnp, with a never-referenced dummy bp.
  *
  * Build: needs Intel MKL (headers + libmkl_rt); wired up by CMakeLists.txt.
  *
@@ -274,8 +274,9 @@ template <class T> int suite4(int nm, int n)
 
     MKL_INT info_f = 99, info_v = 99;
     cqr_mkl<T>::sytrfnp(MKL_COL_MAJOR, MKL_LOWER, n, ap1.get(), n, &info_f, fmt, nm);
-    cqr_mkl<T>::sysvnp(MKL_COL_MAJOR, MKL_LOWER, n, /*nrhs=*/0, ap2.get(), n,
-                       /*bp=*/nullptr, n, &info_v, fmt, nm);
+    T b_dummy = 0; /* never referenced at nrhs = 0, present per Fortran semantics */
+    cqr_mkl<T>::sysvnp(MKL_COL_MAJOR, MKL_LOWER, n, /*nrhs=*/0, ap2.get(), n, &b_dummy, n,
+                       &info_v, fmt, nm);
 
     const size_t na = (size_t)sz_a / sizeof(T);
     const bool same = std::equal(ap1.get(), ap1.get() + na, ap2.get());
@@ -322,7 +323,7 @@ template <class T> int run_suites()
     fails += suite3<T>(MKL_COL_MAJOR, MKL_UPPER, 6, 25, 1); /* single RHS */
 
     /* Suite 4: nrhs = 0 must factor anyway (LAPACK ?sysv), bit-identical to
-     * sytrfnp, with a null bp */
+     * sytrfnp, bp a never-referenced dummy */
     fails += suite4<T>(8, 30);
 
     return fails;

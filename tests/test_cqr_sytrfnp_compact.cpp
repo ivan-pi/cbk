@@ -16,7 +16,7 @@
 //   4. end-to-end solve: factor + ?sytrsnp_compact recovers a known X, and
 //      ?sysvnp_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?sysvnp_compact still factors (LAPACK ?sysv), bit-identical
-//      to ?sytrfnp_compact, with a null bp
+//      to ?sytrfnp_compact, with a 1-element dummy bp (never referenced)
 // plus:
 //   - a zero on the *input* diagonal with nonsingular leading minors factors
 //     fine (the pivots are the updated Schur-complement entries),
@@ -183,8 +183,8 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 // ------------- nrhs = 0: the fused driver still factors --------------
 // LAPACK ?sysv calls ?sytrf unconditionally -- the nrhs = 0 quick return is
 // ?sytrs's -- so the fused driver must factor ap even with no right-hand
-// sides, bit-identically to ?sytrfnp_compact, without referencing bp (null
-// here).
+// sides, bit-identically to ?sytrfnp_compact, without referencing bp (a
+// 1-element dummy here: Fortran semantics want the argument present).
 
 template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char layout)
 {
@@ -196,7 +196,9 @@ template <class T, int V> static int run_nrhs0(int nm, int n, char uplo, char la
     std::vector<T> ap2 = ap;
 
     int info_f = compact<T>::sytrfnp(layout, uplo, n, ap.data(), n, V, nm);
-    int info_v = compact<T>::sysvnp(layout, uplo, n, 0, ap2.data(), n, nullptr, n, V, nm);
+    T b_dummy = 0; // never referenced at nrhs = 0, present per Fortran semantics
+    int info_v =
+        compact<T>::sysvnp(layout, uplo, n, 0, ap2.data(), n, &b_dummy, n, V, nm);
 
     const bool same = (ap == ap2);
     bool ok = (info_f == 0) && (info_v == 0) && same;
@@ -389,7 +391,7 @@ int main()
         }
 
     // nrhs = 0 must factor anyway (LAPACK ?sysv), bit-identical to sytrfnp,
-    // with a null bp.
+    // bp a never-referenced dummy.
     fails += run_nrhs0<double, 4>(6, 20, 'L', 'C');
     fails += run_nrhs0<float, 8>(9, 16, 'U', 'R');
 
