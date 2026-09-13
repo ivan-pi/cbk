@@ -123,7 +123,7 @@ template <class T, int V> static int run_case(int nm, int m, int n)
 template <class T, int V> static int test_underflow()
 {
     const int nm = V, m = 6, n = 4, tiny_col = 0; /* no earlier reflector touches it */
-    const T tiny = std::is_same<T, double>::value ? T(1e-170) : T(1e-25);
+    const T tiny = std::is_same_v<T, double> ? T(1e-170) : T(1e-25);
     const T eps = std::numeric_limits<T>::epsilon();
 
     MatrixBatch<T> A(nm, m, n);
