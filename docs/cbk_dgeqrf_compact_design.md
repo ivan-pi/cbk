@@ -192,8 +192,10 @@ diagonal is kept, and the reflector body below it is scaled by zero (the
 storage holds zeros, which `?ormqr`/`?orgqr` ignore under `tau = 0` anyway)
 instead of taking the rescaled slow path LAPACK's `dlarfg` would. Between there
 and the square root of the smallest normal (`1.5e-154` FP64) the squares are
-subnormal and the norm carries fewer correct digits. This is a deliberate scope
-limit, not a defect: the factorization returned is still exact to working
+subnormal and the norm carries fewer correct digits. Safe scaling of ill-conditioned or extreme-range inputs is deferred to a later
+release, and inputs are assumed to stay in range; the current behavior outside
+it is documented and pinned so that it cannot change unnoticed, not endorsed as
+the final design. The factorization returned is still exact to working
 precision (the dropped tail is far below `eps * ||A||`), and the portable
 self-test (7.4) pins the behavior down with a column of `1e-170` (FP64) /
 `1e-25` (FP32) entries. The suites otherwise exercise column scaling to

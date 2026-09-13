@@ -36,9 +36,11 @@ and the solves built on them, for many small matrices in the compact
 ### Known limitations
 
 - Real precisions only; no column pivoting (`?geqrf`) and no pivoting in the
-  LDL^T (`?sytrfnp` requires a well-behaved factorization); no
-  overflow/underflow-safe rescaling of the Householder reflectors (see each
-  design document's numerical scope).
+  LDL^T (`?sytrfnp` requires a well-behaved factorization).
+- Overflow/underflow-safe scaling (LAPACK's `?lascl`/`dlarfg` rescaling) is
+  deferred to a later release: the routines assume the input entries stay in
+  the range where squares neither overflow nor underflow (see each design
+  document's numerical scope; `?geqrf`'s documents what happens outside it).
 - Tested on x86-64 Linux with GCC and Clang.
 
 [0.1.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.1.0
