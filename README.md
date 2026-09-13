@@ -86,8 +86,10 @@ same AVX-512 MKL selects at runtime):
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
 ```
 
-Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL) and
-`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below).
+Useful options: `-DCQR_WITH_MKL=OFF` (portable kernel only, no MKL),
+`-DCQR_WITH_OPENMP=OFF` (single-threaded routines; see below), and, on
+AArch64, `-DCQR_WITH_ARMPL=ON` (the [Arm Performance Libraries comparison
+benchmark](examples/BENCHMARKS.md#bench_geqrf_armpl)).
 
 ## Threading
 
@@ -186,7 +188,7 @@ The headers under `include/` are the project's API, the only files users need:
 | `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `cqr_mkl<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels), `lapack<T>` (LAPACKE/CBLAS references). |
 | `tests/test_cqr_*_compact.cpp` | Portable self-contained suites (no BLAS): each kernel vs its scalar reference, plus C API validation, in FP64 and FP32. |
 | `tests/test_cqr_*_mkl.cpp` | MKL + dense-LAPACK validation, templated on the scalar type and run in FP64 and FP32: invariants vs LAPACK, cross-checks vs MKL's compact kernels, end-to-end solves. |
-| `examples/bench_util.hpp` | The benchmarks' shared harness (timing, aligned storage, command line). |
+| `examples/bench_util.hpp` | The MKL benchmarks' shared harness (compact packing, command line), over `bench_portable_util.hpp` (timing, aligned storage -- the MKL-free core `bench_geqrf_armpl` builds on). |
 
 ## Contributing
 

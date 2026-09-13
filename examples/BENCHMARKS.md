@@ -8,7 +8,9 @@ open compact kernels, MKL's own compact kernels, and the conventional
 one-matrix-at-a-time LAPACK path -- over pools of many small matrices,
 reporting per-size throughput and a geometric-mean speedup; the fourth has no
 MKL yardstick (MKL ships no compact `sytrf`) and compares the fused compact
-solver with per-matrix LAPACK alone. Each also cross-checks its result against per-matrix
+solver with per-matrix LAPACK alone; the fifth is the AArch64 edition of the
+first, against Arm Performance Libraries (no MKL exists on ARM). Each also
+cross-checks its result against per-matrix
 LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 
 | Program | Measures | Compares |
@@ -17,6 +19,7 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_potrf_compact`](#bench_potrf_compact) | Cholesky *factorization* (SPD) | `cqr_mkl_dpotrf_compact` vs `mkl_dpotrf_compact` vs `LAPACKE_dpotrf` |
 | [`bench_qr_compact`](#bench_qr_compact) | end-to-end QR *solve* `AX = B` | fully-open compact pipeline (three steps, and the one-call `gels`) vs MKL's pipeline vs per-matrix LAPACK (the three-step chain, and `LAPACKE_dgels`) |
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cqr_mkl_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
+| [`bench_geqrf_armpl`](#bench_geqrf_armpl) | QR *factorization* (AArch64, `-DCQR_WITH_ARMPL=ON`) | `dgeqrf_compact` (portable C API) vs per-matrix `LAPACKE_dgeqrf` (Arm Performance Libraries) |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
 the same folder; see the top-level [README](../README.md).
@@ -148,6 +151,32 @@ orders `8-32`, `3-5x` at `45-64`, `1.1-2x` at `96-256`, and fell behind at
 `384` and `500` (`0.6x`, `0.35x`), where LAPACK's blocked, pivoted factorization
 is the better tool -- a geometric mean of `2.7x` over the default size list.
 Both paths recovered the known solution to `~6e-15`.
+
+## `bench_geqrf_armpl`
+
+The AArch64 counterpart of `bench_geqrf_compact`: the same pre-packed QR
+factorization benchmark -- same pool fill, size list, timing discipline and
+LAPACK correctness gate -- built on the portable C API against per-matrix
+`LAPACKE_dgeqrf` from [Arm Performance Libraries](https://learn.arm.com/install-guides/armpl/).
+ArmPL ships no compact-format kernels, so there is no batched yardstick
+column, and the pool is packed by the benchmark itself (MKL's packing
+routines being equally absent); ArmPL is linked serial and the per-matrix
+loop OpenMP-parallelized, so both paths run on the same thread count, as in
+the MKL benchmarks.
+
+```
+bench_geqrf_armpl [--simdlen=2|4|8] [nmat] [reps]
+```
+
+Built only with `-DCQR_WITH_ARMPL=ON` (`cmake/FindArmPL.cmake` locates the
+library from `$ARMPL_DIR`, as `module load armpl` sets, or `/opt/arm`).
+Unlike the MKL benchmarks, `--simdlen` is not capped at the host's native
+vector width: the portable kernels run any interleave width anywhere (a wider
+`V` becomes unrolled 128-bit bursts on NEON), and no width is the obvious
+winner a priori, so sweep it. The manual-dispatch workflow
+`.github/workflows/armpl-bench.yml` does exactly that on GitHub's free
+AArch64 runners, one run per width. Build with `-mcpu=native` for the fair
+comparison, as above.
 
 ## Notes
 

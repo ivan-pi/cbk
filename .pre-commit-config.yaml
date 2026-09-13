@@ -43,7 +43,10 @@ repos:
   # this release's resource directory (libomp-dev supplies the header).
   #
   # Only translation units in the database are listed; the headers are
-  # checked through them (HeaderFilterRegex in .clang-tidy).
+  # checked through them (HeaderFilterRegex in .clang-tidy). The ArmPL
+  # benchmark is excluded: it needs <armpl.h>, which exists only on AArch64
+  # installs, so it is never in the x86 tidy tree's compile database and
+  # clang-tidy's flag-less fallback fails on the missing header.
   - repo: local
     hooks:
       - id: clang-tidy
@@ -51,4 +54,5 @@ repos:
         entry: clang-tidy -p build-tidy --quiet
         language: system
         files: ^(src|tests|examples)/.*\.cpp$
+        exclude: ^examples/bench_geqrf_armpl\.cpp$
         stages: [manual]

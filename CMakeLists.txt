@@ -12,6 +12,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CQR_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" ON)
+option(CQR_WITH_ARMPL  "Build the Arm Performance Libraries comparison benchmark"     OFF)
 option(CQR_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
 option(CQR_BUILD_TESTS "Build tests and register them with CTest"                     ON)
 
@@ -84,6 +85,24 @@ if(CQR_WITH_MKL)
 endif()
 
 # ---------------------------------------------------------------------------
+# Arm Performance Libraries benchmark (AArch64): the portable compact QR
+# kernel vs per-matrix LAPACKE_dgeqrf from ArmPL. The MKL benchmarks cannot
+# run on ARM (their packing and format probing are MKL calls), so this one is
+# separate, on the portable C API; .github/workflows/armpl-bench.yml runs it
+# on GitHub's ARM runners on manual dispatch.
+# ---------------------------------------------------------------------------
+if(CQR_WITH_ARMPL)
+  find_package(ArmPL REQUIRED)
+
+  add_executable(bench_geqrf_armpl examples/bench_geqrf_armpl.cpp)
+  target_link_libraries(bench_geqrf_armpl PRIVATE cqr_compact ArmPL::ArmPL)
+  # src/ for the internal header-only helpers shared with the tests
+  # (cqr_matrix_view.hpp and the packing views); the public API stays include/.
+  target_include_directories(bench_geqrf_armpl PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  cqr_link_openmp(bench_geqrf_armpl)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 if(CQR_BUILD_TESTS)
@@ -120,5 +139,12 @@ if(CQR_BUILD_TESTS)
       add_test(NAME ${prog}_integration COMMAND ${prog} 33 1)
       set_tests_properties(${prog}_integration PROPERTIES LABELS "integration")
     endforeach()
+  endif()
+
+  # The ArmPL benchmark carries the same LAPACK correctness gate, so it too
+  # doubles as an integration test on a small pool.
+  if(CQR_WITH_ARMPL)
+    add_test(NAME bench_geqrf_armpl_integration COMMAND bench_geqrf_armpl 33 1)
+    set_tests_properties(bench_geqrf_armpl_integration PROPERTIES LABELS "integration")
   endif()
 endif()
