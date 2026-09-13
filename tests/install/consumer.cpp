@@ -11,8 +11,9 @@
 #include <vector>
 
 #ifdef CQR_CONSUMER_WITH_MKL
-#include "cqr_mkl_ext.h"
 #include <mkl_compact.h>
+
+#include "cqr_mkl_ext.h"
 #endif
 
 namespace {
