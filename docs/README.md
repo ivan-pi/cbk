@@ -13,7 +13,7 @@ Also:
 
 * [`examples/BENCHMARKS.md`](../examples/BENCHMARKS.md) - the benchmarks in
   detail, with measured results.
-* [`PLANS.md`](../PLANS.md) - the status of each routine against its design
+* [`PLANS.md`](PLANS.md) - the status of each routine against its design
   document, plus open items.
 * [`.claude/CLAUDE.md`](../.claude/CLAUDE.md) - contributor notes: formatting,
   linting, and the conventions the kernels follow.

@@ -29,7 +29,7 @@
  * in-matrix index roles (i -> i*ldap + j).
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
- * AVX512 d=8/s=16; any of these also work on NEON/SVE as unrolled bursts).
+ * AVX512 d=8/s=16).
  * Pointer arguments are not inspected in release builds (LAPACK convention). An
  * empty problem is a valid no-op returning 0. The routines never abort the
  * calling process.

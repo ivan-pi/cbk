@@ -1,6 +1,6 @@
 # PLANS
 
-Status of each routine against its design document (`docs/`), plus open items.
+Status of each routine against its design document (this folder), plus open items.
 Every routine ships both API surfaces -- the MKL-style `cbk_?*_compact`
 (no argument checking, scalar `info`) and the portable `?*_compact` C API
 (LAPACK-style `info = -j`) -- in FP64 and FP32, over one `BatchView` kernel

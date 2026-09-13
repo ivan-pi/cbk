@@ -66,8 +66,9 @@ tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            the compact<T> / compat<T> / mkl<T> / lapack<T> dispatch structs
            (tests/install/: the install check's consumer project and script)
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
-docs/      one design document per routine, plus the guides README.md indexes
-           (building, threading, layout, examples)
+docs/      one design document per routine, the guides README.md indexes
+           (building, threading, layout, examples), and PLANS.md, the internal
+           status of each routine and what remains
 ```
 
 ## Formatting and linting
