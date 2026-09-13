@@ -19,6 +19,10 @@
 #                         Intel compiler, mkl_intel_thread (libiomp5).
 #   MKLCompact_INTERFACE  lp64 (default) | ilp64   (ilp64 also defines MKL_ILP64)
 #
+#   find_package(MKLCompact COMPONENTS Headers) stops at the include dir: no
+#   library search, no link test, MKL::CompactHeaders only (what the installed
+#   cqr package needs). A later full find_package adds MKL::Compact.
+#
 # Intel's own MKLConfig.cmake is deliberately not used: only oneAPI ships it
 # (the Debian/Ubuntu libmkl-dev that CI builds against does not), it is not
 # found from MKLROOT alone, its defaults are ilp64 + intel_thread, it links
@@ -49,57 +53,65 @@ find_path(MKLCompact_INCLUDE_DIR NAMES mkl_compact.h
 mark_as_advanced(MKLCompact_INCLUDE_DIR)
 set(_mkl_required MKLCompact_INCLUDE_DIR)
 
-set(_mkl_threading_lib mkl_sequential)
-set(_mkl_omp)
-if(MKLCompact_THREADING STREQUAL "threaded")
-  find_package(OpenMP QUIET COMPONENTS CXX)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "^Intel")
-    set(_mkl_threading_lib mkl_intel_thread)
-  else()
-    set(_mkl_threading_lib mkl_gnu_thread)
-  endif()
-  set(_mkl_omp ${OpenMP_CXX_LIBRARIES})
-  list(APPEND _mkl_required OpenMP_CXX_FOUND)
+set(_mkl_headers_only FALSE)
+if(MKLCompact_FIND_COMPONENTS STREQUAL "Headers")
+  set(_mkl_headers_only TRUE)
 endif()
+set(MKLCompact_Headers_FOUND TRUE)
 
-set(MKLCompact_LIBRARIES)
-foreach(_lib mkl_intel_${MKLCompact_INTERFACE} ${_mkl_threading_lib} mkl_core)
-  find_library(MKLCompact_${_lib}_LIBRARY NAMES ${_lib}
-    HINTS ENV MKLROOT PATHS ${_mkl_paths} PATH_SUFFIXES lib lib/intel64)
-  mark_as_advanced(MKLCompact_${_lib}_LIBRARY)
-  list(APPEND _mkl_required MKLCompact_${_lib}_LIBRARY)
-  list(APPEND MKLCompact_LIBRARIES "${MKLCompact_${_lib}_LIBRARY}")
-endforeach()
-
-# The shared MKL libraries record their own pthread/dl dependencies; dl and m
-# are listed for a static MKL picked up by find_library.
-set(_mkl_link ${MKLCompact_LIBRARIES} ${_mkl_omp} ${CMAKE_DL_LIBS} m)
-
-# Link test, once everything is found: the compact API must resolve against
-# this exact line (an MKL too old for it, or a threaded layer without its
-# OpenMP runtime, fails here). Cached per threading/interface choice.
-set(_mkl_ok TRUE)
-foreach(_v IN LISTS _mkl_required)
-  if(NOT ${_v})
-    set(_mkl_ok FALSE)
+if(NOT _mkl_headers_only)
+  set(_mkl_threading_lib mkl_sequential)
+  set(_mkl_omp)
+  if(MKLCompact_THREADING STREQUAL "threaded")
+    find_package(OpenMP QUIET COMPONENTS CXX)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "^Intel")
+      set(_mkl_threading_lib mkl_intel_thread)
+    else()
+      set(_mkl_threading_lib mkl_gnu_thread)
+    endif()
+    set(_mkl_omp ${OpenMP_CXX_LIBRARIES})
+    list(APPEND _mkl_required OpenMP_CXX_FOUND)
   endif()
-endforeach()
-set(_mkl_check MKLCompact_HAS_COMPACT_API_${MKLCompact_THREADING}_${MKLCompact_INTERFACE})
-if(_mkl_ok)
-  include(CMakePushCheckState)
-  include(CheckCXXSourceCompiles)
-  cmake_push_check_state(RESET)
-  set(CMAKE_REQUIRED_INCLUDES "${MKLCompact_INCLUDE_DIR}")
-  set(CMAKE_REQUIRED_LIBRARIES ${_mkl_link})
-  if(MKLCompact_INTERFACE STREQUAL "ilp64")
-    set(CMAKE_REQUIRED_DEFINITIONS -DMKL_ILP64)
+
+  set(MKLCompact_LIBRARIES)
+  foreach(_lib mkl_intel_${MKLCompact_INTERFACE} ${_mkl_threading_lib} mkl_core)
+    find_library(MKLCompact_${_lib}_LIBRARY NAMES ${_lib}
+      HINTS ENV MKLROOT PATHS ${_mkl_paths} PATH_SUFFIXES lib lib/intel64)
+    mark_as_advanced(MKLCompact_${_lib}_LIBRARY)
+    list(APPEND _mkl_required MKLCompact_${_lib}_LIBRARY)
+    list(APPEND MKLCompact_LIBRARIES "${MKLCompact_${_lib}_LIBRARY}")
+  endforeach()
+
+  # The shared MKL libraries record their own pthread/dl dependencies; dl and m
+  # are listed for a static MKL picked up by find_library.
+  set(_mkl_link ${MKLCompact_LIBRARIES} ${_mkl_omp} ${CMAKE_DL_LIBS} m)
+
+  # Link test, once everything is found: the compact API must resolve against
+  # this exact line (an MKL too old for it, or a threaded layer without its
+  # OpenMP runtime, fails here). Cached per threading/interface choice.
+  set(_mkl_ok TRUE)
+  foreach(_v IN LISTS _mkl_required)
+    if(NOT ${_v})
+      set(_mkl_ok FALSE)
+    endif()
+  endforeach()
+  set(_mkl_check MKLCompact_HAS_COMPACT_API_${MKLCompact_THREADING}_${MKLCompact_INTERFACE})
+  if(_mkl_ok)
+    include(CMakePushCheckState)
+    include(CheckCXXSourceCompiles)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_INCLUDES "${MKLCompact_INCLUDE_DIR}")
+    set(CMAKE_REQUIRED_LIBRARIES ${_mkl_link})
+    if(MKLCompact_INTERFACE STREQUAL "ilp64")
+      set(CMAKE_REQUIRED_DEFINITIONS -DMKL_ILP64)
+    endif()
+    check_cxx_source_compiles("
+  #include <mkl_compact.h>
+  int main() { return (int) mkl_get_format_compact(); }
+  " ${_mkl_check})
+    cmake_pop_check_state()
   endif()
-  check_cxx_source_compiles("
-#include <mkl_compact.h>
-int main() { return (int) mkl_get_format_compact(); }
-" ${_mkl_check})
-  cmake_pop_check_state()
-endif()
+endif() # NOT _mkl_headers_only
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(MKLCompact
@@ -107,7 +119,7 @@ find_package_handle_standard_args(MKLCompact
   REASON_FAILURE_MESSAGE
     "Install Intel MKL (Debian/Ubuntu: libmkl-dev, or intel-oneapi-mkl-devel from apt.repos.intel.com) and, for a non-default location, set MKLROOT or -DMKLCompact_ROOT=<prefix> (see .claude/mkl-install.md). Or build without the MKL extension: -DCQR_WITH_MKL=OFF.")
 
-if(MKLCompact_FOUND AND NOT TARGET MKL::Compact)
+if(MKLCompact_FOUND AND NOT TARGET MKL::CompactHeaders)
   add_library(MKL::CompactHeaders INTERFACE IMPORTED)
   set_target_properties(MKL::CompactHeaders PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${MKLCompact_INCLUDE_DIR}")
@@ -115,6 +127,8 @@ if(MKLCompact_FOUND AND NOT TARGET MKL::Compact)
     set_target_properties(MKL::CompactHeaders PROPERTIES
       INTERFACE_COMPILE_DEFINITIONS MKL_ILP64)
   endif()
+endif()
+if(MKLCompact_FOUND AND NOT _mkl_headers_only AND NOT TARGET MKL::Compact)
   add_library(MKL::Compact INTERFACE IMPORTED)
   set_target_properties(MKL::Compact PROPERTIES
     INTERFACE_LINK_LIBRARIES "MKL::CompactHeaders;${_mkl_link}")

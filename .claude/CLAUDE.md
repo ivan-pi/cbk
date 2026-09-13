@@ -21,6 +21,14 @@ against MKL's compact kernels and LAPACK/LAPACKE), the example and the
 benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
 Debian/Ubuntu). Run that build too before pushing changes to the kernels or
 the wrappers: it is the one that cross-checks against MKL.
+
+Both APIs are one library target, `cqr` (`cqr::cqr`); `-DBUILD_SHARED_LIBS=ON`
+builds it shared. `cmake --install build --prefix <p>` installs it, the
+headers of what was built (the two MKL headers only with the extension), and a
+`find_package(cqr CONFIG)` package (`cmake/cqrConfig.cmake.in`).
+CI verifies an install tree and builds the consumer project in
+`tests/install/` against it for every combination (`.github/workflows/install.yml`
+and its `.github/check_install.sh`).
 `.claude/mkl-install.md` covers installing MKL from the distro package or from
 Intel's oneAPI apt repository, and how to point the build at a oneAPI install
 (`MKLROOT` or `-DMKLCompact_ROOT`; `-DMKLCompact_THREADING=threaded` for MKL's
@@ -55,6 +63,7 @@ src/       the templated kernels (cqr_*_compact.hpp, one per routine, on the
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / cqr_mkl<T> / mkl<T> / lapack<T> dispatch structs
+           (tests/install/: the install check's consumer project and script)
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine, plus the guides README.md indexes
            (building, threading, layout, examples)

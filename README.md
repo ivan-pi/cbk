@@ -33,7 +33,7 @@ groups of `V` matrices with OpenMP (`-DCQR_WITH_OPENMP=OFF` disables it).
 
 ## Getting started
 
-Requires CMake >= 3.18 and a C++17 compiler (GCC/Clang); nothing else.
+Requires CMake >= 3.28 and a C++17 compiler (GCC/Clang); nothing else.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"
@@ -42,7 +42,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-march=native` lets the kernels use the host's widest vectors; drop it for a
-generic build. Link the `cqr::compact` target and include `cqr_compact.h`.
+generic build. Link the `cqr::cqr` target and include `cqr_compact.h`.
+`cmake --install build --prefix <dir>` installs the library, the headers and a
+CMake package (`find_package(cqr CONFIG)`); see [Building](docs/building.md).
 
 ## Intel MKL extension
 
