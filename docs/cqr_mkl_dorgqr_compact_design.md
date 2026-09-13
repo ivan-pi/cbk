@@ -63,6 +63,20 @@ All matrices in a call share `m`, `n`, `k`, `ldap`, `layout` and `format`;
 the batch is processed one group of `V` interleaved matrices at a time,
 `V` derived from `format`.
 
+The same operation exists in Arm Performance Libraries as
+`armpl_?orgqr_interleave_batch`. Two deliberate differences, both
+inherited from the toolkit's compact conventions: ArmPL's explicit
+batch/row/column strides are abstracted behind `layout`, `ldap` and the
+pack width (the `cqr_mkl_?ormqr_compact` design records the same
+contrast), and the reflector count is one `k` for the whole batch where
+ArmPL takes a per-matrix array `nk[]` -- an accommodation of its
+rank-revealing `armpl_?geqrfrr_interleave_batch` companion, whose
+per-matrix ranks differ (column pivoting and rank detection are out of
+scope here). A per-matrix count `nk_i = r < k` is nevertheless
+expressible exactly: zero `tau` slots `r..k-1` in that lane and the
+corresponding reflectors become `H = I`, reproducing `Q = H_1 .. H_r` --
+the same mechanism the padded final group relies on (section 6.4).
+
 ## 4. Input Parameters
 
 * **`layout`**: `MKL_COL_MAJOR` (tuned) or `MKL_ROW_MAJOR`.
