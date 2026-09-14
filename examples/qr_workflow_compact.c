@@ -126,8 +126,8 @@ static void unpack_compact(int nm, int V, int m, int n, const double *ap, int ld
  * into the compact format, performs QR factorization, extracts the R
  * factors into a separate array, then multiplies Q by R before unpacking back
  * into LAPACK format and optionally checks the result.
- * The function returns the time taken in seconds, or a negative value if a
- * routine failed or the result check did not pass.
+ * The function returns the time taken in seconds; it exits the program if a
+ * routine fails or the result check does not pass.
  */
 double run_ib_version(int nm, int V, int m, int n, int check_result)
 {
@@ -158,7 +158,7 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
 
     if (!ap || !rp || !taup || !A_lpk_p || !QR_lpk_p) {
         fprintf(stderr, "Error allocating the batch, exit.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
 
     srand(4733);
@@ -183,7 +183,7 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     info = dgeqrf_compact('C', m, n, ap, ldap, taup, V, nm);
     if (info != 0) {
         fprintf(stderr, "Error performing compact-batch QR factorization, exit.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
     double t2_ib_qr = omp_get_wtime();
 
@@ -215,7 +215,7 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     info = dormqr_compact(transQ, m, n, min_mn, ap, ldap, taup, rp, ldap, V, nm);
     if (info != 0) {
         fprintf(stderr, "Error in multiplying by Q matrix, exit.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
     double t2_ib_mq = omp_get_wtime();
 
@@ -266,6 +266,7 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
             printf("Compact-batch result check failed:\n");
             printf("\tnumber of cases where norm1(A-QR) > eps*n*norm1(A) = ");
             printf("%d.\n", fail);
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -283,13 +284,13 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     free(A_lpk_p);
     free(QR_lpk_p);
 
-    return fail == 0 ? t2_ib - t1_ib : -1.0;
+    return t2_ib - t1_ib;
 }
 
 /*
  * This function does the same as above with standard LAPACK calls, one
  * matrix at a time from a parallel loop, and returns the time taken in
- * seconds (negative if a routine failed or the result check did not pass).
+ * seconds (exiting the program if a routine fails or the check does not pass).
  * V plays no part; it is taken so both versions are called alike.
  */
 double run_lpk_version(int nm, int V, int m, int n, int check_result)
@@ -307,7 +308,7 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
 
     if (!A_lpk_p || !R_lpk_p || !A_orig_lpk_p || !tau_lpk_p) {
         fprintf(stderr, "Error allocating the batch, exit.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
 
     srand(4733);
@@ -329,12 +330,12 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
     lwork = (int)MAX(dlwork_qr, dlwork_mq);
     if (lwork < 1) {
         fprintf(stderr, "Error: LAPACK workspace query failed. Exiting.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
     double *work_lpk_p = malloc(sizeof(double) * lwork * nthreads);
     if (!work_lpk_p) {
         fprintf(stderr, "Error allocating the workspace, exit.\n");
-        return -1.0;
+        exit(EXIT_FAILURE);
     }
 
     const double eps = nextafter(1.0, 2.0) - 1.0;
@@ -398,6 +399,9 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
             }
         }
     }
+    if (error) {
+        exit(EXIT_FAILURE);
+    }
     double t2_lpk = omp_get_wtime();
 
     if (check_result) {
@@ -409,6 +413,7 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
             printf("LAPACK result check failed:\n");
             printf("\tnumber of cases where norm1(A-QR) > eps*n*norm1(A) = ");
             printf("%d.\n", fail);
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -418,7 +423,7 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
     free(tau_lpk_p);
     free(work_lpk_p);
 
-    return (error == 0 && fail == 0) ? t2_lpk - t1_lpk : -1.0;
+    return t2_lpk - t1_lpk;
 }
 
 int main(int argc, char **argv)
@@ -456,16 +461,12 @@ int main(int argc, char **argv)
     /* Warm-up runs */
     for (int nw = 0; nw < 3; nw++) {
         t_ib = run_ib_version(nm, V, m, n, 0);
-        if (t_ib < 0) return EXIT_FAILURE;
         t_lpk = run_lpk_version(nm, V, m, n, 0);
-        if (t_lpk < 0) return EXIT_FAILURE;
     }
 
     /* Reported runs */
     t_ib = run_ib_version(nm, V, m, n, 1);
-    if (t_ib < 0) return EXIT_FAILURE;
     t_lpk = run_lpk_version(nm, V, m, n, 1);
-    if (t_lpk < 0) return EXIT_FAILURE;
 
     printf("Time for compact-batch computation: %f\n", t_ib);
     printf("Time for LAPACK computation: %f\n", t_lpk);
