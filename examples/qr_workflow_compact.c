@@ -6,9 +6,10 @@
  *
  * Kept as close to the original as the two APIs allow:
  *
- *   armpl_dge_interleave / _deinterleave  ->  dge_interleave / dge_deinterleave
- *                                             (written out below: cbk has no
- *                                             pack helpers in its C API)
+ *   armpl_dge_interleave / _deinterleave  ->  pack_ib / unpack_ib (the loops
+ *                                             over the batch, written out
+ *                                             below: cbk has no pack helpers
+ *                                             in its C API)
  *   armpl_dgeqrfrr_interleave_batch       ->  dgeqrf_compact (no column
  *                                             pivoting: no jpvt, no rank)
  *   armpl_dormqr_interleave_batch         ->  dormqr_compact
@@ -41,29 +42,44 @@
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
 /*
- * The pack/unpack helpers, with the signatures of armpl_dge_interleave and
- * armpl_dge_deinterleave: matrix ii of an interleaved group of ninter, whose
- * element (i,j) sits at A_ib[i*istrd + j*jstrd + ii], against one dense
- * matrix A whose element (i,j) sits at A[i*row_strd + j*col_strd].
+ * Pack and unpack, the two loops of the original over its nbatch groups and
+ * the ninter matrices of each, in place of ArmPL's armpl_dge_interleave and
+ * armpl_dge_deinterleave (cbk's C API ships no pack helpers). Matrix ii of
+ * group ib is the LAPACK column-major matrix at A_lpk_p[(ib*ninter + ii)*lda*n],
+ * and its element (i,j) sits at A_ib_p[ib*bstrd + j*jstrd + i*istrd + ii] in
+ * the interleaved batch. The groups are independent, so the loop over them is
+ * an OpenMP loop, as in the original.
  */
-static void dge_interleave(int ninter, int ii, int m, int n, const double *A,
-                           int row_strd, int col_strd, double *A_ib, int istrd, int jstrd)
+static void pack_ib(int nbatch, int ninter, int m, int n, const double *A_lpk_p, int lda,
+                    double *A_ib_p, int bstrd, int istrd, int jstrd)
 {
-    (void)ninter;
-    for (int j = 0; j < n; j++) {
-        for (int i = 0; i < m; i++) {
-            A_ib[i * istrd + j * jstrd + ii] = A[i * row_strd + j * col_strd];
+#pragma omp parallel for
+    for (int ib = 0; ib < nbatch; ib++) {
+        double *A_ib = &A_ib_p[(size_t)ib * bstrd];
+        for (int ii = 0; ii < ninter; ii++) {
+            const double *A_lpk = &A_lpk_p[(size_t)(ib * ninter + ii) * lda * n];
+            for (int j = 0; j < n; j++) {
+                for (int i = 0; i < m; i++) {
+                    A_ib[j * jstrd + i * istrd + ii] = A_lpk[lda * j + i];
+                }
+            }
         }
     }
 }
 
-static void dge_deinterleave(int ninter, int ii, int m, int n, double *A, int row_strd,
-                             int col_strd, const double *A_ib, int istrd, int jstrd)
+static void unpack_ib(int nbatch, int ninter, int m, int n, const double *A_ib_p,
+                      int bstrd, int istrd, int jstrd, double *A_lpk_p, int lda)
 {
-    (void)ninter;
-    for (int j = 0; j < n; j++) {
-        for (int i = 0; i < m; i++) {
-            A[i * row_strd + j * col_strd] = A_ib[i * istrd + j * jstrd + ii];
+#pragma omp parallel for
+    for (int ib = 0; ib < nbatch; ib++) {
+        const double *A_ib = &A_ib_p[(size_t)ib * bstrd];
+        for (int ii = 0; ii < ninter; ii++) {
+            double *A_lpk = &A_lpk_p[(size_t)(ib * ninter + ii) * lda * n];
+            for (int j = 0; j < n; j++) {
+                for (int i = 0; i < m; i++) {
+                    A_lpk[lda * j + i] = A_ib[j * jstrd + i * istrd + ii];
+                }
+            }
         }
     }
 }
@@ -135,22 +151,9 @@ double run_ib_version(int nbatch, int ninter, int m, int n, int check_result)
     */
     double t1_ib = omp_get_wtime();
 
-    /* Pack matrices into interleaved-batch format, one by one */
+    /* Pack matrices into interleaved-batch format */
     double t1_ib_pack = omp_get_wtime();
-#pragma omp parallel for
-    for (int ib = 0; ib < nbatch; ib++) {
-
-        double *A_ib = &A_ib_p[(size_t)ib * bstrd_A];
-
-        for (int ii = 0; ii < ninter; ii++) {
-
-            double *A_lpk = &A_lpk_p[(size_t)(ib * ninter + ii) * lda * n];
-            int row_strd = 1; /* LAPACK matrices are always col-major */
-            int col_strd = lda;
-            dge_interleave(ninter, ii, m, n, A_lpk, row_strd, col_strd, A_ib, istrd_A,
-                           jstrd_A);
-        }
-    }
+    pack_ib(nbatch, ninter, m, n, A_lpk_p, lda, A_ib_p, bstrd_A, istrd_A, jstrd_A);
     double t2_ib_pack = omp_get_wtime();
 
     double t1_ib_qr = omp_get_wtime();
@@ -194,49 +197,41 @@ double run_ib_version(int nbatch, int ninter, int m, int n, int check_result)
     }
     double t2_ib_mq = omp_get_wtime();
 
+    /* Unpack matrices from interleaved-batch format */
     double t1_ib_unpack = omp_get_wtime();
+    unpack_ib(nbatch, ninter, m, n, R_ib_p, bstrd_R, istrd_R, jstrd_R, QR_lpk_p, ldqr);
+    double t2_ib_unpack = omp_get_wtime();
+
+    /* Check the result, matrix by matrix */
     const double eps = nextafter(1.0, 2.0) - 1.0;
     int fail = 0;
-
-    /* Unpack matrices from interleaved-batch format, one by one */
+    if (check_result) {
 #pragma omp parallel for
-    for (int ib = 0; ib < nbatch; ib++) {
-
-        double *QR_ib = &R_ib_p[(size_t)ib * bstrd_A];
-
-        for (int ii = 0; ii < ninter; ii++) {
-
-            double *QR_lpk = &QR_lpk_p[(size_t)(ib * ninter + ii) * ldqr * n];
-            int row_strd = 1;
-            int col_strd = ldqr;
-            dge_deinterleave(ninter, ii, m, n, QR_lpk, row_strd, col_strd, QR_ib, istrd_A,
-                             jstrd_A);
-            if (check_result) {
-                /* Compute 1-norms of original matrix A and computed QR */
-                double *A_lpk = &A_lpk_p[(size_t)(ib * ninter + ii) * lda * n];
-                double norm_a_minus_qr = 0.0;
-                double norm_a = 0.0;
-                for (int j = 0; j < n; j++) {
-                    double sum_diff = 0.0;
-                    double sum_col_a = 0.0;
-                    for (int i = 0; i < m; i++) {
-                        sum_diff += fabs(A_lpk[lda * j + i] - QR_lpk[ldqr * j + i]);
-                        sum_col_a += fabs(A_lpk[lda * j + i]);
-                    }
-                    norm_a_minus_qr = MAX(sum_diff, norm_a_minus_qr);
-                    norm_a = MAX(sum_col_a, norm_a);
+        for (int im = 0; im < total_matrices; im++) {
+            /* Compute 1-norms of original matrix A and computed QR */
+            double *A_lpk = &A_lpk_p[(size_t)im * lda * n];
+            double *QR_lpk = &QR_lpk_p[(size_t)im * ldqr * n];
+            double norm_a_minus_qr = 0.0;
+            double norm_a = 0.0;
+            for (int j = 0; j < n; j++) {
+                double sum_diff = 0.0;
+                double sum_col_a = 0.0;
+                for (int i = 0; i < m; i++) {
+                    sum_diff += fabs(A_lpk[lda * j + i] - QR_lpk[ldqr * j + i]);
+                    sum_col_a += fabs(A_lpk[lda * j + i]);
                 }
+                norm_a_minus_qr = MAX(sum_diff, norm_a_minus_qr);
+                norm_a = MAX(sum_col_a, norm_a);
+            }
 
-                /* Check that norm1(A-QR) <= eps*m*n*norm1(A) */
-                double tol = 5.0 * eps * m * n * norm_a;
-                if (norm_a_minus_qr > tol) {
+            /* Check that norm1(A-QR) <= eps*m*n*norm1(A) */
+            double tol = 5.0 * eps * m * n * norm_a;
+            if (norm_a_minus_qr > tol) {
 #pragma omp atomic update
-                    fail++;
-                }
+                fail++;
             }
         }
     }
-    double t2_ib_unpack = omp_get_wtime();
 
     double t2_ib = omp_get_wtime();
 
