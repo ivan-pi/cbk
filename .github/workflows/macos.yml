@@ -1,0 +1,88 @@
+name: macOS
+
+# The test suites on Apple silicon against Accelerate: Apple's framework
+# provides LAPACK and CBLAS but no LAPACKE, so the job first builds
+# accelerate-lapacke (https://github.com/lepus2589/accelerate-lapacke, Netlib's
+# LAPACKE over Accelerate's LAPACK interface; its configure needs a Fortran
+# compiler, which Homebrew's gcc supplies) into its own prefix, then
+# configures cbk with -DBLA_VENDOR=Apple (cmake/FindLAPACKE.cmake: Accelerate
+# from CMake's FindLAPACK, lapacke.h and liblapacke from that prefix,
+# <vecLib/cblas.h> from the SDK). macOS runners
+# cost several times a Linux minute, so this is one job, not a matrix, and
+# the LAPACKE build (several minutes, most of it configuring Netlib LAPACK's
+# Fortran tree) is cached: the install prefix is restored by actions/cache
+# under a key naming the pinned accelerate-lapacke release and the macOS
+# SDK the dylib was linked against (its Accelerate stubs must match the
+# system), so a runner image upgrade or a version bump rebuilds it and
+# nothing else does.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  accelerate:
+    name: AppleClang / Accelerate
+    runs-on: macos-latest
+    env:
+      ACCELERATE_LAPACKE_REF: v2.0.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Identify the SDK
+        id: sdk
+        run: |
+          sdk=$(xcrun --show-sdk-version)
+          echo "path=$(xcrun --show-sdk-path)" >> "$GITHUB_OUTPUT"
+          echo "version=$sdk" >> "$GITHUB_OUTPUT"
+          echo "macOS $(sw_vers -productVersion), SDK $sdk"
+
+      # The install prefix, $RUNNER_TEMP/accelerate-lapacke-install below, is
+      # an absolute path without `.` or `..` segments: actions/cache rejects
+      # those and then saves nothing. (The runner context that names it is
+      # only available inside steps, so it is spelled out rather than an env.)
+      - name: Cache accelerate-lapacke
+        id: lapacke-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/accelerate-lapacke-install
+          key: accelerate-lapacke-${{ env.ACCELERATE_LAPACKE_REF }}-${{ runner.os }}-${{ runner.arch }}-sdk${{ steps.sdk.outputs.version }}
+
+      # accelerate-lapacke's project enables Fortran (Netlib's LAPACK build
+      # system does, even though only its C LAPACKE sources are compiled and
+      # the result links nothing but Accelerate). Its accelerate-lapack
+      # dependency insists on an explicit SDK (CMAKE_OSX_SYSROOT); the
+      # workflow preset takes no cache variables, so configure and build are
+      # two calls, and the install prefix overrides the preset's ~/.local.
+      - name: Build accelerate-lapacke
+        if: steps.lapacke-cache.outputs.cache-hit != 'true'
+        run: |
+          brew install gcc
+          export FC=$(ls "$(brew --prefix)"/bin/gfortran* | head -n 1)
+          "$FC" --version | head -n 1
+          git clone --depth 1 --branch "$ACCELERATE_LAPACKE_REF" https://github.com/lepus2589/accelerate-lapacke.git "$RUNNER_TEMP/accelerate-lapacke"
+          cd "$RUNNER_TEMP/accelerate-lapacke"
+          cmake --preset accelerate-lapacke32 \
+            -DCMAKE_OSX_SYSROOT="${{ steps.sdk.outputs.path }}" \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/accelerate-lapacke-install"
+          cmake --build --preset accelerate-lapacke32-install
+          ls "$RUNNER_TEMP/accelerate-lapacke-install/include/lapacke.h" "$RUNNER_TEMP/accelerate-lapacke-install/lib/"
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DBLA_VENDOR=Apple
+          -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/accelerate-lapacke-install"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

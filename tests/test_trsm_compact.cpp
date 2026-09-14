@@ -1,18 +1,17 @@
 // test_trsm_compact.cpp
 //
-// Self-contained validation of the templated compact triangular solve
-// (dtrsm_compact / strsm_compact), with no BLAS dependency. The reference is a
-// scalar BLAS-?trsm implemented directly -- the same math the vectorized kernel
-// executes V lanes at a time, so a correct kernel matches it to working
-// precision.
+// Validation of the templated compact triangular solve (dtrsm_compact /
+// strsm_compact) against CBLAS (test_lapack_util.hpp): the reference is
+// cblas_?trsm -- the same math the vectorized kernel executes V lanes at a
+// time -- and the residual is formed by cblas_?trmm.
 //
 // Two parts:
 //   1. C API argument validation -- exercises the LAPACK/BLAS-style info = -j
 //      contract of the portable entry points.
 //   2. Numerical correctness over side / uplo / transa / diag, precisions and
-//      interleave widths (column-major, the tuned path): forward error vs a
-//      scalar reference solve, plus the solve's own residual ||op(A) X - alpha B||
-//      formed with an independent triangular multiply (so a bug shared by the
+//      interleave widths (column-major, the tuned path): forward error vs the
+//      library's solve, plus the solve's own residual ||op(A) X - alpha B||
+//      formed with the library's triangular multiply (so a bug shared by the
 //      reference and the kernel cannot pass unseen).
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
@@ -25,12 +24,12 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, frand, gen_tri, tri_apply, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_trsm, tri_apply, gen_tri, pack/unpack
 
 using namespace cbk::test;
 
-// The scalar reference is ref_trsm of test_compact_util.hpp (dense BLAS ?trsm
-// over views, in place); tri_apply forms the residual independently.
+// The reference is ref_trsm of test_lapack_util.hpp (cblas_?trsm over views,
+// in place); tri_apply (cblas_?trmm) forms the residual independently.
 // Padded pack slots carry the identity -- for a triangular A that is a unit
 // diagonal, so the kernel's divisions never hit a zero pivot in the padding.
 
@@ -71,9 +70,9 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     MatrixBatch<T> Bout(nm, m, n);
     unpack_compact(Bout, bp.data(), m, V);
 
-    // Two gates: (1) forward error vs the scalar reference solve, and (2) the
-    // solve's own defining residual ||op(A) X - alpha B||, formed with an
-    // independent triangular multiply -- so a bug shared by ref_trsm and the
+    // Two gates: (1) forward error vs the library's solve, and (2) the
+    // solve's own defining residual ||op(A) X - alpha B||, formed with the
+    // library's triangular multiply -- so a bug shared by ref_trsm and the
     // kernel cannot slip through (the ?trsm analogue of the reconstruction /
     // round-trip identities the geqrf/potrf/ormqr self-tests check).
     double worst_fwd = 0, worst_res = 0;
@@ -152,7 +151,7 @@ int main()
     int fails = 0;
     fails += test_validation();
 
-    std::printf("numerical cases (column-major, vs scalar reference):\n");
+    std::printf("numerical cases (column-major, vs cblas_?trsm):\n");
     // full side x uplo x transa x diag matrix at a representative shape/width
     for (char side : {'L', 'R'})
         for (char uplo : {'U', 'L'})

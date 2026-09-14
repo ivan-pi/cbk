@@ -234,13 +234,14 @@ CTest-registered and run in FP64 and FP32.
   same reflectors, same application order, different structure
   exploitation. This pins the accumulation against an already-validated
   routine without any dense reference in the loop.
-* **Portable self-test** (no BLAS): the templated kernel across
-  `(T, V, layout, shape)` including `k < n`, `k = 0` (`Q` = leading
-  columns of `I`), `min(m, n) = 0`, and padded final packs (padded lanes
-  come out identity, real lanes unperturbed), against a scalar
-  `ref_org2r` of the same steps (elementwise at `~eps`); orthogonality
-  and `Q R = A` formed without the reference; and the portable C API's
-  argument validation, `-j` per the header.
+* **Portable self-test** (`tests/test_orgqr_compact.cpp`, on any LAPACKE
+  stack): the templated kernel across `(T, V, layout, shape)` including
+  `k < n`, `k = 0` (`Q` = leading columns of `I`), `min(m, n) = 0`, and
+  padded final packs (padded lanes come out identity, real lanes
+  unperturbed), against `LAPACKE_?orgqr` (elementwise at `100 m eps`:
+  `Q` is unique for full-rank `A`, LAPACK blocks its accumulation above
+  `k = 128`); orthogonality and `Q R = A` formed without the reference; and
+  the portable C API's argument validation, `-j` per the header.
 
 ## 8. Implementation
 

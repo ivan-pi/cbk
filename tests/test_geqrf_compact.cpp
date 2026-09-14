@@ -1,16 +1,22 @@
 // test_geqrf_compact.cpp
 //
-// Self-contained validation of the templated compact QR factorization
-// (dgeqrf_compact / sgeqrf_compact), with no BLAS dependency. The reference is
-// the unblocked Householder QR (LAPACK dgeqr2 / dlarfg) implemented in scalar
-// form -- the same algorithm the vectorized kernel executes V lanes at a time,
-// so a correct kernel matches it to working precision.
+// Validation of the templated compact QR factorization (dgeqrf_compact /
+// sgeqrf_compact) against LAPACKE (test_lapack_util.hpp). The reference is
+// LAPACK's unblocked Householder QR, ?geqr2 / ?larfg -- the same algorithm the
+// vectorized kernel executes V lanes at a time, so a correct kernel matches it
+// to working precision.
 //
 // Checks per (T, V):
-//   1. compact (H, tau)  ==  scalar geqr2 (H, tau)   (elementwise, ~eps*scale)
-//   2. reconstruction  Q * triu(H) == A               (valid factorization)
-//   3. reflectors are usable: ormqr_compact('T') then triangular solve
-//      recovers a known X from B = A X                 (in-situ with ormqr)
+//   1. compact (H, tau)  ==  LAPACKE_?geqr2 (H, tau)  (elementwise, ~eps*scale)
+//   2. reconstruction  Q * triu(H) == A  by ?ormqr    (valid factorization)
+//   3. reflectors are usable: ormqr_compact('T') then ?trsm recovers a known
+//      X from B = A X                                 (in-situ with ormqr)
+// and, per (T, structure, cond) on the dense-LAPACK contract (design 7.1):
+//   4. Q = ?orgqr(H, tau), R = triu(H): the factorization residual
+//      ||R - Q^T A||_1 / ||A||_1 <= 20 n eps and the orthogonality
+//      ||Q^T Q - I||_1 <= 100 n eps, on dense, column-scaled, rank-deficient
+//      and near-collinear inputs; (H, tau) elementwise vs the blocked
+//      LAPACKE_?geqrf on the dense ones (relative, 100 n eps)
 // plus LAPACK-style argument validation of the C API.
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
@@ -23,7 +29,7 @@
 #include <algorithm>
 #include <type_traits>
 
-#include "test_compact_util.hpp" // compact<T>, scalar references, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, lapack<T>, ref_*, MatrixBatch, pack/unpack
 
 using namespace cbk::test;
 
@@ -67,7 +73,7 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, k - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
-        ref_orm2r('N', k, Aout.view(idx), tau_out[idx], Rec);
+        ref_ormqr('N', k, Aout.view(idx), tau_out[idx], Rec);
         e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
     }
 
@@ -94,9 +100,9 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     }
 
     const double scale = std::max(1, m);
-    const double tol_fac = 200.0 * eps * scale; // same op sequence, ~eps
-    const double tol_rec = 200.0 * eps * scale;
-    const double tol_sol = 1e5 * eps * m; // cond(A)-dependent
+    const double tol_fac = 200.0 * eps * scale; // same op sequence as ?geqr2, ~eps
+    const double tol_rec = 200.0 * eps * scale; // ?ormqr's rounding differs, same bound
+    const double tol_sol = 1e5 * eps * m;       // cond(A)-dependent
     bool ok_h = e_h <= tol_fac, ok_t = e_t <= tol_fac, ok_r = e_rec <= tol_rec;
     bool ok_s = (e_solve < 0) || (e_solve <= tol_sol);
 
@@ -106,6 +112,131 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     if (e_solve >= 0) std::printf(" solve:%.1e %s", e_solve, ok_s ? "OK" : "FAIL");
     std::printf(" | info=%d\n", info);
     return (info != 0) + !ok_h + !ok_t + !ok_r + !ok_s;
+}
+
+// ------------------ invariants vs dense LAPACK (design 7.1) ----------
+
+// Input structures (a subset of the GPU competition's stress set). The QR
+// residual and orthogonality are backward-stable quantities, so they must hold
+// to working precision for every structure -- rank deficiency and near-collinear
+// columns included -- exactly as they do for dense LAPACK.
+enum Structure { DENSE, RANK_DEFICIENT, NEAR_COLLINEAR };
+
+// A random m x n matrix: gen_boosted's, with the diagonal boost taming the
+// conditioning for DENSE only, where cond applies the competition's column
+// scaling (columns *= logspace(0,-cond,n)). The structured variants make the
+// last column a (near-)copy of the first, so the trailing reflector sees a
+// (near-)zero sub-diagonal norm -- the branch the masked larfg must get right.
+template <class T> static void gen_matrix(MatrixView<T> A, double cond, Structure s)
+{
+    const int m = A.rows, n = A.cols;
+    gen_boosted(A, s == DENSE ? T(2) : T(0));
+    if (s == DENSE) {
+        if (cond > 0.0)
+            for (int j = 0; j < n; ++j) {
+                double sc = std::pow(10.0, -cond * (n > 1 ? (double)j / (n - 1) : 0.0));
+                for (int i = 0; i < m; ++i)
+                    A(i, j) *= sc;
+            }
+    }
+    else if (n >= 2) {
+        const double noise = (s == NEAR_COLLINEAR) ? 1e-9 : 0.0; /* exact dup if 0 */
+        for (int i = 0; i < m; ++i)
+            A(i, n - 1) = A(i, 0) * (1.0 + noise * frand<T>());
+    }
+}
+
+template <class T, int V>
+static int run_invariants(int nm, int m, int n, double cond, Structure structure = DENSE)
+{
+    const double eps = std::numeric_limits<T>::epsilon();
+    const int k = std::min(m, n);
+
+    MatrixBatch<T> A(nm, m, n);
+    for (int idx = 0; idx < nm; ++idx)
+        gen_matrix(A.view(idx), cond, structure);
+
+    std::vector<T> ap = pack_compact(A, m, V);
+    std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V);
+    const int info = compact<T>::geqrf('C', m, n, ap.data(), m, tp.data(), V, nm);
+    MatrixBatch<T> H(nm, m, n), tau(nm, k, 1);
+    unpack_compact(H, ap.data(), m, V);
+    unpack_tau(tau, tp.data(), V);
+
+    double worst_res = 0, worst_orth = 0, worst_el = 0;
+    std::vector<T> Qs((size_t)m * k), QtAs((size_t)k * n), QtQs((size_t)k * k),
+        Hrefs(A.stride()), tauref(k);
+    const auto Q = mat_view(Qs.data(), m, k), QtA = mat_view(QtAs.data(), k, n),
+               QtQ = mat_view(QtQs.data(), k, k), Href = mat_view(Hrefs.data(), m, n);
+    for (int idx = 0; idx < nm; ++idx) {
+        const auto Am = A.view(idx), Hm = H.view(idx);
+
+        // Q = the first k columns of H(0)..H(k-1), from the reflectors in the
+        // first k columns of H
+        copy_matrix(leading(Hm, m, k), Q);
+        ref_orgqr(k, Q, tau[idx]);
+
+        // residual R - Q^T A, R = triu(H) (k x n)
+        matmul(Q.transposed(), Am, QtA);
+        double resid = 0;
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < k; ++i)
+                resid = std::max(
+                    resid, (double)std::abs(((i <= j) ? Hm(i, j) : T(0)) - QtA(i, j)));
+        worst_res = std::max(worst_res, resid / std::max(norm1(Am), norm_floor));
+
+        // orthogonality Q^T Q - I
+        matmul(Q.transposed(), Q, QtQ);
+        for (int d = 0; d < k; ++d)
+            QtQ(d, d) -= T(1);
+        worst_orth = std::max(worst_orth, norm1(QtQ));
+
+        // elementwise vs the blocked LAPACKE_?geqrf, on the dense inputs only,
+        // where the reflectors are essentially unique: it catches a
+        // sign-convention regression the residual gates cannot see (observed
+        // ~n*eps). Rank-deficient and near-collinear inputs have no unique
+        // reflectors (el ~ 1e-2 there), so the comparison is skipped (design
+        // doc 7.1).
+        if (structure == DENSE) {
+            copy_matrix(Am, Href);
+            ref_geqrf(Href, tauref.data());
+            const double el = std::max(max_abs_diff(H[idx], Hrefs.data(), A.stride()),
+                                       max_abs_diff(tau[idx], tauref.data(), (size_t)k));
+            worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
+        }
+    }
+
+    const double rtol_res = 20.0 * n * eps, rtol_orth = 100.0 * n * eps;
+    const double rtol_el = 100.0 * n * eps;
+    const bool ok = (info == 0) && (worst_res <= rtol_res) && (worst_orth <= rtol_orth) &&
+                    (worst_el <= rtol_el);
+    const char *sname = structure == DENSE            ? "dense"
+                        : structure == RANK_DEFICIENT ? "rankdef"
+                                                      : "collin";
+    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d cond=%.0f %-8s| res %.2e (%.1e) "
+                "orth %.2e (%.1e) el %.1e | info=%d %s\n",
+                compact<T>::name, V, nm, m, n, cond, sname, worst_res, rtol_res,
+                worst_orth, rtol_orth, worst_el, info, ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// The invariants cases, in one precision and width.
+template <class T, int V> static int run_invariant_set()
+{
+    int fails = 0;
+    fails += run_invariants<T, V>(8, 30, 30, 0.0);
+    fails += run_invariants<T, V>(16, 60, 60, 0.0);
+    fails += run_invariants<T, V>(11, 43, 43, 0.0); // padded partial group
+    fails += run_invariants<T, V>(8, 64, 20, 0.0);  // tall
+    fails += run_invariants<T, V>(8, 20, 64, 0.0);  // wide
+    fails += run_invariants<T, V>(8, 30, 30, 4.0);  // column-scaled (dynamic range)
+    fails += run_invariants<T, V>(8, 128, 128, 0.0);
+    // conditioning-robustness stress: backward-stable gates must still hold
+    fails += run_invariants<T, V>(8, 40, 40, 0.0, RANK_DEFICIENT);
+    fails += run_invariants<T, V>(8, 40, 40, 0.0, NEAR_COLLINEAR);
+    fails +=
+        run_invariants<T, V>(11, 60, 24, 0.0, RANK_DEFICIENT); // wide-ish, padded group
+    return fails;
 }
 
 // ------------------------ underflow scope (design 6.6) ---------------
@@ -161,7 +292,7 @@ template <class T, int V> static int test_underflow()
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, n - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
-        ref_orm2r('N', n, Aout.view(idx), tau[idx], Rec);
+        ref_ormqr('N', n, Aout.view(idx), tau[idx], Rec);
         e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
     }
     const double tol_rec = 200.0 * eps * m;
@@ -227,6 +358,11 @@ int main()
     // numerical scope: an underflowing column reads as already triangular
     fails += test_underflow<double, 4>();
     fails += test_underflow<float, 8>();
+
+    // the dense-LAPACK contract (design 7.1): residual and orthogonality of
+    // the materialized Q, over conditioning and structure, in both precisions
+    fails += run_invariant_set<double, 4>();
+    fails += run_invariant_set<float, 8>();
 
     return finish(fails);
 }

@@ -27,10 +27,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # C++17, no GNU extensions (the kernels' vector_size attribute compiles under
-# strict -std=c++17). Optimization flags are the caller's to choose; for a
-# performance build pass them through CMAKE_CXX_FLAGS, e.g.
+# strict -std=c++17), for every target here: the library's own requirement
+# below is PRIVATE (its headers are C), so nothing would pass it to the
+# tests, examples and benchmarks, and AppleClang's default standard is older
+# than gcc's and clang's on Linux. Optimization flags are the caller's to
+# choose; for a performance build pass them through CMAKE_CXX_FLAGS, e.g.
 #   cmake -S . -B build -DCMAKE_CXX_FLAGS="-O3 -march=native"
 # so the SIMD kernels target the host's widest vectors.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # OpenMP threads the group loop inside every routine (see the threading note
 # in src/cbk_common.hpp); the benchmarks use it for their outer loops.
@@ -42,7 +48,7 @@ endif()
 # ---------------------------------------------------------------------------
 # The library: one target, cbk (cbk::cbk). By default the portable C API of
 # include/cbk.h (no BLAS, no MKL), which is what a default configure
-# builds and tests. Static by default; -DBUILD_SHARED_LIBS=ON builds it shared.
+# builds and tests (the tests, not the library, need a LAPACKE stack). Static by default; -DBUILD_SHARED_LIBS=ON builds it shared.
 # ---------------------------------------------------------------------------
 add_library(cbk src/cbk.cpp)
 target_include_directories(cbk
@@ -109,23 +115,30 @@ endif()
 if(CBK_BUILD_TESTS)
   enable_testing()
 
-  # Portable self-contained suites (no BLAS): each kernel vs a scalar reference
-  # of the same unblocked algorithm, plus the C API's LAPACK-style validation.
+  # The dense references of every suite come from a real LAPACKE + CBLAS
+  # (tests/test_lapack_util.hpp): MKL's own with the MKL extension, otherwise
+  # whatever CMake's FindLAPACK picks under BLA_VENDOR (OpenBLAS, Generic for
+  # Netlib, Apple) plus its LAPACKE (cmake/FindLAPACKE.cmake).
+  find_package(LAPACKE REQUIRED)
+
+  # The portable C API's suites: each kernel vs LAPACKE/CBLAS (its unblocked
+  # LAPACK counterpart elementwise where that is the same algorithm, residual
+  # and invariant gates elsewhere), plus the C API's LAPACK-style validation.
   foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
-    target_link_libraries(test_${routine}_compact PRIVATE cbk)
+    target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
     target_include_directories(test_${routine}_compact
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
   endforeach()
 
   if(CBK_WITH_MKL)
-    # MKL + dense-LAPACK validation of each cbk_?*_compact routine (the
-    # design docs' section 7): invariants vs LAPACK, cross-checks vs MKL's own
+    # The MKL-style API's suites (the design docs' section 7): the compat
+    # entry points through MKL's own pack/unpack, cross-checked against MKL's
     # compact kernels, and end-to-end solves.
     foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_${routine}_mkl tests/test_${routine}_mkl.cpp)
-      target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact)
+      target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact LAPACKE::LAPACKE)
       target_include_directories(test_${routine}_mkl
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
       add_test(NAME mkl_${routine}_suites COMMAND test_${routine}_mkl)

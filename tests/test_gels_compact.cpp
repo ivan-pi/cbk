@@ -1,16 +1,18 @@
 // test_gels_compact.cpp
 //
-// Self-contained validation of the templated compact least-squares /
-// minimum-norm solve (dgels_compact / sgels_compact), with no BLAS dependency.
-// The reference is ref_gels: the unblocked algorithm (geqr2 of the tall
-// orientation, orm2r, back substitution) in scalar form -- the same steps the
-// vectorized kernel executes V lanes at a time, so a correct kernel matches it
-// to working precision -- and, independently of it, the properties that define
-// the two solutions.
+// Validation of the templated compact least-squares / minimum-norm solve
+// (dgels_compact / sgels_compact) against LAPACKE (test_lapack_util.hpp).
+// The reference is ref_gels: LAPACKE_?gels for X and LAPACKE_?geqrf /
+// ?gelqf for the factorization and tau (which is also what ?gels runs
+// inside) -- the same steps the vectorized kernel executes V lanes at a
+// time, blocked by LAPACK above its crossover -- and, independently of it,
+// the properties that define the two solutions.
 //
-// Checks per (T, V, layout, trans, shape):
-//   1. X (all max(m,n) rows of B, the residual rows included) == ref_gels
-//   2. the factorization left in A and the tau left in taup == ref_gels
+// Checks per (T, V, layout, trans, shape), the design's 7.1 gates:
+//   1. X (all max(m,n) rows of B, the residual rows included) == ref_gels,
+//      relative to ||X_lapack||_1 at 100 max(m,n) eps
+//   2. the factorization left in A and the tau left in taup == ref_gels,
+//      relative to ||A||_1 at 100 max(m,n) eps
 //   3. least squares: the normal equations op(A)^T (B - op(A) X) = 0, and the
 //      residual sums of squares in rows n..m-1 of B equal ||B - op(A) X||^2
 //      minimum norm: op(A) X = B, and X equals the minimum-norm solution formed
@@ -27,7 +29,7 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, scalar references, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_gels/geqr2/orm2r/trsm_upper, pack/unpack
 
 using namespace cbk::test;
 
@@ -74,13 +76,15 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
     unpack_compact(Bout, bp.data(), ldb, V, row);
     unpack_tau(tau_out, tp.data(), V);
 
-    // check 1 & 2: X (all p rows), the factorization, and tau vs the reference
-    double e_x = 0, e_h = 0, e_t = 0, nrm_b = 0;
+    // check 1 & 2: X (all p rows), the factorization, and tau vs the
+    // reference, each relative to the reference operand's L1 norm
+    double e_x = 0, e_h = 0, e_t = 0;
     for (int idx = 0; idx < nm; ++idx) {
-        e_x = std::max(e_x, max_abs_diff(Bout[idx], Bref[idx], B.stride()));
-        e_h = std::max(e_h, max_abs_diff(Aout[idx], Aref[idx], A.stride()));
-        e_t = std::max(e_t, max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)q));
-        nrm_b = std::max(nrm_b, norm1(Bref.view(idx)));
+        const double na = std::max(norm1(A.view(idx)), norm_floor);
+        e_x = std::max(e_x, max_abs_diff(Bout[idx], Bref[idx], B.stride()) /
+                                std::max(norm1(Bref.view(idx)), norm_floor));
+        e_h = std::max(e_h, max_abs_diff(Aout[idx], Aref[idx], A.stride()) / na);
+        e_t = std::max(e_t, max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)q) / na);
     }
 
     // check 3: the defining properties, formed without the reference: e_prop is
@@ -128,7 +132,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
                         std::max(e_prop, std::abs((double)R(i, j) - Bin(i, j)) / scale);
             // minimum norm the other way: X = op(A)^T Z, G Z = B with the Gram
             // matrix G = op(A) op(A)^T (rows_op x rows_op, SPD), solved by the
-            // scalar QR references
+            // LAPACKE QR references
             std::vector<T> Gs((size_t)rows_op * rows_op), Zs((size_t)rows_op * nrhs),
                 tg(rows_op), Xmns((size_t)cols_op * nrhs);
             const auto G = mat_view(Gs.data(), rows_op, rows_op);
@@ -137,7 +141,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
             matmul(Aop, Aop.transposed(), G);
             copy_matrix(Bin, Z);
             ref_geqr2(G, tg.data());
-            ref_orm2r('T', rows_op, G, tg.data(), Z);
+            ref_ormqr('T', rows_op, G, tg.data(), Z);
             ref_trsm_upper(G, Z);
             matmul(Aop.transposed(), Z, Xmn);
             for (int j = 0; j < nrhs; ++j)
@@ -147,13 +151,15 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
         }
     }
 
-    const double tol_ref = 200.0 * eps * p; // same op sequence, ~eps
-    const double tol_x = 200.0 * eps * p * std::max(nrm_b, 1.0);
-    const double tol_prop = 100.0 * eps * p; // backward-stable quantities
-    // the Gram-formed minimum-norm solution carries cond(G) = cond(op(A))^2
-    const double tol_prop2 = overdet ? tol_prop : 1e4 * eps * p;
-    const bool ok_x = e_x <= tol_x, ok_h = e_h <= tol_ref, ok_t = e_t <= tol_ref;
-    const bool ok_p = e_prop <= tol_prop, ok_p2 = e_prop2 <= tol_prop2;
+    // One gate for X, the factorization and the defining properties: two
+    // backward-stable implementations (LAPACK's blocked above its crossover)
+    // of a well-conditioned op(A)'s factorization and solve, relative to the
+    // operand norms (design 7.1). The Gram-formed minimum-norm solution
+    // carries cond(G) = cond(op(A))^2, so its gate gets that headroom.
+    const double tol = 100.0 * eps * p;
+    const double tol_prop2 = overdet ? tol : 1e4 * eps * p;
+    const bool ok_x = e_x <= tol, ok_h = e_h <= tol, ok_t = e_t <= tol;
+    const bool ok_p = e_prop <= tol, ok_p2 = e_prop2 <= tol_prop2;
 
     std::printf(
         "T=%-6s V=%-2d %s trans=%c nm=%-2d m=%-3d n=%-3d nrhs=%d %-6s | X:%.1e %s "

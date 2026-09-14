@@ -1,18 +1,11 @@
 /* test_potrf_mkl.cpp
  *
- * Validation of cbk_?potrf_compact against real Intel MKL and dense LAPACK,
- * through the genuine MKL Compact pipeline (mkl_dgepack_compact /
- * mkl_dgeunpack_compact). This is the design document's correctness gate against
- * standard dense LAPACK (cbk_dpotrf_compact_design.md section 7).
- *
- * Suite 1 (section 7.1) -- Factorization invariants vs dense LAPACK, for each
- *   (uplo, layout): a random SPD batch is factored by cbk_dpotrf_compact,
- *   unpacked, and per matrix checked against the LAPACK Cholesky contract:
- *     - reconstruction residual || L L^T - A ||_1 / ||A||_1 <= 20 n eps
- *       (U^T U for upper),
- *     - the strictly-opposite triangle is bit-for-bit unchanged from the input,
- *     - since the SPD factor is unique, elementwise vs LAPACKE_dpotrf,
- *       || L_cbk - L_lapack ||_1 / ||L_lapack||_1 <= 20 n eps.
+ * Validation of cbk_?potrf_compact against real Intel MKL, through the
+ * genuine MKL Compact pipeline (mkl_dgepack_compact / mkl_dgeunpack_compact):
+ * the MKL-side half of cbk_dpotrf_compact_design.md section 7. The
+ * dense-LAPACK invariants of section 7.1 (reconstruction, the untouched
+ * triangle, the factor vs LAPACKE_?potrf, over uplo / layout / cond) run in
+ * the portable suite, test_potrf_compact.cpp, on any LAPACKE stack.
  *
  * Suite 2 (section 7.2) -- Cross-check vs mkl_dpotrf_compact: the same packed
  *   batch factored by both, compact buffers compared elementwise at a small
@@ -37,7 +30,7 @@
  * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
-#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */
+#include "test_mkl_util.hpp" /* compat<T>, mkl<T> + the shared helpers */
 
 #include <cstdio>
 #include <cmath>
@@ -48,99 +41,6 @@
 using namespace cbk::test;
 
 namespace {
-
-/* ---------------- Suite 1: invariants vs dense LAPACK ------------------ */
-
-template <class T>
-int suite1(MKL_LAYOUT layout, MKL_UPLO uplo, int nm, int n, double cond)
-{
-    const double eps = std::numeric_limits<T>::epsilon();
-    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
-    const int V = mkl<T>::vlen(fmt);
-    const bool row = (layout == MKL_ROW_MAJOR);
-    const bool up = (uplo == MKL_UPPER);
-    const char ul = up ? 'U' : 'L';
-
-    MatrixBatch<T> A(nm, n, n);
-    for (int v = 0; v < nm; ++v)
-        gen_spd(A.view(v), cond);
-
-    /* pack the full symmetric A, factor with the routine under test, unpack */
-    auto Ap = A.base_ptrs();
-    MKL_INT sz_a = mkl<T>::get_size(n, n, fmt, nm);
-    auto ap_buf = cbk::detail::mkl_alloc_bytes<T>(sz_a);
-    T *ap = ap_buf.get();
-    mkl<T>::gepack(layout, n, n, Ap.data(), n, ap, n, fmt, nm);
-
-    MKL_INT info = 99;
-    compat<T>::potrf(layout, uplo, n, ap, n, &info, fmt, nm);
-
-    MatrixBatch<T> H(nm, n, n);
-    auto Hp = H.base_ptrs();
-    mkl<T>::geunpack(layout, n, n, Hp.data(), n, ap, n, fmt, nm);
-
-    int fails = 0;
-    if (info != 0) {
-        ++fails;
-        std::printf("    info = %ld (expected 0)\n", (long)info);
-    }
-
-    double worst_res = 0, worst_el = 0, worst_untouched = 0;
-    std::vector<T> Lref(A.stride());
-    for (int v = 0; v < nm; ++v) {
-        /* the factor is stored in `layout`; the input and the residual are the
-         * column-major dense side */
-        const auto Hm = H.view(v, row);
-        const auto Am = A.view(v);
-
-        /* reconstruction residual and untouched-triangle check */
-        std::vector<T> R(A.stride(), 0.0);
-        const auto Res = mat_view(R.data(), n, n);
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                double s = 0;
-                int lmax = std::min(i, j);
-                if (!up) /* A = L L^T */
-                    for (int l = 0; l <= lmax; ++l)
-                        s += Hm(i, l) * Hm(j, l);
-                else /* A = U^T U */
-                    for (int l = 0; l <= lmax; ++l)
-                        s += Hm(l, i) * Hm(l, j);
-                Res(i, j) = (T)s - Am(i, j);
-            }
-        worst_res = std::max(worst_res, norm1(Res) / std::max(norm1(Am), norm_floor));
-
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                const bool named = up ? (i <= j) : (i >= j);
-                if (!named)
-                    worst_untouched =
-                        std::max<double>(worst_untouched, std::abs(Hm(i, j) - Am(i, j)));
-            }
-
-        /* elementwise vs LAPACKE_dpotrf (unique SPD factor -> a sharp signal) */
-        std::copy(A[v], A[v] + A.stride(), Lref.begin());
-        lapack<T>::potrf(LAPACK_COL_MAJOR, ul, n, Lref.data(), n);
-        const auto Lr = mat_view(Lref.data(), n, n);
-        double el = 0, lref_norm = 0;
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                const bool named = up ? (i <= j) : (i >= j);
-                if (named) el = std::max<double>(el, std::abs(Hm(i, j) - Lr(i, j)));
-            }
-        lref_norm = norm1(Lr); /* triangular factor L1 norm */
-        worst_el = std::max(worst_el, el / std::max(lref_norm, norm_floor));
-    }
-
-    const double rtol = 20.0 * n * eps;
-    bool ok = (worst_res <= rtol) && (worst_el <= rtol) && (worst_untouched == 0.0);
-    fails += !ok;
-    std::printf("  [suite1] %s uplo=%c V=%-2d nm=%-2d n=%-3d cond=%.0f | res %.2e "
-                "el %.2e (%.1e) untouched %.0e %s\n",
-                row ? "row" : "col", ul, V, nm, n, cond, worst_res, worst_el, rtol,
-                worst_untouched, ok ? "OK" : "FAIL");
-    return fails;
-}
 
 /* ---------------- Suite 2: cross-check vs mkl_dpotrf_compact ----------- */
 
@@ -358,18 +258,8 @@ template <class T> int run_suites()
 
     int fails = 0;
 
-    /* Suite 1: invariants vs dense LAPACK, over (uplo, layout), sizes and cond */
     const MKL_LAYOUT lays[] = {MKL_COL_MAJOR, MKL_ROW_MAJOR};
     const MKL_UPLO ups[] = {MKL_LOWER, MKL_UPPER};
-    for (MKL_LAYOUT L : lays)
-        for (MKL_UPLO U : ups) {
-            fails += suite1<T>(L, U, 8, 30, 0.0);
-            fails += suite1<T>(L, U, 16, 60, 0.0);
-            fails += suite1<T>(L, U, 11, 43, 0.0); /* padded partial group */
-            fails += suite1<T>(L, U, 8, 40, 2.0);  /* dynamic range (cond knob) */
-        }
-    fails += suite1<T>(MKL_COL_MAJOR, MKL_LOWER, 8, 128, 0.0);
-    fails += suite1<T>(MKL_COL_MAJOR, MKL_LOWER, 4, 3, 0.0); /* smallest, padded */
 
     /* Suite 2: cross-check vs mkl_dpotrf_compact, both layouts and uplo */
     for (MKL_LAYOUT L : lays)

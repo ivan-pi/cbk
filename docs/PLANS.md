@@ -93,11 +93,21 @@ listed in `examples.md`.
 
 ## Project-wide
 
-- **Test against a real BLAS/LAPACK (issue #27).** The portable suites
-  hand-roll their scalar reference routines. Instead, assume a library is
-  present for testing -- `find_package(LAPACK REQUIRED)` -- and validate
-  against it, rather than maintaining our own reference versions. This also
-  opens the dense cross-checks (today MKL-only) to any BLAS/LAPACK stack.
+- **Done: test against a real BLAS/LAPACK (issue #27).** The suites validate
+  against LAPACKE + CBLAS (`tests/test_lapack_util.hpp`): the `ref_*`
+  procedures forward to `LAPACKE_?geqr2` / `?ormqr` / `?orgqr` / `?geqp3` /
+  `?potrf` / `?gels` and `cblas_?trsm` / `?trmm` / `?gemm`; the unpivoted
+  LDL^T (`ref_sytf2np`, which LAPACK lacks) is the one hand-rolled reference
+  left, validated against `cblas_?trmm` in its suite.
+  `cmake/FindLAPACKE.cmake` takes MKL's LAPACKE with the MKL extension and
+  otherwise `find_package(LAPACK)`'s pick under `BLA_VENDOR` plus its
+  LAPACKE; CI runs OpenBLAS and Netlib under gcc and clang, and
+  Accelerate + accelerate-lapacke on the macOS runners
+  (`.github/workflows/macos.yml`, written without a macOS machine at hand).
+  The dense cross-checks of the `geqrf` and `potrf` MKL suites (design 7.1)
+  moved into the portable suites, on every stack. Where a reference is
+  LAPACK's blocked driver the gate is relative to the operand norms at a
+  multiple of `n eps`; only `?geqr2` stays an elementwise `~eps` comparison.
 - **LAPACK-style test coverage.** Adopt the testing approaches of the
   reference LAPACK repository (its `TESTING/LIN` drivers): `?latms`-style
   generators with prescribed condition number and spectral distribution, and

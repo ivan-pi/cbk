@@ -3,9 +3,25 @@
 ## The portable library (default)
 
 Requires **CMake >= 3.28**, a **C++17 compiler** (GCC/Clang) and a build tool
-(Make/Ninja). Nothing else: the default configure builds the `cbk::cbk`
-library (the C API of `include/cbk.h`) and its BLAS-free test suites,
-which check every kernel against a scalar reference of the same algorithm.
+(Make/Ninja). The library needs nothing else. The test suites validate every
+kernel against a real **LAPACKE + CBLAS** (issue #27), so the default
+configure, which builds them, also needs one of
+
+* OpenBLAS -- Debian/Ubuntu: `sudo apt-get install libopenblas-dev liblapacke-dev`
+  (Debian ships OpenBLAS's LAPACKE as Netlib's `liblapacke`), or
+* Netlib's reference LAPACK -- `sudo apt-get install liblapacke-dev liblapack-dev libblas-dev`,
+  or
+* Intel MKL's own, with the MKL extension below (then it is the only stack the
+  tests may link).
+
+CMake's own `find_package(LAPACK)` picks the implementation, steered by
+`BLA_VENDOR` as usual (`-DBLA_VENDOR=OpenBLAS`, `Generic` for Netlib's
+reference libraries, unset for the first found), and `cmake/FindLAPACKE.cmake`
+adds `lapacke.h`, `cblas.h` and `liblapacke` where the distro ships LAPACKE as
+a library of its own, reporting the result as `LAPACKE for the tests: ...`.
+On Debian `liblapack.so` is an `update-alternatives` symlink, so `Generic`
+means whichever implementation the alternative points at.
+`-DCBK_BUILD_TESTS=OFF` drops the requirement with the tests.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -13,13 +29,23 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+On macOS, Accelerate provides LAPACK and CBLAS but no LAPACKE;
+[accelerate-lapacke](https://github.com/lepus2589/accelerate-lapacke) builds
+one on top of it (its configure needs a Fortran compiler, `brew install gcc`),
+and `-DBLA_VENDOR=Apple` with `-DCMAKE_PREFIX_PATH` at its install (its own
+prefix; the workflow caches it) takes Accelerate from `find_package(LAPACK)`,
+`lapacke.h` and `liblapacke` from that prefix, and Accelerate's own CBLAS
+through `<vecLib/cblas.h>`. `.github/workflows/macos.yml`
+runs exactly this on the macOS runners, one job next to the Linux matrix.
+
 ## The Intel MKL extension (`-DCBK_WITH_MKL=ON`)
 
 `-DCBK_WITH_MKL=ON` adds the MKL-style API (the `cbk_?*_compact` entry
 points of `include/cbk_compat.h`, compiled into the same `cbk::cbk` library),
 the MKL-backed
-test suites (cross-checked against MKL's own compact kernels and dense
-LAPACK/LAPACKE), the worked example and the benchmarks. It needs **Intel MKL**,
+test suites (cross-checked against MKL's own compact kernels), the worked
+example and the benchmarks; every suite's dense references then come from
+MKL's LAPACKE. It needs **Intel MKL**,
 which provides the Compact-format API (`mkl_compact.h`, `mkl_?gepack_compact`,
 `mkl_?geqrf_compact`, ...). Any MKL works:
 
@@ -125,7 +151,8 @@ CI builds against a fresh install for every MKL / static / shared combination
 |--------|---------|--------|
 | `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CBK_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
-| `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
+| `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest; needs a LAPACKE + CBLAS stack. |
+| `BLA_VENDOR` | -- | CMake's own: the LAPACK the tests validate against (`OpenBLAS`, `Generic` for Netlib, `Apple`); ignored with `CBK_WITH_MKL=ON`, where it is MKL's. |
 | `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcbk` shared instead of static. |
 | `CBK_INSTALL` | `ON` when top-level | Generate the install rules; off by default under a parent project's `add_subdirectory`. |
 | `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set (MKL build only). |

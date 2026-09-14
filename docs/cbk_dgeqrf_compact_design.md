@@ -258,16 +258,17 @@ must recover `X`. Gate the forward error `Xhat - X` and the residual
 
 ### 7.4 Portable self-test
 
-A self-contained test validates the templated kernel directly against a scalar
-reference (`ref_geqr2` / `ref_larfg`) across `(T, V)` combinations and partial
-(padded) final packs, the underflow scope of 6.6 (a column whose tail
-underflows squared comes back with `tau = 0`, its diagonal kept and its body
-zeroed, every lane finite, and the factorization still exact to working
-precision), plus the
-LAPACK-style argument validation of the portable C API. It needs no external libraries at all; only the suites above require an
-MKL installation (for the Compact API). BLAS and LAPACK themselves are assumed
-available, as they are on most platforms -- it is the MKL Compact extension that
-must be installed separately.
+`tests/test_geqrf_compact.cpp` validates the templated kernel directly against
+LAPACK's unblocked `?geqr2` (`LAPACKE_?geqr2` through `ref_geqr2`,
+elementwise at `~eps`) across `(T, V)` combinations and partial (padded) final
+packs, the underflow scope of 6.6 (a column whose tail underflows squared
+comes back with `tau = 0`, its diagonal kept and its body zeroed, every lane
+finite, and the factorization still exact to working precision), the
+dense-LAPACK invariants of 7.1 (`Q` from `?orgqr`, residual and orthogonality
+gates, over the structured inputs) on any LAPACKE stack, plus the LAPACK-style
+argument validation of the portable C API. It needs a LAPACKE + CBLAS
+(`cmake/FindLAPACKE.cmake`: OpenBLAS, Netlib, or MKL's own); only the suites
+above require an MKL installation (for the Compact API).
 
 ## 8. Implementation Strategy
 

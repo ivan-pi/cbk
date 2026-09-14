@@ -1,12 +1,15 @@
 // test_sytrfnp_compact.cpp
 //
-// Self-contained validation of the templated compact unpivoted LDL^T
-// factorization (dsytrfnp_compact / ssytrfnp_compact), its solve companion
-// (dsytrsnp_compact / ssytrsnp_compact) and the fused factor-and-solve
-// (dsysvnp_compact / ssysvnp_compact), with no BLAS dependency. The reference is
-// the unblocked unpivoted factorization implemented in scalar form -- the same
-// algorithm the vectorized kernel executes V lanes at a time, so a correct
-// kernel matches it to working precision.
+// Validation of the templated compact unpivoted LDL^T factorization
+// (dsytrfnp_compact / ssytrfnp_compact), its solve companion (dsytrsnp_compact
+// / ssytrsnp_compact) and the fused factor-and-solve (dsysvnp_compact /
+// ssysvnp_compact). LAPACK has no unpivoted LDL^T (?sytrf pivots, so its
+// factors differ elementwise), so the reference is the one scalar routine the
+// suites still hand-roll, ref_sytf2np below: the unblocked unpivoted
+// factorization -- the same algorithm the vectorized kernel executes V lanes
+// at a time, so a correct kernel matches it to working precision. The
+// reference itself is validated first, against the library: its (L, D) must
+// reconstruct A through cblas_?trmm / ?gemm (test_reference).
 //
 // Checks per (T, V, uplo, layout), on symmetric *indefinite* batches:
 //   1. named-triangle factor  ==  scalar reference factor  (elementwise)
@@ -32,7 +35,7 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, gen_sym_ldlt, ldlt_reconstruct, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, matmul, tri_apply, gen_sym_ldlt, pack/unpack
 
 using namespace cbk::test;
 
@@ -64,6 +67,42 @@ template <class T> static void ref_sytf2np(char uplo, MatrixView<T> As)
                 A(i, jj) -= A(i, j) * w;
         }
     }
+}
+
+// ------------- the reference itself, vs the library ------------------
+// ref_sytf2np is the only hand-rolled reference left in the suites, so it is
+// checked against LAPACKE/CBLAS before anything is checked against it: its
+// (L, D) must reconstruct A. W = L D (the columns of the unit-lower L scaled
+// by D), then W := W L^T by ?trmm (side 'R', unit diagonal); the upper
+// factor U^T D U is the same product read through the transposed view, as in
+// ref_sytf2np itself, and A is symmetric. Gated at
+// ||L D L^T - A||_1 / ||A||_1 <= 20 n eps, the design's 7.1 residual.
+
+template <class T> static int test_reference(int n, char uplo)
+{
+    const T eps = std::numeric_limits<T>::epsilon();
+    const bool upper = (uplo == 'U' || uplo == 'u');
+    std::vector<T> As((size_t)n * n), Fs((size_t)n * n), Ws((size_t)n * n),
+        Rs((size_t)n * n);
+    const auto A = mat_view(As.data(), n, n), F = mat_view(Fs.data(), n, n),
+               W = mat_view(Ws.data(), n, n), R = mat_view(Rs.data(), n, n);
+    gen_sym_ldlt(A);
+    copy_matrix(A, F);
+    ref_sytf2np(uplo, F);
+    const auto L = upper ? F.transposed() : F; // the unit-lower factor, D on its diagonal
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i)
+            W(i, j) = (i == j) ? L(j, j) : (i > j) ? L(i, j) * L(j, j) : T(0); // L D
+    tri_apply('R', 'L', 'T', 'U', L, W, R); // (L D) L^T
+    const double worst =
+        max_abs_diff(Rs.data(), As.data(), As.size()) / std::max(norm1(A), norm_floor);
+    const double tol = 20.0 * eps * std::max(1, n);
+    const bool ok = worst <= tol;
+    std::printf(
+        "T=%-6s reference ref_sytf2np uplo=%c n=%-3d | ||LDL^T-A||/||A|| %.1e (%.1e) "
+        "%s\n",
+        compact<T>::name, uplo, n, worst, tol, ok ? "OK" : "FAIL");
+    return !ok;
 }
 
 // --------------------------- one test case --------------------------
@@ -364,10 +403,17 @@ int main()
     int fails = 0;
     fails += test_validation();
 
-    // Full feature matrix: both uplo x both layouts, several (V, n, nm),
-    // including padded partial final groups (nm not a multiple of V).
+    // The hand-rolled reference against the library first.
     const char uplos[] = {'L', 'U'};
     const char lays[] = {'C', 'R'};
+    for (char u : uplos) {
+        fails += test_reference<double>(30, u);
+        fails += test_reference<double>(43, u);
+        fails += test_reference<float>(24, u);
+    }
+
+    // Full feature matrix: both uplo x both layouts, several (V, n, nm),
+    // including padded partial final groups (nm not a multiple of V).
     for (char u : uplos)
         for (char l : lays) {
             fails += run_case<double, 2>(4, 16, u, l);

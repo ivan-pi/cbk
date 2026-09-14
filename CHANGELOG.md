@@ -5,6 +5,20 @@ All notable changes to cbk are recorded here. The format follows
 numbers [Semantic Versioning](https://semver.org/): until 1.0.0, a minor
 release may change the API.
 
+## [Unreleased]
+
+### Changed
+
+- Tests: every suite validates against a real LAPACKE + CBLAS stack
+  (OpenBLAS, Netlib, or MKL's own with the MKL extension;
+  `cmake/FindLAPACKE.cmake` over `find_package(LAPACK)` and `BLA_VENDOR`)
+  instead of hand-rolled
+  scalar references (issue #27). The dense-LAPACK cross-checks of the MKL
+  suites run in the portable suites, on any stack; the unpivoted LDL^T keeps
+  its scalar reference, itself validated against CBLAS. Building the tests
+  now needs such a stack; the library does not. A macOS workflow tests
+  against Accelerate through accelerate-lapacke.
+
 ## [0.1.0] - 2026-09-13
 
 The first release: batched QR, Cholesky and unpivoted LDL^T factorizations,

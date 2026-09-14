@@ -8,8 +8,13 @@ optional Intel MKL-style API that drops into MKL's compact ecosystem.
 
 ## Build and test
 
-The default configure builds the portable library and its BLAS-free tests and
-needs nothing but CMake and a C++17 compiler:
+The default configure builds the portable library and its tests. The library
+needs nothing but CMake and a C++17 compiler; the tests validate against a
+real LAPACKE + CBLAS (`cmake/FindLAPACKE.cmake`: OpenBLAS or Netlib without
+MKL, `libopenblas-dev liblapacke-dev` / `liblapacke-dev liblapack-dev` on
+Debian, MKL's own with the extension; `-DBLA_VENDOR=OpenBLAS|Generic` picks
+one through CMake's FindLAPACK -- do that, since Debian's alternatives
+symlinks let either stand in for the other):
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -18,8 +23,8 @@ ctest --test-dir build --output-on-failure
 ```
 
 `-DCBK_WITH_MKL=ON` adds the MKL-style API, the MKL-backed suites (validated
-against MKL's compact kernels and LAPACK/LAPACKE), the example and the
-benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
+against MKL's compact kernels; every suite's LAPACKE is then MKL's), the
+example and the benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
 Debian/Ubuntu). Run that build too before pushing changes to the kernels or
 the wrappers: it is the one that cross-checks against MKL.
 
@@ -61,9 +66,12 @@ src/       the templated kernels (cbk_*_compact.hpp, one per routine, on the
            and the owning MatrixBatch the tests, benchmarks and examples share
            (internal: src/ is on their include path, but the public API stays
            include/)
-tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
-           type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
-           the compact<T> / compat<T> / mkl<T> / lapack<T> dispatch structs
+tests/     the portable C API's suites (vs LAPACKE/CBLAS on any stack) and
+           the MKL-backed ones, templated on the scalar type;
+           test_compact_util.hpp (compact<T>, the generators, pack/unpack),
+           test_lapack_util.hpp (lapack<T> and the ref_* procedures over
+           views, matmul, tri_apply, solve_errors) and test_mkl_util.hpp
+           (compat<T>, mkl<T>) hold the helpers and dispatch structs
            (tests/install/: the install check's consumer project and script)
 examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
 docs/      one design document per routine, the guides README.md indexes
@@ -175,10 +183,12 @@ workspace contract, or the benchmarks' threading.
 - **Build and test with both gcc and clang before pushing.** CI runs both, and
   the packs' alignment is exactly the kind of contract only one of them
   enforces: both alignment faults so far (issue #34 and the one above) were
-  invisible to gcc. The default (portable) tree needs nothing but the compiler:
+  invisible to gcc. The default (portable) tree needs only the compiler and a
+  LAPACKE stack for the tests (CI runs OpenBLAS and Netlib under both
+  compilers, and Accelerate on macOS through `.github/workflows/macos.yml`):
 
   ```sh
-  CXX=clang++ cmake -S . -B build-clang && cmake --build build-clang && ctest --test-dir build-clang
+  CXX=clang++ cmake -S . -B build-clang -DBLA_VENDOR=OpenBLAS && cmake --build build-clang && ctest --test-dir build-clang
   ```
 
 - **Threading over groups.** Every all-groups driver is a call to
@@ -201,10 +211,15 @@ workspace contract, or the benchmarks' threading.
   library and its tests are one internal codebase and share these views on
   purpose; what keeps the suites honest is that they compute the *answers*
   independently -- scalar LAPACK references, dense LAPACK/MKL cross-checks.
+  The dense references are the library's: `test_lapack_util.hpp` hands a
+  view's `data` and leading dimension to LAPACKE/CBLAS (`is_rowmajor`,
+  `lapack_ld`, `lapack_layout`), reads a BLAS-3 operand stored the other way
+  round as its transpose, and stages the few LAPACKE operands that have no
+  transpose flag (`Staged`).
   A routine that takes views (or batches) `assert`s what its contract
   assumes: dimension compatibility across operands (`matmul`, `tri_apply`,
-  `solve_errors`, the scalar references), squareness where required
-  (`gen_spd`, `gen_tri`, `ref_potf2`, ...), and index ranges
+  `solve_errors`, the `ref_*` procedures), squareness where required
+  (`gen_spd`, `gen_tri`, `ref_potrf`, ...), and index ranges
   (`MatrixView::operator()`, `MatrixBatch::operator[]`). Costs nothing in
   Release, and the Debug suite run is what exercises it. `BatchView` is the
   exception by construction -- it carries strides, not extents, so a kernel

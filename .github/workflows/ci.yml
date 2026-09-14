@@ -12,41 +12,47 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.cxx }} / MKL ${{ matrix.mkl }}${{ matrix.interface == 'ilp64' && ' (ilp64)' || '' }}
+    name: ${{ matrix.cxx }} / ${{ matrix.stack }}${{ matrix.interface == 'ilp64' && ' (ilp64)' || '' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         cc: [gcc, clang]
-        mkl: ["ON", "OFF"]
+        # The LAPACKE + CBLAS stack the tests validate against, and the
+        # packages that provide it: MKL's own with the MKL extension (which
+        # libmkl-dev also supplies the Compact API for), else OpenBLAS or the
+        # reference LAPACK through CMake's FindLAPACK, picked by BLA_VENDOR
+        # (cmake/FindLAPACKE.cmake). Debian ships OpenBLAS's LAPACKE as
+        # Netlib's liblapacke, hence that package in both rows.
+        stack: [MKL, OpenBLAS, Generic]
         interface: [lp64]
         include:
           - { cc: gcc,   cxx: g++ }
           - { cc: clang, cxx: clang++ }
+          - { stack: MKL,      packages: libmkl-dev }
+          - { stack: OpenBLAS, packages: libopenblas-dev liblapacke-dev }
+          - { stack: Generic,  packages: liblapacke-dev liblapack-dev libblas-dev }
           # MKL's 64-bit integer interface: MKL_INT is part of the MKL-style
           # API's ABI, so the wrappers and their suites must build and pass
           # against it too (libmkl-dev ships both interface layers).
-          - { cc: gcc,   cxx: g++, mkl: "ON", interface: ilp64 }
+          - { cc: gcc, cxx: g++, stack: MKL, packages: libmkl-dev, interface: ilp64 }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}
     steps:
       - uses: actions/checkout@v4
 
-      # libmkl-dev supplies the Compact extension and MKL's LAPACK/LAPACKE, so
-      # the MKL-backed suites validate against real MKL + LAPACK. The portable
-      # (MKL OFF) build needs nothing beyond the C++17 toolchain the image ships.
-      - name: Install Intel MKL
-        if: matrix.mkl == 'ON'
+      - name: Install ${{ matrix.stack }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libmkl-dev
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }}
 
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DCBK_WITH_MKL=${{ matrix.mkl }}
+          -DCBK_WITH_MKL=${{ matrix.stack == 'MKL' && 'ON' || 'OFF' }}
+          -DBLA_VENDOR=${{ matrix.stack }}
           -DMKLCompact_INTERFACE=${{ matrix.interface }}
 
       - name: Build
