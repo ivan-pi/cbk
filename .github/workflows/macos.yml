@@ -26,14 +26,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ACCELERATE_LAPACKE_REF: v2.0.0
-  ACCELERATE_LAPACKE_PREFIX: ${{ github.workspace }}/../accelerate-lapacke
-
 jobs:
   accelerate:
     name: AppleClang / Accelerate
     runs-on: macos-latest
+    # The install prefix must be an absolute path without `.` or `..`
+    # segments: actions/cache rejects those and then saves nothing (the
+    # runner's temp directory is only known at the job level, hence env here).
+    env:
+      ACCELERATE_LAPACKE_REF: v2.0.0
+      ACCELERATE_LAPACKE_PREFIX: ${{ runner.temp }}/accelerate-lapacke-install
     steps:
       - uses: actions/checkout@v4
 
