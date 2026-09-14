@@ -22,6 +22,12 @@ against MKL's compact kernels and LAPACK/LAPACKE), the example and the
 benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
 Debian/Ubuntu). Run that build too before pushing changes to the kernels or
 the wrappers: it is the one that cross-checks against MKL.
+`-DCBK_BUILD_BENCHMARKS=ON` builds the one benchmark that needs no MKL,
+`bench_trsm_compact` (the portable C API vs a per-matrix BLAS `?trsm`),
+against whatever `find_package(LAPACK)` finds (`liblapack-dev` for the
+reference one); the MKL build builds it too, with MKL as its BLAS. On a
+machine with MKL installed, `find_package(LAPACK)` prefers MKL's *threaded*
+layer; `-DBLA_VENDOR=Generic` selects the reference library instead.
 
 Both APIs are one library target, `cbk` (`cbk::cbk`); `-DBUILD_SHARED_LIBS=ON`
 builds it shared. `cmake --install build --prefix <p>` installs it, the
@@ -57,15 +63,18 @@ src/       the templated kernels (cbk_*_compact.hpp, one per routine, on the
            the potrf/potrs and sytrfnp/sytrsnp group kernels), the two adapter
            sources that implement
            the public headers (cbk.cpp, cbk_compat.cpp), and
-           cbk_matrix_view.hpp and cbk_matrix_batch.hpp, the dense MatrixView
-           and the owning MatrixBatch the tests, benchmarks and examples share
+           cbk_matrix_view.hpp, cbk_matrix_batch.hpp and cbk_compact_pack.hpp,
+           the dense MatrixView, the owning MatrixBatch and the BLAS-free
+           compact pack/unpack the tests, benchmarks and examples share
            (internal: src/ is on their include path, but the public API stays
            include/)
 tests/     portable (no BLAS) and MKL-backed suites, templated on the scalar
            type; test_compact_util.hpp / test_mkl_util.hpp hold the helpers and
            the compact<T> / compat<T> / mkl<T> / lapack<T> dispatch structs
            (tests/install/: the install check's consumer project and script)
-examples/  the worked solve and the benchmarks (BENCHMARKS.md), on bench_util.hpp
+examples/  the worked solve and the benchmarks (BENCHMARKS.md), on
+           bench_common.hpp (the MKL-free harness) and bench_util.hpp (its MKL
+           side)
 docs/      one design document per routine, the guides README.md indexes
            (building, threading, layout, examples), and PLANS.md, the internal
            status of each routine and what remains
@@ -182,9 +191,10 @@ workspace contract, or the benchmarks' threading.
   transpose is a stride swap. Do not hand-write `A[i + (size_t)j * lda]` in
   new tests, benchmarks or examples -- take a view. `MatrixView` asserts its
   bounds, so run the suites once in a `Debug` build when adding indexing code.
-  The tests use both: the pack/unpack helpers in `test_compact_util.hpp` write
-  the interleaved side through `BatchView` (`for_vlen` turns their runtime `V`
-  into its compile-time one) and the dense side through `MatrixBatch`. The
+  The tests and the portable benchmark use both: the pack/unpack helpers in
+  `src/cbk_compact_pack.hpp` write the interleaved side through `BatchView`
+  (`for_vlen` turns their runtime `V` into its compile-time one) and the dense
+  side through `MatrixBatch`. The
   library and its tests are one internal codebase and share these views on
   purpose; what keeps the suites honest is that they compute the *answers*
   independently -- scalar LAPACK references, dense LAPACK/MKL cross-checks.
@@ -200,9 +210,10 @@ workspace contract, or the benchmarks' threading.
   Dense batches everywhere are `MatrixBatch` (`src/cbk_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`
-  (`examples/bench_util.hpp`) with 64-byte-aligned storage and pair it with
-  `PackedPool`, the pristine compact image their timed passes restore from;
-  each benchmark keeps only its fill.
+  (`examples/bench_common.hpp`) with 64-byte-aligned storage and pair it with
+  the pristine compact image their timed passes restore from -- `PackedPool`
+  (MKL's pack, `bench_util.hpp`) or `PackedImage` (the library-side pack,
+  `bench_common.hpp`); each benchmark keeps only its fill.
 - **One kernel per routine.** Every kernel addresses its operands through
   `BatchView` (strides `si`, `sj`), so column-major, row-major, and ormqr's
   `side='R'` are the same code with different strides -- and gels's LQ case is
@@ -236,7 +247,7 @@ workspace contract, or the benchmarks' threading.
   `mkl_alloc_bytes` does by default, or `std::aligned_alloc(64, ...)`. Only
   performance, not correctness, rides on it (up to ~40% on small sizes).
 - **Default benchmark sizes stop at 256.** `bench_sizes`
-  (`examples/bench_util.hpp`) is the one square size list the benchmarks run --
+  (`examples/bench_common.hpp`) is the one square size list the benchmarks run --
   change the set there, not per program (`bench_qr_compact` keeps its own). It
   ends at `256`: the larger orders made a run take ten minutes, and the batched
   gains are not there to be had anyway -- they live below `128`, most of them

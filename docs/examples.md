@@ -1,8 +1,12 @@
 # Examples and benchmarks
 
-All programs under `examples/` need the MKL build (`-DCBK_WITH_MKL=ON`, off by
-default), since they pack with MKL's compact routines and compare against
-MKL's compact kernels and LAPACKE.
+All programs under `examples/` but one need the MKL build (`-DCBK_WITH_MKL=ON`,
+off by default), since they pack with MKL's compact routines and compare against
+MKL's compact kernels and LAPACKE. The exception is `bench_trsm_compact`, which
+measures the portable C API against a plain BLAS: `-DCBK_BUILD_BENCHMARKS=ON`
+builds it in a tree without MKL, against whatever `find_package(LAPACK)` finds
+(see [building.md](building.md)); the MKL build builds it too, with MKL's
+compact kernel added to the comparison.
 
 ## Worked example
 
@@ -42,6 +46,14 @@ MKL's compact kernels and LAPACKE.
   same square-size range on indefinite but diagonally dominant pools, both paths
   checked against the known solution. No MKL yardstick: MKL has no compact
   `sytrf`.
+* `bench_trsm_compact [--nrhs=k] [--side=L|R] [--uplo=U|L] [--transa=N|T]
+  [--diag=N|U] [nmat] [reps]` - the triangular *solve* `op(A) X = B` (by
+  default the `R X = Q^T B` back-substitution of a QR solve): `dtrsm_compact`,
+  the portable C API, vs per-matrix BLAS `dtrsm` -- MKL's compact
+  `mkl_dtrsm_compact` joins in the MKL build -- over the same square-size
+  range on diagonally dominant triangular pools, every path checked against
+  the known solution. The host's interleave width is detected at run time
+  (`--simdlen` overrides it).
 
 The factorization and solve benchmarks share the `--size-sweep=nmin:nmax[:stride]`
 and `--simdlen=2|4|8` flags. For a fair comparison against MKL, build with
@@ -58,4 +70,5 @@ results are documented in detail in
 All programs are registered with CTest, on a small pool, so they double as
 integration tests: `example_solve_qr_compact`, `bench_qr_compact_integration`,
 `bench_geqrf_compact_integration`, `bench_potrf_compact_integration`,
-`bench_posv_compact_integration`, `bench_sysvnp_compact_integration`.
+`bench_posv_compact_integration`, `bench_sysvnp_compact_integration`, and, in
+whichever build carries it, `bench_trsm_compact_integration`.

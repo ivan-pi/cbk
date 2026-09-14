@@ -32,6 +32,7 @@ scalar, `0` on success).
 | `src/cbk_common.hpp` | The `pack<T,V>` SIMD element, the `BatchView` strided group view every kernel addresses its operands through, `vsqrt`/`broadcast`, the `for_each_group` threading driver, and the runtime-`V` dispatch helper `for_vlen`. |
 | `src/cbk_matrix_view.hpp` | `MatrixView<T>`, the dense strided 2-D view the tests, benchmarks and examples address their host-side matrices through -- the non-compact counterpart of `BatchView`. Internal, not part of the public API. |
 | `src/cbk_matrix_batch.hpp` | `MatrixBatch<T>`, the owning batch of dense matrices (storage, per-matrix `view(v)`, and the `base_ptrs()` array MKL's pack/unpack routines take) the tests, benchmarks and examples share. |
+| `src/cbk_compact_pack.hpp` | `pack_compact` / `unpack_compact` / `compact_size`: a `MatrixBatch` interleaved into a compact buffer (the layout of `mkl_?gepack_compact`) and back, addressed through `BatchView`, with no MKL -- the pack of the BLAS-free suites and of `bench_trsm_compact`. |
 | `src/cbk_geqrf_compact.hpp` | QR factorization kernel: vectorized `geqr2` with a branch-free `larfg`, reusing ormqr's `larf` for the trailing update. |
 | `src/cbk_ormqr_compact.hpp` | Apply-Q kernel (vectorized `dorm2r`) and the shared one-reflector update `larf`. |
 | `src/cbk_orgqr_compact.hpp` | Form-Q kernel (vectorized `dorg2r`): backward accumulation on `larf` over the trailing columns only, unit-seeded extra columns, sweep-free column formation. |
@@ -45,11 +46,12 @@ scalar, `0` on success).
 | `src/cbk_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf (with its fused right-hand-side panel), ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
 | `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
 | `src/cbk_compat.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |
-| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, scalar reference kernels, Compact pack/unpack, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, no MKL. |
+| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, scalar reference kernels, the buffer-returning pack conveniences over `cbk_compact_pack.hpp`, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, no MKL. |
 | `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `compat<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels), `lapack<T>` (LAPACKE/CBLAS references). |
 | `tests/test_*_compact.cpp` | Portable self-contained suites (no BLAS): each kernel vs its scalar reference, plus C API validation, in FP64 and FP32. |
 | `tests/test_*_mkl.cpp` | MKL + dense-LAPACK validation, templated on the scalar type and run in FP64 and FP32: invariants vs LAPACK, cross-checks vs MKL's compact kernels, end-to-end solves. |
-| `examples/bench_util.hpp` | The benchmarks' shared harness (timing, aligned storage, command line). |
+| `examples/bench_common.hpp` | The MKL-free part of the benchmarks' harness: checks, aligned storage and `MatrixPool`, timing, the size list, the host's interleave width (`host_simdlen`), `PackedImage` (a pool's compact image by the library-side pack) and the shared command line (`BenchArgs`). |
+| `examples/bench_util.hpp` | The MKL side of that harness: `PackedPool` (MKL's pack in `mkl_malloc` storage), the `cblas` right-hand sides, and `CmdArgs` (`--simdlen` resolved to an `MKL_COMPACT_PACK`). |
 
 The contributor conventions behind this layout -- one kernel per routine over
 `BatchView`, the two views, the workspace and alignment contracts -- are in

@@ -124,6 +124,13 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Validated (design 7):** BLAS-free test vs a scalar `?trsm` (forward error
   and `||op(A) X - alpha B||`); MKL cross-check vs `mkl_?trsm_compact` over the
   full feature matrix plus the end-to-end solve.
+- **Benchmarked:** `bench_trsm_compact` (`dtrsm_compact`, the portable C API,
+  vs per-matrix BLAS `dtrsm`, plus `mkl_dtrsm_compact` in the MKL build; the
+  one benchmark that needs no MKL). Measured on the default case (4 threads,
+  AVX-512, `bench_sizes`, 512 matrices): `nrhs = 1` level with MKL's kernel
+  (`0.99x` geometric mean, `0.85-1.20x` per size) and `3.2x` over per-matrix
+  `dtrsm`; `nrhs = 4` `1.2x` over MKL's kernel (`1.2-2.4x` below order 128)
+  and `2.1x` over per-matrix `dtrsm` -- see `examples/BENCHMARKS.md`.
 - **Performance vs `mkl_?trsm_compact`** (single thread, AVX-512, orders
   10-148, measured before the view-based routing): `nrhs = 1` ~`1.0x`, `nrhs`
   a multiple of 4 ~`1.3-1.5x`, mixed ~`1.0-1.3x`. Open: small-`n` per-group

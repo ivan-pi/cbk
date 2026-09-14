@@ -8,8 +8,11 @@ open compact kernels, MKL's own compact kernels, and the conventional
 one-matrix-at-a-time LAPACK path -- over pools of many small matrices,
 reporting per-size throughput and a geometric-mean speedup; `bench_sysvnp_compact`
 has no MKL yardstick (MKL ships no compact `sytrf`) and compares the fused compact
-solver with per-matrix LAPACK alone. Each also cross-checks its result against per-matrix
-LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
+solver with per-matrix LAPACK alone. `bench_trsm_compact` is the one that needs
+no MKL: it measures the portable C API against the BLAS of whatever LAPACK the
+build finds, and adds MKL's compact kernel when MKL is there. Each also
+cross-checks its result against per-matrix LAPACK or the known solution, so it
+doubles as an integration test (CTest-registered on a small pool).
 
 | Program | Measures | Compares |
 |---------|----------|----------|
@@ -18,6 +21,7 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_qr_compact`](#bench_qr_compact) | end-to-end QR *solve* `AX = B` | fully-open compact pipeline (three steps, and the one-call `gels`) vs MKL's pipeline vs per-matrix LAPACK (the three-step chain, and `LAPACKE_dgels`) |
 | [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cbk_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cbk_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
+| [`bench_trsm_compact`](#bench_trsm_compact) | triangular *solve* `op(A) X = B` / `X op(A) = B` | `dtrsm_compact` (the portable C API) vs per-matrix BLAS `dtrsm`, plus `mkl_dtrsm_compact` in the MKL build; no MKL needed |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
 the same folder; see [`docs/examples.md`](../docs/examples.md).
@@ -34,6 +38,17 @@ cmake --build build -j
 ./build/bench_qr_compact         # end-to-end QR solve
 ./build/bench_posv_compact       # end-to-end SPD (Cholesky) solve
 ./build/bench_sysvnp_compact     # end-to-end symmetric (LDL^T) solve
+./build/bench_trsm_compact       # triangular solve
+```
+
+`bench_trsm_compact` alone also builds without MKL, against any BLAS/LAPACK
+CMake's `find_package(LAPACK)` finds (reference LAPACK, OpenBLAS, ...;
+`-DBLA_VENDOR=...` picks one):
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake --build build -j
+./build/bench_trsm_compact
 ```
 
 **Build with `-march=native` for a fair comparison.** This library sets no
@@ -188,7 +203,7 @@ bench_sysvnp_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4
 ```
 
 `--nrhs` (default 1) sets the number of right-hand sides; the flags are the shared
-command line of `bench_util.hpp`, so the factorization benchmarks accept it too
+command line of `bench_common.hpp`, so the factorization benchmarks accept it too
 and ignore it.
 
 Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512 matrices,
@@ -198,16 +213,62 @@ orders `8-32`, `3-5x` at `45-64`, `1.8-2.3x` at `96-128`, and `1.0-1.4x` at
 geometric mean of `3.1x` over the size list. Both paths recovered the known
 solution to `~6e-15`.
 
+## `bench_trsm_compact`
+
+Throughput of the triangular solve `op(A) X = alpha B` (`side = 'L'`) or
+`X op(A) = alpha B` (`side = 'R'`), the BLAS `?trsm` that closes every batched
+factorization here, two or three ways:
+
+* **cbk-compact** -- `dtrsm_compact`, the portable C API of `cbk.h`: one call
+  on the whole pool (the library threads the group loop).
+* **per-matrix** -- the BLAS `dtrsm` of the LAPACK the build found, one matrix
+  at a time from an OpenMP loop of the same thread count. In a tree without
+  MKL this is whatever `find_package(LAPACK)` located; in the MKL build it is
+  MKL's BLAS.
+* **mkl-compact** -- `mkl_dtrsm_compact`, MKL's batched compact kernel, per
+  group from the same OpenMP loop (MKL build only).
+
+It is the one benchmark that needs no MKL: it packs with the library-side
+`pack_compact` (`src/cbk_compact_pack.hpp`), and finds the host's interleave
+width at run time through the compiler's cpuid builtin (`host_simdlen`, the rule
+`mkl_get_format_compact` applies: 8 with AVX-512F, 4 with AVX, else 2) --
+`--simdlen` overrides it, and the header line also says which ISA the kernels
+were *compiled* for, so a build without `-march=native` shows. Every system is
+solved on the same case, column-major with `alpha = 1`: by default the
+back-substitution of a QR solve (`side = 'L'`, upper, non-transposed, non-unit:
+`R X = Q^T B`), and `--side`, `--uplo`, `--transa`, `--diag` select any other.
+The triangular pool is strictly diagonally dominant (diagonal `2n`,
+off-diagonals in `[-1, 1]`); `B` is formed from the known solution
+`X(:,j) = j + 1`, packed once, and only the solve is timed (the overwritten
+right-hand sides restored, untimed, before each pass). Every path is checked
+against that `X`, so the reported errors are forward errors. GFLOP/s uses the
+`n^2` per right-hand side `?trsm` count.
+
+```
+bench_trsm_compact [--nrhs=k] [--side=L|R] [--uplo=U|L] [--transa=N|T] [--diag=N|U]
+                   [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
+```
+
+Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, MKL build,
+512 matrices, the default case): with one right-hand side the portable kernel
+matched MKL's compact kernel (geometric mean `0.99x`, `0.85-1.20x` per size) and
+outran per-matrix `dtrsm` by `4.6-7.6x` at orders `8-32`, `2-5x` at `45-105`
+and `1.4-2x` at `128-256` -- a geometric mean of `3.2x` over the size list.
+With `--nrhs=4` the register-blocked path showed: `1.2x` over MKL's kernel
+(geometric mean; `1.2-2.4x` at orders `8-105`, level or behind at `128` and
+above, where the pools leave the cache) and `2.1x` over per-matrix `dtrsm`.
+Every path recovered the known solution to `~5e-15`.
+
 ## Notes
 
 * **Defaults:** 512 matrices / 3 reps for the factorization benchmarks,
-  `bench_posv_compact` and `bench_sysvnp_compact`, 1000 / 3 for
-  `bench_qr_compact`.
+  `bench_posv_compact`, `bench_sysvnp_compact` and `bench_trsm_compact`,
+  1000 / 3 for `bench_qr_compact`.
 * **Flags (factorization benchmarks).** `--simdlen=2|4|8` forces a narrower
   interleave width than the host default (a wider-than-native width is rejected);
   `--size-sweep=nmin:nmax[:stride]` switches to a cbk-only throughput scan (no
   cross-check) to resolve the SIMD "staircase" finely.
-* **Size list.** One list, `bench_sizes` in `bench_util.hpp`, shared by every
+* **Size list.** One list, `bench_sizes` in `bench_common.hpp`, shared by every
   benchmark but `bench_qr_compact` (five paths per size keep it on `10..120`), so
   the set of orders moves in one place. It deliberately mixes sizes that are *not*
   multiples of the interleave width `V` (30, 45, 60, 105, 168) with round powers,

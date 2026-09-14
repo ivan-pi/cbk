@@ -16,6 +16,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CBK_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" OFF)
 option(CBK_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
 option(CBK_BUILD_TESTS "Build tests and register them with CTest"                     ON)
+# bench_trsm_compact measures the portable C API against a per-matrix BLAS
+# ?trsm and needs only a BLAS/LAPACK (find_package(LAPACK)), not MKL; this
+# builds it in a tree without the extension. The MKL build builds every
+# benchmark, this one included, with MKL as its BLAS.
+option(CBK_BUILD_BENCHMARKS "Build the benchmarks that need only a BLAS/LAPACK"  OFF)
 # The install rules belong to cbk's own build, not to a project that
 # add_subdirectory()s it.
 option(CBK_INSTALL     "Generate the install target"                     ${PROJECT_IS_TOP_LEVEL})
@@ -80,8 +85,9 @@ if(CBK_WITH_MKL)
   # MKL types appear in the public header (no link dependency).
   target_link_libraries(cbk PUBLIC MKL::CompactHeaders)
 
-  # Examples: the worked batched solve and the five throughput benchmarks
-  # (examples/BENCHMARKS.md). All link MKL for the pack/unpack routines and the
+  # Examples: the worked batched solve and the five MKL-only throughput
+  # benchmarks (examples/BENCHMARKS.md; bench_trsm_compact, which needs no
+  # MKL, follows below). All link MKL for the pack/unpack routines and the
   # per-matrix LAPACK baselines; the benchmarks parallelize their outer loop
   # with OpenMP when available.
   foreach(prog solve_qr_compact bench_qr_compact bench_geqrf_compact bench_potrf_compact
@@ -95,6 +101,35 @@ if(CBK_WITH_MKL)
       target_link_libraries(${prog} PRIVATE OpenMP::OpenMP_CXX)
     endif()
   endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# bench_trsm_compact: the triangular-solve benchmark of the portable C API,
+# dtrsm_compact vs a per-matrix BLAS ?trsm. Without MKL the baseline is the
+# BLAS of whatever LAPACK find_package(LAPACK) locates (reference LAPACK,
+# OpenBLAS, ...; BLA_VENDOR selects one, BLA_SIZEOF_INTEGER=8 an ILP64 one).
+# With MKL the baseline is MKL's own BLAS, on the one MKL link line
+# MKL::Compact already carries -- a second find_package(LAPACK) could pick a
+# different threading layer of the same MKL -- and MKL's compact kernel joins
+# the comparison.
+# ---------------------------------------------------------------------------
+if(CBK_WITH_MKL OR CBK_BUILD_BENCHMARKS)
+  add_executable(bench_trsm_compact examples/bench_trsm_compact.cpp)
+  target_link_libraries(bench_trsm_compact PRIVATE cbk)
+  target_include_directories(bench_trsm_compact PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  if(CBK_WITH_MKL)
+    target_compile_definitions(bench_trsm_compact PRIVATE CBK_BENCH_WITH_MKL=1)
+    target_link_libraries(bench_trsm_compact PRIVATE MKL::Compact)
+  else()
+    find_package(LAPACK REQUIRED)
+    target_link_libraries(bench_trsm_compact PRIVATE LAPACK::LAPACK)
+    if(BLA_SIZEOF_INTEGER EQUAL 8)
+      target_compile_definitions(bench_trsm_compact PRIVATE CBK_BENCH_BLAS_INT=int64_t)
+    endif()
+  endif()
+  if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(bench_trsm_compact PRIVATE OpenMP::OpenMP_CXX)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -135,6 +170,13 @@ if(CBK_BUILD_TESTS)
       add_test(NAME ${prog}_integration COMMAND ${prog} 33 1)
       set_tests_properties(${prog}_integration PROPERTIES LABELS "integration")
     endforeach()
+  endif()
+
+  # The same gate for the triangular-solve benchmark, in whichever build
+  # carries it (every path is checked against the known solution).
+  if(TARGET bench_trsm_compact)
+    add_test(NAME bench_trsm_compact_integration COMMAND bench_trsm_compact 33 1)
+    set_tests_properties(bench_trsm_compact_integration PROPERTIES LABELS "integration")
   endif()
 endif()
 

@@ -57,6 +57,29 @@ distro package or from Intel's oneAPI apt repository, and the remaining
 > `.claude/mkl-compact-behavior.md` records what MKL's compact routines were
 > measured to do with their arguments.
 
+## The benchmark without MKL (`-DCBK_BUILD_BENCHMARKS=ON`)
+
+`bench_trsm_compact` measures the portable C API against a per-matrix BLAS
+`?trsm` and needs only a BLAS/LAPACK, not MKL: `-DCBK_BUILD_BENCHMARKS=ON`
+builds it in the default tree, taking its baseline from whatever
+`find_package(LAPACK REQUIRED)` locates (reference LAPACK, OpenBLAS, ...;
+`-DBLA_VENDOR=Generic`, say, chooses, and `-DBLA_SIZEOF_INTEGER=8` selects an
+ILP64 one). The MKL build builds every benchmark, this one included, and takes
+its LAPACK from MKL itself -- the one MKL link line `MKL::Compact` carries --
+so a second `find_package(LAPACK)` cannot pull in a different threading layer
+of the same MKL.
+
+```sh
+sudo apt-get install liblapack-dev            # Debian/Ubuntu: reference BLAS/LAPACK
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON
+cmake --build build -j
+./build/bench_trsm_compact
+```
+
+The other benchmarks pack with MKL's compact routines and compare against its
+compact kernels, so they stay with the MKL build
+([`examples/BENCHMARKS.md`](../examples/BENCHMARKS.md)).
+
 ## Performance builds
 
 The library sets no `-march` of its own; optimization flags are the caller's to
@@ -104,6 +127,7 @@ CI builds against a fresh install for every MKL / static / shared combination
 | `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CBK_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
 | `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
+| `CBK_BUILD_BENCHMARKS` | `OFF` | Build the benchmark that needs only a BLAS/LAPACK (`bench_trsm_compact`) in a tree without MKL, through `find_package(LAPACK)`; implied by `CBK_WITH_MKL`. |
 | `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcbk` shared instead of static. |
 | `CBK_INSTALL` | `ON` when top-level | Generate the install rules; off by default under a parent project's `add_subdirectory`. |
 | `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set (MKL build only). |

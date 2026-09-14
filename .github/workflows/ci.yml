@@ -35,18 +35,28 @@ jobs:
 
       # libmkl-dev supplies the Compact extension and MKL's LAPACK/LAPACKE, so
       # the MKL-backed suites validate against real MKL + LAPACK. The portable
-      # (MKL OFF) build needs nothing beyond the C++17 toolchain the image ships.
+      # (MKL OFF) build needs nothing beyond the C++17 toolchain the image
+      # ships; the reference LAPACK is only for bench_trsm_compact, the one
+      # benchmark that builds without MKL (-DCBK_BUILD_BENCHMARKS=ON), so that
+      # its integration test runs in this configuration too.
       - name: Install Intel MKL
         if: matrix.mkl == 'ON'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libmkl-dev
 
+      - name: Install reference LAPACK
+        if: matrix.mkl == 'OFF'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends liblapack-dev
+
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DCBK_WITH_MKL=${{ matrix.mkl }}
+          -DCBK_BUILD_BENCHMARKS=ON
           -DMKLCompact_INTERFACE=${{ matrix.interface }}
 
       - name: Build

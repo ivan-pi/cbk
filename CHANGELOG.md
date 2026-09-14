@@ -5,6 +5,26 @@ All notable changes to cbk are recorded here. The format follows
 numbers [Semantic Versioning](https://semver.org/): until 1.0.0, a minor
 release may change the API.
 
+## [Unreleased]
+
+### Added
+
+- `bench_trsm_compact`, a triangular-solve benchmark of the portable C API
+  (`dtrsm_compact`) against a per-matrix BLAS `dtrsm`, with
+  `mkl_dtrsm_compact` as a third path in the MKL build. It is the first
+  benchmark that needs no MKL: `-DCBK_BUILD_BENCHMARKS=ON` builds it in the
+  default tree against whatever `find_package(LAPACK)` finds. The host's
+  interleave width is detected at run time (`--simdlen` overrides it);
+  `--side`, `--uplo`, `--transa`, `--diag` and `--nrhs` select the case.
+
+### Changed
+
+- Internal: the BLAS-free compact pack/unpack moved from the test helpers to
+  `src/cbk_compact_pack.hpp`, and the MKL-free part of the benchmark harness
+  (checks, `MatrixPool`, timing, the size list, the command line) into
+  `examples/bench_common.hpp`, so the tests and the portable benchmark share
+  them; `examples/bench_util.hpp` keeps the MKL side.
+
 ## [0.1.0] - 2026-09-13
 
 The first release: batched QR, Cholesky and unpivoted LDL^T factorizations,
@@ -42,4 +62,5 @@ and the solves built on them, for many small matrices in the compact
   assumed well conditioned and within range. Deferred to a later release.
 - Tested on x86-64 Linux with GCC and Clang, against Intel MKL 2020.4 (lp64 and ilp64).
 
+[Unreleased]: https://github.com/ivan-pi/cbk/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.1.0

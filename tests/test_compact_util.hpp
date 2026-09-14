@@ -12,6 +12,7 @@
 
 #include "cbk.h"
 #include "cbk_common.hpp"
+#include "cbk_compact_pack.hpp"
 #include "cbk_matrix_batch.hpp"
 #include "cbk_matrix_view.hpp"
 
@@ -31,9 +32,10 @@
 namespace cbk::test {
 
 // The dense strided view every suite addresses its host-side matrices through
-// (src/cbk_matrix_view.hpp), and the compact analogue the kernels use, which
-// the pack/unpack helpers below address the interleaved side through
-// (src/cbk_common.hpp).
+// (src/cbk_matrix_view.hpp), and the compact analogue the kernels use
+// (src/cbk_common.hpp), which the pack/unpack helpers of
+// src/cbk_compact_pack.hpp address the interleaved side through -- re-exported
+// for the suites that inspect a packed buffer directly.
 using cbk::detail::ConstMatrixView;
 using cbk::detail::mat_view;
 using cbk::detail::MatrixBatch;
@@ -554,91 +556,23 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 // The dense batches are MatrixBatch (src/cbk_matrix_batch.hpp), shared with
 // the benchmarks; the suites allocate with the default allocator.
 
-// Compact pack/unpack (matches mkl_?gepack_compact). group g = idx/V, slot
-// v = idx%V; element (i,j) of every matrix in a group is one V-wide pack, and
-// the packs of a group sit at the leading dimension ldp in the given layout.
-// Padded slots (idx >= nm) carry the identity.
-//
-// Both sides are addressed through the project's views: the dense side through
-// MatrixBatch (hence MatrixView), the interleaved side through the kernels'
-// own BatchView, whose element is the pack and whose strides are in packs --
-// `P(i, j)[v]` is element (i,j) of slot v. The layout is the view's strides,
-// so one body serves column-major and row-major, and the group offset is the
-// library's group_stride. BatchView is templated on the interleave width, so
-// for_vlen turns the runtime V into the compile-time one (2, 4, 8 or 16 --
-// the widths the C API accepts). Sharing the kernels' views here is
-// deliberate; see "Two views, one idea" in .claude/CLAUDE.md.
-//
-// A padded slot carries pad_diag on its diagonal, zero elsewhere: the identity
-// for matrix batches (so kernels run the padding unmasked), zero for tau
-// batches (the identity's reflectors).
+// Compact pack/unpack: the library-side pack_compact / unpack_compact of
+// src/cbk_compact_pack.hpp (the layout of mkl_?gepack_compact, addressed
+// through the kernels' own BatchView), which the portable benchmark shares;
+// the suites add the buffer-returning conveniences below.
+using cbk::detail::compact_size;
+using cbk::detail::pack_compact;
+using cbk::detail::unpack_compact;
 
 // A zeroed compact buffer sized for nm rows x cols matrices at leading
-// dimension ldp -- the one place the ng * gstride sizing is written. For a
-// buffer the kernel fills (tau, say), use it directly; for one packed from a
-// batch, the pack_compact/pack_tau overloads below return it filled.
+// dimension ldp. For a buffer the kernel fills (tau, say), use it directly;
+// for one packed from a batch, the pack_compact/pack_tau overloads below
+// return it filled.
 template <class T>
 std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
                               bool rowmajor = false)
 {
-    const int ng = (nm + V - 1) / V;
-    return std::vector<T>((std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V));
-}
-
-template <class T>
-void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false,
-                  T pad_diag = T(1))
-{
-    const int m = Mk.rows(), n = Mk.cols(), nm = Mk.count();
-    const int ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(rowmajor, ldp, m, n, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P = make_view<T, VV>(p + (std::size_t)g * gstride, rowmajor, ldp);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                if (idx < nm) {
-                    const auto M = Mk.view(idx);
-                    for (int j = 0; j < n; ++j)
-                        for (int i = 0; i < m; ++i)
-                            P(i, j)[v] = M(i, j);
-                }
-                else { /* padded slot */
-                    for (int j = 0; j < n; ++j)
-                        for (int i = 0; i < m; ++i)
-                            P(i, j)[v] = (i == j) ? pad_diag : T(0);
-                }
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
-}
-
-template <class T>
-void unpack_compact(MatrixBatch<T> &Mk, const T *p, int ldp, int V, bool rowmajor = false)
-{
-    const int m = Mk.rows(), n = Mk.cols(), nm = Mk.count();
-    const int ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(rowmajor, ldp, m, n, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P =
-                make_const_view<T, VV>(p + (std::size_t)g * gstride, rowmajor, ldp);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                if (idx >= nm) continue;
-                const auto M = Mk.view(idx);
-                for (int j = 0; j < n; ++j)
-                    for (int i = 0; i < m; ++i)
-                        M(i, j) = P(i, j)[v];
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
+    return std::vector<T>(compact_size(nm, rows, cols, ldp, V, rowmajor));
 }
 
 // The suites' usual shape: pack into a freshly sized buffer and return it.

@@ -60,6 +60,9 @@ its pack/unpack helpers, and `mkl_?gemm_compact`.
 The same option builds the MKL-backed test suites, the worked example `examples/solve_qr_compact.cpp`, and
 the benchmarks against MKL's compact kernels and per-matrix LAPACK. It needs
 Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
+The triangular-solve benchmark, `bench_trsm_compact`, measures the portable
+C API and needs only a BLAS/LAPACK: `-DCBK_BUILD_BENCHMARKS=ON` builds it
+without MKL.
 
 ## Documentation
 
@@ -71,7 +74,7 @@ Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
   with a caller's own parallel loop.
 * [Source layout](docs/layout.md) - the public headers, the kernels, the test
   and benchmark helpers.
-* [Examples and benchmarks](docs/examples.md) - the worked solve and the five
+* [Examples and benchmarks](docs/examples.md) - the worked solve and the six
   benchmarks; measured results in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
 * One design document per routine, linked from the table above.
 * [CHANGELOG.md](CHANGELOG.md) - what each release changed.
