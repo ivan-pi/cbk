@@ -146,15 +146,15 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     int info;
 
     /* Compact-batch arrays: the matrices, R, and tau */
-    double *ap = (double *)malloc(sizeof(double) * total_size_A);
-    double *rp = (double *)malloc(sizeof(double) * total_size_A);
-    double *taup = (double *)malloc(sizeof(double) * total_size_tau);
+    double *ap = malloc(sizeof(double) * total_size_A);
+    double *rp = malloc(sizeof(double) * total_size_A);
+    double *taup = malloc(sizeof(double) * total_size_tau);
 
     /* Pack from LAPACK arrays at the start, and unpack back at the end */
     int lda = m;
-    double *A_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
+    double *A_lpk_p = malloc(sizeof(double) * lda * n * nm);
     int ldqr = m;
-    double *QR_lpk_p = (double *)malloc(sizeof(double) * ldqr * n * nm);
+    double *QR_lpk_p = malloc(sizeof(double) * ldqr * n * nm);
 
     if (!ap || !rp || !taup || !A_lpk_p || !QR_lpk_p) {
         fprintf(stderr, "Error allocating the batch, exit.\n");
@@ -195,7 +195,7 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     }
 
     /* Make a copy of R */
-    memcpy((void *)rp, (void *)ap, sizeof(double) * total_size_A);
+    memcpy(rp, ap, sizeof(double) * total_size_A);
 
     /* Zero lower-triangular part of R, padded slots included */
 #pragma omp parallel for
@@ -298,12 +298,12 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
 
     /* LAPACK setup */
     int lda = m;
-    double *A_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
-    double *R_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
-    double *A_orig_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
+    double *A_lpk_p = malloc(sizeof(double) * lda * n * nm);
+    double *R_lpk_p = malloc(sizeof(double) * lda * n * nm);
+    double *A_orig_lpk_p = malloc(sizeof(double) * lda * n * nm);
     int ldqr = m;
     int nthreads = omp_get_max_threads();
-    double *tau_lpk_p = (double *)malloc(sizeof(double) * n * nthreads);
+    double *tau_lpk_p = malloc(sizeof(double) * n * nthreads);
 
     if (!A_lpk_p || !R_lpk_p || !A_orig_lpk_p || !tau_lpk_p) {
         fprintf(stderr, "Error allocating the batch, exit.\n");
@@ -331,7 +331,7 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
         fprintf(stderr, "Error: LAPACK workspace query failed. Exiting.\n");
         return -1.0;
     }
-    double *work_lpk_p = (double *)malloc(sizeof(double) * lwork * nthreads);
+    double *work_lpk_p = malloc(sizeof(double) * lwork * nthreads);
     if (!work_lpk_p) {
         fprintf(stderr, "Error allocating the workspace, exit.\n");
         return -1.0;
@@ -359,7 +359,7 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
 
         /* Extract R */
         double *R_lpk = &R_lpk_p[(size_t)idx * lda * n];
-        memcpy((void *)R_lpk, (void *)A_lpk, sizeof(double) * lda * n);
+        memcpy(R_lpk, A_lpk, sizeof(double) * lda * n);
 
         for (int j = 0; j < n; j++) {
             for (int i = j + 1; i < m; i++) {
