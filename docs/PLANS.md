@@ -114,13 +114,16 @@ The unpivoted LDL^T factorization, its solve, and the fused `?sysv`-style
 driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 `sytrf`, and the `np` naming follows its `mkl_?getrfnp_compact`.
 
-- **Implemented (design 6-8):** the square-root-free sweep with the `JB = 4`
-  trailing update, structured like `potrf` (one kernel over transposed views;
-  column-major lower and row-major upper contiguous); the solve as two
-  unit-diagonal `trsm` group sweeps around a diagonal solve; `sysvnp` factoring
-  and solving each group while its factor is cache-resident, bit-identical to
-  the two calls. The upper convention is `A = U^T D U` (design 6.3), not
-  `?sytrf`'s `U D U^T`.
+- **Implemented (design 6-8):** the square-root-free sweep, blocked
+  recursively like `potrf` (8-column leaf panels with the `JB = 4` rank-1
+  update confined to the panel, the trailing matrix updated per split level by
+  the register-tiled rank-K update the two kernels share, with the pivot
+  folded into the tile's weights here), structured like `potrf` (one kernel
+  over transposed views; column-major lower and row-major upper contiguous);
+  the solve as two unit-diagonal `trsm` group sweeps around a diagonal solve;
+  `sysvnp` factoring and solving each group while its factor is cache-resident,
+  bit-identical to the two calls. The upper convention is `A = U^T D U`
+  (design 6.3), not `?sytrf`'s `U D U^T`.
 - **Validated (design 7):** BLAS-free test over `(T, V, uplo, layout)` with
   padding, the end-to-end indefinite solve (two-step and fused), the zero-pivot
   semantics of design 6.2, and C-API validation of all three entry points;
@@ -133,11 +136,9 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Scoped out (design 6.2, 6.7):** no pivoting (a singular leading minor
   poisons its lane; Bunch-Kaufman does not vectorize per lane); no complex
   Hermitian variants; the strided sweep is correctness-first.
-- **Open:** the factorization is still the plain rank-1 sweep that potrf
-  replaced -- same structure, same `JB = 4` block helper -- so potrf's
-  recursive blocking and tiled rank-K update (design 6.1) port directly and
-  should bring the same `2-3x` from `n = 48` up; potrf's pivot reordering is
-  already sytrfnp's own form. No factorization-only benchmark (the potrf
+- **Open:** the blocking was tuned on the contiguous case; the strided
+  (column-major upper / row-major lower) cases run the same code untuned. The
+  solve is the plain sweeps. No factorization-only benchmark (the potrf
   harness would port);
   no `sysvnp` vs `sytrfnp + sytrsnp` measurement on out-of-cache pools, the
   comparison that would quantify the fusion (design 6.8) -- the

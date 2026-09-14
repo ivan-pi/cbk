@@ -172,29 +172,56 @@ already does this.
 
 ## 6. Design Considerations & Compatibility
 
-### 6.1 The algorithm: vectorized unblocked LDL^T (square-root-free `potf2`)
+### 6.1 The algorithm: vectorized LDL^T (square-root-free `potf2`), recursively blocked
 
-The batch is factored with the unblocked right-looking sweep -- `?potf2` with
-the `sqrt` pivot replaced by a reciprocal -- executed `V` matrices at a time.
-Because Compact format interleaves the `V` matrices so that element `(i,j)` of
-all `V` is contiguous, the scalar algorithm lifts verbatim with `double ->`
-V-wide vector; like Cholesky (and unlike QR's `larfg`) the math has no
-data-dependent branch, so no lane mask is needed. Per pivot column `j` (lower):
+The batch is factored with the right-looking sweep -- `?potf2` with the `sqrt`
+pivot replaced by a reciprocal -- executed `V` matrices at a time. Because
+Compact format interleaves the `V` matrices so that element `(i,j)` of all `V`
+is contiguous, the scalar algorithm lifts verbatim with `double ->` V-wide
+vector; like Cholesky (and unlike QR's `larfg`) the math has no data-dependent
+branch, so no lane mask is needed. Per pivot column `j` (lower):
 
 ```
-d       = A(j,j)                                 // pivot, stays in place as D(j,j)
+d       = A(j,j)                                    // pivot, stays in place as D(j,j)
 invd    = 1 / d
-A(i,j) *= invd             for i > j             // scale -> L(i,j)
-A(i,jj)-= A(i,j)*(A(jj,j)*d) for jj > j, i >= jj // rank-1 update: L(i,j) D(j,j) L(jj,j)
+A(i,jj)-= A(i,j)*(A(jj,j)*invd) for jj > j, i >= jj // rank-1 update: L(i,j) D(j,j) L(jj,j)
+A(i,j) *= invd                  for i > j           // scale -> L(i,j)
 ```
 
 Only the lower trapezoid is touched, so the strictly-upper triangle passes
-through untouched. The trailing update -- the `O(n^3)` bulk -- is
-register-blocked `JB = 4` trailing columns at a time so each pivot-column entry
-`A(i,j)` load is reused across four columns, exactly as in `potrf`/`geqrf`; the
-extra multiply by `d` folds into the per-column weight `w`, one op per block
-column. Compared with Cholesky at the same size the flop count is the same to
-`O(n^2)` (the `n` square roots are replaced by `n` reciprocals).
+through untouched. The update runs on the still-unscaled column with the
+weights scaled by `1/d`, and the column is scaled after it, so the next pivot
+waits on one divide, a multiply and an FMA (`potrf`'s design 6.2 reorders its
+pivot the same way; this is the form it borrows). Compared with Cholesky at the
+same size the flop count is the same to `O(n^2)` (the `n` square roots are
+replaced by `n` reciprocals).
+
+The sweep is blocked exactly as `potrf`'s (its design 6.1 gives the traffic
+argument: the plain rank-1 sweep is one FMA per pack loaded and stored, and
+streams the trailing matrix through the L2 once per pivot as soon as a group
+outgrows the L1). The columns are split in halves at `NB`-column boundaries
+down to panels of at most `NB` pivots (`sytrfnp_nb`, default 8;
+`-DCBK_SYTRFNP_NB` overrides): a panel runs the sweep above with each pivot's
+rank-1 update confined to the panel's remaining columns, and a wider range
+factors its left half, applies it to the right half as one register-tiled
+rank-`K` update
+
+```
+A(mid:n, mid:j1) -= L(mid:n, j0:mid) D(j0:mid) L(mid:j1, j0:mid)^T
+```
+
+and factors the right half. The tile, the column block and the trailing update
+are `potrf`'s, shared through `cbk_sytrfnp_compact.hpp` with one compile-time
+switch: here the pivot `D(k)` is loaded once per `k` and folded into the tile's
+column weights, one extra multiply per weight (`potrf`'s columns are already
+scaled, `D = I`); the `4 x 4` tile's 16 accumulators, its unscaled and scaled
+weights, the pivot and one loaded pack still fit the 32 AVX-512 registers.
+Every trailing element thus takes its updates once per split level instead of
+once per pivot, in the same pivot order, so the tiled update is the sweep's
+arithmetic without the store and reload between subtractions; only the
+association of the rank-`K` sums differs from the plain sweep's, within the
+same backward-error bound (section 7). The fused solve (section 6.8) inherits
+the blocking unchanged, since it calls the same group kernel.
 
 ### 6.2 Zero pivots: what "no pivoting" does and does not tolerate
 
@@ -409,7 +436,7 @@ kernels.
 
 | File | Role |
 |------|------|
-| `src/cbk_sytrfnp_compact.hpp` | Templated SIMD unpivoted-LDL^T group kernel and all-groups driver (scalar `T`, width `V`). |
+| `src/cbk_sytrfnp_compact.hpp` | Templated SIMD unpivoted-LDL^T group kernel (recursively blocked; its tiled rank-K update is also `potrf`'s) and all-groups driver (scalar `T`, width `V`). |
 | `src/cbk_sytrsnp_compact.hpp` | Templated solve: unit `trsm` group sweeps around the diagonal solve, and its driver. |
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver over both group kernels. |
 | `src/cbk.cpp` | Portable `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` C entry points (runtime `V` dispatch, `info = -j`). |

@@ -55,7 +55,7 @@
 #define CBK_POTRF_COMPACT_HPP
 
 #include "cbk_common.hpp"
-#include "cbk_sytrfnp_compact.hpp" /* sytrfnp_update_block */
+#include "cbk_sytrfnp_compact.hpp" /* the panel step and the tiled update */
 
 #include <cstddef>
 #include <cassert>
@@ -72,88 +72,6 @@ namespace cbk::detail {
 #define CBK_POTRF_NB 8
 #endif
 constexpr int potrf_nb = CBK_POTRF_NB;
-
-/* Rank-K update of one IB x JB tile of the trailing matrix, rows i .. i+IB-1
- * and columns jj .. jj+JB-1, by the columns k0 .. k1-1:
- *     A(i+r, jj+c) -= sum_k A(i+r,k) * A(jj+c,k)
- * accumulated in registers over k, in pivot order, so the tile is loaded and
- * stored once and each pack of the k columns feeds IB (or JB) FMAs. Diag: the
- * tile sits on the diagonal (i == jj) and only its lower triangle r >= c
- * exists -- the loop bounds are compile-time, so the guard folds away. */
-/* CBK_UNROLL before each loop over the tile asks for it to be fully unrolled
- * (GCC and clang both take the GCC spelling; 16 covers the 4 x 4 tile), which
- * keeps acc[][] in registers under GCC, whose scalar replacement runs before
- * it unrolls these loops and would otherwise stage the tile through the stack
- * on entry and exit. Undefined after the tile: a kernel needing another
- * factor defines its own. */
-#define CBK_UNROLL _Pragma("GCC unroll 16")
-
-template <int IB, int JB, bool Diag, typename T, int V, typename Int>
-inline void potrf_syrk_tile(BatchView<T, V, Int> A, Int i, Int jj, Int k0, Int k1)
-{
-    using VT = typename pack<T, V>::type;
-    VT acc[IB][JB];
-    CBK_UNROLL
-    for (int r = 0; r < IB; ++r) {
-        CBK_UNROLL
-        for (int c = 0; c < JB; ++c)
-            if (!Diag || r >= c) acc[r][c] = A(i + r, jj + c);
-    }
-    for (Int k = k0; k < k1; ++k) {
-        VT w[JB];
-        CBK_UNROLL
-        for (int c = 0; c < JB; ++c)
-            w[c] = A(jj + c, k);
-        CBK_UNROLL
-        for (int r = 0; r < IB; ++r) {
-            /* on the diagonal the row and column packs are the same loads */
-            const VT av = Diag ? w[r] : A(i + r, k);
-            CBK_UNROLL
-            for (int c = 0; c < JB; ++c)
-                if (!Diag || r >= c) acc[r][c] -= av * w[c];
-        }
-    }
-    CBK_UNROLL
-    for (int r = 0; r < IB; ++r) {
-        CBK_UNROLL
-        for (int c = 0; c < JB; ++c)
-            if (!Diag || r >= c) A(i + r, jj + c) = acc[r][c];
-    }
-}
-
-#undef CBK_UNROLL
-
-/* The rank-K update of the JB columns jj .. jj+JB-1, rows jj .. n-1, by the
- * columns k0 .. k1-1: the diagonal tile, then 4-row tiles down the column
- * block (the 4 x 4 tile is 16 accumulators, 4 weights and a load: the 32
- * registers of AVX-512), then the leftover rows one at a time. */
-template <int JB, typename T, int V, typename Int>
-inline void potrf_syrk_cols(Int n, BatchView<T, V, Int> A, Int jj, Int k0, Int k1)
-{
-    potrf_syrk_tile<JB, JB, true, T, V, Int>(A, jj, jj, k0, k1);
-    Int i = jj + JB;
-    for (; i + 4 <= n; i += 4)
-        potrf_syrk_tile<4, JB, false, T, V, Int>(A, i, jj, k0, k1);
-    for (; i < n; ++i)
-        potrf_syrk_tile<1, JB, false, T, V, Int>(A, i, jj, k0, k1);
-}
-
-/* Rank-K update of the lower trapezoid A(jj:n, jj), k1 <= jj < jend, by the
- * columns k0 .. k1-1: four-column blocks, then the leftover columns as one
- * narrower block. */
-template <typename T, int V, typename Int>
-inline void potrf_trailing_update(Int n, Int jend, BatchView<T, V, Int> A, Int k0, Int k1)
-{
-    Int jj = k1;
-    for (; jj + 4 <= jend; jj += 4)
-        potrf_syrk_cols<4, T, V, Int>(n, A, jj, k0, k1);
-    switch (jend - jj) {
-    case 3: potrf_syrk_cols<3, T, V, Int>(n, A, jj, k0, k1); break;
-    case 2: potrf_syrk_cols<2, T, V, Int>(n, A, jj, k0, k1); break;
-    case 1: potrf_syrk_cols<1, T, V, Int>(n, A, jj, k0, k1); break;
-    default: break;
-    }
-}
 
 /* The unblocked potf2 on the panel of columns j0 .. j1-1, rows to n, already
  * updated by every column left of j0: each pivot's rank-1 update is confined
@@ -201,7 +119,7 @@ void potrf_compact_block(Int j0, Int j1, Int n, BatchView<T, V, Int> A)
     const Int npanels = (j1 - j0 + potrf_nb - 1) / potrf_nb;
     const Int mid = j0 + (npanels / 2) * potrf_nb;
     potrf_compact_block<T, V, Int>(j0, mid, n, A);
-    potrf_trailing_update<T, V, Int>(n, j1, A, j0, mid);
+    sytrfnp_trailing_update<false, T, V, Int>(n, j1, A, j0, mid);
     potrf_compact_block<T, V, Int>(mid, j1, n, A);
 }
 

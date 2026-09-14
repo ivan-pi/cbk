@@ -217,12 +217,11 @@ bench_sysvnp_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4
 command line of `bench_util.hpp`, so the factorization benchmarks accept it too
 and ignore it.
 
-Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512 matrices,
-one RHS): the fused compact solve outran per-matrix `LAPACKE_dsysv` by `5-9x` at
-orders `8-32`, `3-5x` at `45-64`, `1.8-2.3x` at `96-128`, and `1.0-1.4x` at
-`168-256`, where LAPACK's blocked, pivoted factorization catches up -- a
-geometric mean of `3.1x` over the size list. Both paths recovered the known
-solution to `~6e-15`.
+Two codegen prerequisites decide what this benchmark measures
+(`docs/building.md`): `-march` for the vector width, and full-width vectors
+under clang and icpx (set by the kernel headers), which the blocked
+factorization's register-tiled update depends on. A build missing either runs
+a different kernel.
 
 ## Notes
 
