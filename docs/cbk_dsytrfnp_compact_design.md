@@ -391,9 +391,12 @@ suites also gate the `nrhs = 0` contract of section 3: `?sysvnp` must factor
 
 ### 7.4 Portable self-test
 
-A self-contained test (no BLAS) validates the templated kernels directly
-against a scalar reference across `(T, V)` combinations, both `uplo`, both
-layouts, and padded final packs, plus:
+`tests/test_sytrfnp_compact.cpp` validates the templated kernels directly
+against a scalar reference (`ref_sytf2np`: LAPACK has no unpivoted LDL^T, so
+this is the one reference the suites still hand-roll, and it is itself
+checked first -- its `(L, D)` must reconstruct `A` through `cblas_?trmm` at
+`20 n eps`) across `(T, V)` combinations, both `uplo`, both layouts, and
+padded final packs, plus:
 
 * the **end-to-end portable solve** (`?sytrfnp_compact` + `?sytrsnp_compact`)
   and the **fused** `?sysvnp_compact`, bit-identical to it,
@@ -441,7 +444,7 @@ kernels.
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver over both group kernels. |
 | `src/cbk.cpp` | Portable `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` C entry points (runtime `V` dispatch, `info = -j`). |
 | `src/cbk_compat.cpp` | The MKL-style adapters (`MKL_COMPACT_PACK` -> `V`, `MKL_UPLO`/`MKL_LAYOUT` -> flags). |
-| `tests/test_sytrfnp_compact.cpp` | Self-contained correctness test vs a scalar reference (no BLAS), FP64 and FP32. |
+| `tests/test_sytrfnp_compact.cpp` | Correctness test vs the scalar reference (itself validated against CBLAS), FP64 and FP32. |
 | `tests/test_sytrfnp_mkl.cpp` | MKL validation (invariants, `getrfnp` cross-check, indefinite solve, fused bit-identity), FP64 and FP32. |
 
 The prototypes are added to `cbk_compat.h` (MKL-style) and `cbk.h`

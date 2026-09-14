@@ -440,15 +440,17 @@ with the rest of the compact toolkit.
 
 ### 7.4 Portable self-test
 
-A self-contained test validates the templated kernels directly against a scalar
-reference (`ref_potf2`) across `(T, V)` combinations, both `uplo`, and partial
-(padded) final packs, plus the end-to-end portable solve (`?potrf_compact` +
-`?potrs_compact` recovering a known `X`), the fused `?posv_compact`
-bit-identical to it, and the LAPACK-style argument validation of the three
-portable C APIs. It needs no external libraries at all; only the suites above
-require an MKL installation (for the Compact API). BLAS and LAPACK themselves
-are assumed available, as they are on most platforms -- it is the MKL Compact
-extension that must be installed separately.
+`tests/test_potrf_compact.cpp` validates the templated kernels directly
+against `LAPACKE_?potrf` (through `ref_potf2`; the unique SPD factor,
+relative to its norm at `20 n eps`) across `(T, V)` combinations, both
+`uplo`, both layouts, the `cond` knob, and partial (padded) final packs, with
+the 7.1 invariants (reconstruction by `?trmm`, the untouched triangle) and
+the non-SPD lane isolation of 6.2, plus the end-to-end portable solve
+(`?potrf_compact` + `?potrs_compact` recovering a known `X`), the fused
+`?posv_compact` bit-identical to it, and the LAPACK-style argument validation
+of the three portable C APIs. It needs a LAPACKE + CBLAS
+(`cmake/FindLAPACKE.cmake`: OpenBLAS, Netlib, or MKL's own); only the suites
+above require an MKL installation (for the Compact API).
 
 ### 7.5 Suite 4 -- The packaged solve: `?potrs` and the fused `?posv`
 
@@ -495,5 +497,5 @@ through `extern "C"` for the FFI-stable surfaces, built on the project's
 | `src/cbk_posv_compact.hpp` | The fused factor-and-solve driver over both group kernels. |
 | `src/cbk.cpp` | Portable `?potrf_compact` / `?potrs_compact` / `?posv_compact` C entry points (runtime `V` -> compile-time dispatch, `info = -j`). |
 | `src/cbk_compat.cpp` | Unwraps `MKL_COMPACT_PACK` -> `V` and `MKL_UPLO`/`MKL_LAYOUT`, calls the kernels. |
-| `tests/test_potrf_compact.cpp` | Self-contained correctness test vs a scalar `potf2` reference (no BLAS), incl. the potrs/posv solve. |
-| `tests/test_potrf_mkl.cpp` | MKL + dense-LAPACK validation (residual, uniqueness, cross-check, solves, fused bit-identity). |
+| `tests/test_potrf_compact.cpp` | Correctness test vs `LAPACKE_?potrf` on any LAPACKE stack (residual, uniqueness, untouched triangle), incl. the potrs/posv solve. |
+| `tests/test_potrf_mkl.cpp` | MKL validation (cross-check vs `mkl_?potrf_compact`, solves through MKL's `trsm` and `potrs`/`posv`, fused bit-identity). |

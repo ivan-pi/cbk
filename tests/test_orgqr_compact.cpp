@@ -1,15 +1,19 @@
 /* test_orgqr_compact.cpp
  *
- * Self-contained validation of the templated compact orgqr.
- * Reference: unblocked Householder QR (ref_geqr2, LAPACK reflector convention)
- * + a scalar dorg2r, both templated on T.
+ * Validation of the templated compact orgqr against LAPACKE
+ * (test_lapack_util.hpp): the reflectors come from LAPACKE_?geqr2 and the
+ * reference Q from LAPACKE_?orgqr.
  *
  * Test design: factor a random m x k batch (diagonal-boosted), stage the
  * reflectors into the first k columns of an m x n buffer whose remaining
  * columns hold garbage (they must be overwritten), and generate Q.
  *
  * Checks per (T, V, layout):
- *   1. compact Q  ==  scalar dorg2r Q (elementwise, ~eps: same op sequence)
+ *   1. compact Q  ==  LAPACKE_?orgqr Q (elementwise, 100 m eps: Q's entries
+ *      are O(1) and, for full-rank A, Q is unique up to the shared sign
+ *      convention, so two backward-stable routes agree to cond(A) * eps;
+ *      LAPACK blocks its accumulation above k = 128, so the rounding order
+ *      differs)
  *   2. Q^T Q = I (orthonormal columns, formed independently)
  *   3. Q(:, 0:k-1) R = A with R = triu of the factorization (k > 0)
  *   4. padded lanes of a partial last group come out exactly identity
@@ -27,41 +31,9 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, scalar references, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_geqr2, ref_org2r, MatrixBatch, pack/unpack
 
 using namespace cbk::test;
-
-/* ----------------------- reference kernel (scalar) ------------------ */
-
-/* dorg2r: generate the first n columns of Q = H(0)..H(k-1) in place over the
- * reflectors of ref_geqr2 (columns 0..k-1 of A, m x n, m >= n >= k). Backward
- * accumulation: unit-seed columns k..n-1, then apply each H(kk) to the
- * trailing columns and form column kk = H(kk) e_kk. */
-template <class T> static void ref_org2r(int k, MatrixView<T> A, const T *tau)
-{
-    const int m = A.rows, n = A.cols;
-    assert(k <= n && n <= m);
-    for (int j = k; j < n; ++j) {
-        for (int i = 0; i < m; ++i)
-            A(i, j) = T(0);
-        A(j, j) = T(1);
-    }
-    for (int kk = k - 1; kk >= 0; --kk) {
-        for (int j = kk + 1; j < n; ++j) {
-            T w = A(kk, j);
-            for (int i = kk + 1; i < m; ++i)
-                w += A(i, kk) * A(i, j);
-            A(kk, j) -= tau[kk] * w;
-            for (int i = kk + 1; i < m; ++i)
-                A(i, j) -= tau[kk] * A(i, kk) * w;
-        }
-        for (int i = kk + 1; i < m; ++i)
-            A(i, kk) *= -tau[kk];
-        A(kk, kk) = T(1) - tau[kk];
-        for (int i = 0; i < kk; ++i)
-            A(i, kk) = T(0);
-    }
-}
 
 /* --------------------------- one test case -------------------------- */
 
@@ -70,7 +42,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
 {
     assert(m >= n && n >= k);
     const T eps = std::numeric_limits<T>::epsilon();
-    const double tol_exact = 100.0 * eps;    /* same op sequence as the reference */
+    const double tol_el = 100.0 * eps * m;   /* vs LAPACKE_?orgqr, see the header */
     const double tol_orth = 100.0 * eps * m; /* independent invariants */
     const double tol_rec = 100.0 * eps * m;
 
@@ -106,7 +78,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     }
     unpack_compact(Qout, ap.data(), ld, V, rowmajor);
 
-    /* check 1: elementwise vs scalar dorg2r */
+    /* check 1: elementwise vs LAPACKE_?orgqr */
     double e1 = 0;
     for (int kk = 0; kk < nm; ++kk)
         e1 = std::max(e1, max_abs_diff(Qout[kk], Qref[kk], Qout.stride()));
@@ -146,7 +118,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
                                   (double)std::abs(P(i, j)[v] - (i == j ? T(1) : T(0))));
     }
 
-    bool ok1 = e1 <= tol_exact, ok2 = e2 <= tol_orth, ok3 = e3 <= tol_rec, ok4 = e4 == 0;
+    bool ok1 = e1 <= tol_el, ok2 = e2 <= tol_orth, ok3 = e3 <= tol_rec, ok4 = e4 == 0;
     fails += !ok1 + !ok2 + !ok3 + !ok4;
     std::printf("T=%-6s V=%-2d nm=%-2d %s m=%-3d n=%-3d k=%-3d | ref: %.2e %s | QtQ=I: "
                 "%.2e %s | QR=A: %.2e %s | pad: %.1e %s\n",
@@ -203,6 +175,7 @@ int main()
     fails += run_case<float, 4>(8, 43, 43, 43);
     fails += run_case<float, 8>(16, 43, 43, 43);
     fails += run_case<float, 16>(32, 43, 43, 43);
+    fails += run_case<double, 8>(8, 128, 128, 128); /* LAPACK's blocked orgqr */
 
     /* tall thin Q (n = k < m) */
     fails += run_case<double, 4>(8, 43, 20, 20);

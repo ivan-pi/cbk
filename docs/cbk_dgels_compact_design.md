@@ -212,10 +212,11 @@ in FP64 and FP32.
   `mkl_?geqrf_compact -> cbk_?ormqr_compact -> mkl_?trsm_compact` must
   agree in `ap`, `tau` (elementwise, cross-check tolerance) and `X`
   (`100 * n * eps`), and both must match the known `X`.
-* **Portable self-test** (no BLAS): the templated kernel across
-  `(T, V, layout, trans, shape)`, padded final packs, `nrhs = 1` and the
-  smallest sizes, against a scalar `ref_gels` of the same unblocked steps
-  (`X`, factorization and `tau` gated at `~eps`); the defining properties
+* **Portable self-test** (`tests/test_gels_compact.cpp`, on any LAPACKE
+  stack): the templated kernel across `(T, V, layout, trans, shape)`, padded
+  final packs, `nrhs = 1` and the smallest sizes, against `LAPACKE_?gels` and
+  `?geqrf` / `?gelqf` through `ref_gels` (`X`, factorization and `tau`,
+  relative, at `100 max(m,n) eps`); the defining properties
   formed without the reference (normal equations and residual rows for least
   squares; `op(A) X = B` and agreement with `X = op(A)^T Z`,
   `(op(A) op(A)^T) Z = B`, for minimum norm); the portable C API's argument

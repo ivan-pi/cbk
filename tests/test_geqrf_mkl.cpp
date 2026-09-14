@@ -1,19 +1,11 @@
 /* test_geqrf_mkl.cpp
  *
- * Validation of cbk_?geqrf_compact against real Intel MKL and dense LAPACK,
- * through the genuine MKL Compact pipeline (mkl_dgepack_compact /
- * mkl_dgeunpack_compact). This is the design document's "hard correctness gate
- * against standard dense LAPACK equivalents" (cbk_dgeqrf_compact_design.md
- * section 7).
- *
- * Suite 1 (section 7.1) -- Factorization invariants vs dense LAPACK:
- *   A random batch is factored by cbk_dgeqrf_compact, unpacked, and per
- *   matrix checked against the LAPACK-style QR contract used by the GPU
- *   competition checker: Q is materialized from (H, tau) via LAPACKE_dorgqr,
- *   R = triu(H), and the routine gates
- *     - factorization residual || R - Q^T A ||_1 / ||A||_1  <= 20 * n * eps,
- *     - orthogonality         || Q^T Q - I ||_1            <= 100 * n * eps.
- *   (H, tau) are also compared elementwise to LAPACKE_dgeqrf as a diagnostic.
+ * Validation of cbk_?geqrf_compact against real Intel MKL, through the
+ * genuine MKL Compact pipeline (mkl_dgepack_compact / mkl_dgeunpack_compact):
+ * the MKL-side half of cbk_dgeqrf_compact_design.md section 7. The
+ * dense-LAPACK invariants of section 7.1 (Q from ?orgqr, residual and
+ * orthogonality gates over the structured inputs) run in the portable suite,
+ * test_geqrf_compact.cpp, on any LAPACKE stack.
  *
  * Suite 2 (section 7.2) -- Cross-check vs mkl_dgeqrf_compact:
  *   The same packed batch is factored by both cbk_dgeqrf_compact and the
@@ -29,7 +21,7 @@
  * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
 
-#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */
+#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the shared helpers */
 
 #include <cstdio>
 #include <cstdlib>
@@ -41,144 +33,6 @@
 using namespace cbk::test;
 
 namespace {
-
-/* Input structures (a subset of the GPU competition's stress set). The QR
- * residual and orthogonality are backward-stable quantities, so they must hold
- * to working precision for every structure -- rank deficiency and near-collinear
- * columns included -- exactly as they do for dense LAPACK. */
-enum Structure { DENSE, RANK_DEFICIENT, NEAR_COLLINEAR };
-
-/* build a random m x n matrix. For DENSE, a diagonal boost tames the
- * conditioning and cond applies the competition's column scaling
- * (columns *= logspace(0,-cond,n)). The structured variants make the last column
- * a (near-)copy of the first, so the trailing reflector sees a (near-)zero
- * sub-diagonal norm -- the branch the masked larfg must get right. */
-template <class T> void gen_matrix(MatrixView<T> A, double cond, Structure s = DENSE)
-{
-    const int m = A.rows, n = A.cols;
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < m; ++i)
-            A(i, j) = frand<T>();
-    if (s == DENSE) {
-        for (int d = 0; d < std::min(m, n); ++d)
-            A(d, d) += T(2);
-        if (cond > 0.0)
-            for (int j = 0; j < n; ++j) {
-                double sc = std::pow(10.0, -cond * (n > 1 ? (double)j / (n - 1) : 0.0));
-                for (int i = 0; i < m; ++i)
-                    A(i, j) *= sc;
-            }
-    }
-    else if (n >= 2) {
-        const double noise = (s == NEAR_COLLINEAR) ? 1e-9 : 0.0; /* exact dup if 0 */
-        for (int i = 0; i < m; ++i)
-            A(i, n - 1) = A(i, 0) * (1.0 + noise * frand<T>());
-    }
-}
-
-/* ---------------- Suite 1: invariants vs dense LAPACK (col-major) ------ */
-
-template <class T>
-int suite1(int nm, int m, int n, double cond, Structure structure = DENSE)
-{
-    const double eps = std::numeric_limits<T>::epsilon();
-    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
-    const int V = mkl<T>::vlen(fmt);
-    const int k = std::min(m, n);
-
-    MatrixBatch<T> A(nm, m, n);
-    for (int v = 0; v < nm; ++v)
-        gen_matrix(A.view(v), cond, structure);
-
-    /* pack A, factor with the routine under test, unpack (H, tau) */
-    auto Ap = A.base_ptrs();
-    MKL_INT sz_a = mkl<T>::get_size(m, n, fmt, nm);
-    MKL_INT sz_t = mkl<T>::get_size(k, 1, fmt, nm);
-    auto ap_buf = cbk::detail::mkl_alloc_bytes<T>(sz_a);
-    auto taup_buf = cbk::detail::mkl_alloc_bytes<T>(sz_t);
-    T *ap = ap_buf.get(), *taup = taup_buf.get();
-    mkl<T>::gepack(MKL_COL_MAJOR, m, n, Ap.data(), m, ap, m, fmt, nm);
-
-    MKL_INT info = 99;
-    T wq;
-    compat<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq, -1, &info, fmt, nm);
-    compat<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, &wq, (MKL_INT)wq, &info, fmt, nm);
-
-    MatrixBatch<T> H(nm, m, n), tau(nm, k, 1);
-    auto Hp = H.base_ptrs();
-    auto Tp = tau.base_ptrs();
-    mkl<T>::geunpack(MKL_COL_MAJOR, m, n, Hp.data(), m, ap, m, fmt, nm);
-    mkl<T>::geunpack(MKL_COL_MAJOR, k, 1, Tp.data(), k, taup, k, fmt, nm);
-
-    int fails = 0;
-    if (info != 0) {
-        ++fails;
-        std::printf("    info = %ld (expected 0)\n", (long)info);
-    }
-
-    double worst_res = 0, worst_orth = 0, worst_el = 0;
-    std::vector<T> Q((size_t)m * k), QtA((size_t)k * n), QtQ((size_t)k * k);
-    std::vector<T> Href(A.stride()), tauref(tau.stride());
-    const auto QtAm = mat_view(QtA.data(), k, n);
-    const auto QtQm = mat_view(QtQ.data(), k, k);
-    for (int v = 0; v < nm; ++v) {
-        const T *Av = A[v];
-        const T *Hv = H[v], *tv = tau[v];
-        const auto Am = A.view(v); /* the input, column-major */
-        const auto Hm = H.view(v); /* the factor (H, tau) it produced */
-
-        /* Q = householder_product(H, tau): first k columns of Q (m x k). The
-         * reflectors occupy the first k columns of the m x n H, i.e. the first
-         * m*k contiguous (column-major) elements. */
-        std::copy(Hv, Hv + (size_t)m * k, Q.begin());
-        lapack<T>::orgqr(LAPACK_COL_MAJOR, m, k, k, Q.data(), m, tv);
-
-        /* residual R - Q^T A, R = triu(H) (k x n) */
-        lapack<T>::gemm(CblasColMajor, CblasTrans, CblasNoTrans, k, n, m, T(1), Q.data(),
-                        m, Av, m, T(0), QtA.data(), k);
-        double resid = 0;
-        for (int j = 0; j < n; ++j)
-            for (int i = 0; i < k; ++i) {
-                double R = (i <= j) ? Hm(i, j) : 0.0; /* triu */
-                resid = std::max(resid, std::abs(R - QtAm(i, j)));
-            }
-        worst_res = std::max(worst_res, resid / std::max(norm1(Am), norm_floor));
-
-        /* orthogonality Q^T Q - I (k x k) */
-        lapack<T>::gemm(CblasColMajor, CblasTrans, CblasNoTrans, k, k, m, T(1), Q.data(),
-                        m, Q.data(), m, T(0), QtQ.data(), k);
-        for (int d = 0; d < k; ++d)
-            QtQm(d, d) -= T(1);
-        worst_orth = std::max(worst_orth, norm1(QtQm));
-
-        /* diagnostic: elementwise vs LAPACKE_dgeqrf */
-        std::copy(Av, Av + A.stride(), Href.begin());
-        lapack<T>::geqrf(LAPACK_COL_MAJOR, m, n, Href.data(), m, tauref.data());
-        double el = std::max(max_abs_diff(Hv, Href.data(), A.stride()),
-                             max_abs_diff(tv, tauref.data(), tau.stride()));
-        worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
-    }
-
-    /* The elementwise difference vs LAPACKE_?geqrf is gated on the dense
-     * inputs only, where the reflectors are essentially unique: it catches a
-     * sign-convention regression the residual gates cannot see (observed
-     * ~n*eps). Rank-deficient and near-collinear inputs stay ungated (their
-     * reflectors are not unique; el ~ 1e-2 is expected) and it is printed as a
-     * diagnostic there (design doc 7.1). */
-    const double rtol_res = 20.0 * n * eps, rtol_orth = 100.0 * n * eps;
-    const double rtol_el = (structure == DENSE) ? 100.0 * n * eps : HUGE_VAL;
-    bool ok =
-        (worst_res <= rtol_res) && (worst_orth <= rtol_orth) && (worst_el <= rtol_el);
-    fails += !ok;
-    const char *sname = structure == DENSE            ? "dense"
-                        : structure == RANK_DEFICIENT ? "rankdef"
-                                                      : "collin";
-    std::printf("  [suite1] V=%-2d nm=%-2d m=%-3d n=%-3d cond=%.0f %-8s| res %.2e (%.1e) "
-                "orth %.2e (%.1e) el %.1e %s\n",
-                V, nm, m, n, cond, sname, worst_res, rtol_res, worst_orth, rtol_orth,
-                worst_el, ok ? "OK" : "FAIL");
-    return fails;
-}
 
 /* ---------------- Suite 2: cross-check vs mkl_dgeqrf_compact ----------- */
 
@@ -192,7 +46,7 @@ template <class T> int suite2(MKL_LAYOUT layout, int nm, int m, int n)
 
     MatrixBatch<T> A(nm, m, n);
     for (int v = 0; v < nm; ++v)
-        gen_matrix(A.view(v), 0.0);
+        gen_boosted(A.view(v));
     /* A was generated column-major; for a row-major run reinterpret the same
      * numbers as a row-major m x n (a genuinely different matrix, still fine). */
     auto Ap = A.base_ptrs();
@@ -252,7 +106,7 @@ template <class T> int suite3(int nm, int n, int nrhs)
 
     MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
     for (int v = 0; v < nm; ++v) {
-        gen_matrix(A.view(v), 0.0);
+        gen_boosted(A.view(v));
         matmul(A.view(v), X, B.view(v)); /* B = A X */
     }
     auto Ap = A.base_ptrs();
@@ -319,19 +173,6 @@ template <class T> int run_suites()
                 (int)mkl_get_format_compact(), mkl<T>::vlen(mkl_get_format_compact()));
 
     int fails = 0;
-
-    /* Suite 1: invariants vs dense LAPACK, square + rectangular, a range of cond */
-    fails += suite1<T>(8, 30, 30, 0.0);
-    fails += suite1<T>(16, 60, 60, 0.0);
-    fails += suite1<T>(11, 43, 43, 0.0); /* padded partial group */
-    fails += suite1<T>(8, 64, 20, 0.0);  /* tall */
-    fails += suite1<T>(8, 20, 64, 0.0);  /* wide */
-    fails += suite1<T>(8, 30, 30, 4.0);  /* column-scaled (dynamic range) */
-    fails += suite1<T>(8, 128, 128, 0.0);
-    /* conditioning-robustness stress: backward-stable gates must still hold */
-    fails += suite1<T>(8, 40, 40, 0.0, RANK_DEFICIENT);
-    fails += suite1<T>(8, 40, 40, 0.0, NEAR_COLLINEAR);
-    fails += suite1<T>(11, 60, 24, 0.0, RANK_DEFICIENT); /* wide-ish, padded group */
 
     /* Suite 2: cross-check vs mkl_dgeqrf_compact, both layouts */
     fails += suite2<T>(MKL_COL_MAJOR, 8, 30, 30);

@@ -12,10 +12,11 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
 - **Implemented (design 6-8):** vectorized unblocked `geqr2` with a branch-free
   masked `larfg`; the trailing update is `ormqr`'s `larf`. One strided kernel
   for both layouts (column-major contiguous).
-- **Validated (design 7):** BLAS-free test vs a scalar `geqr2`; MKL/LAPACK
-  test gating factorization residual (`20 n eps`) and orthogonality
-  (`100 n eps`), cross-checking `mkl_dgeqrf_compact` in both layouts, closing
-  `AX = B`, and covering rank-deficient / near-collinear inputs.
+- **Validated (design 7):** portable test vs `LAPACKE_?geqr2` (elementwise)
+  gating factorization residual (`20 n eps`) and orthogonality (`100 n eps`)
+  of the `?orgqr`-formed `Q`, covering rank-deficient / near-collinear
+  inputs; MKL test cross-checking `mkl_dgeqrf_compact` in both layouts and
+  closing `AX = B`.
 - **Benchmarked:** `bench_geqrf_compact`.
 - **Scoped out (design 6.6):** `dlarfg` rescaling (the portable test pins the
   underflow behavior: `tau = 0`, diagonal kept, body zeroed), column pivoting, blocked
@@ -27,8 +28,8 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   sides, both layouts, `trans in {N, T}` (`C` folds to `T`). The shared `larf`
   is register-blocked four slices at a time; `side = 'R'` is the same kernel
   over the transposed view. Padded slots carry `tau = 0`, so they are no-ops.
-- **Validated (design 7):** BLAS-free test vs a scalar `dorm2r` (including a
-  column-pivoted QR + back-permutation solve); MKL test of `op(Q) C` vs dense
+- **Validated (design 7):** portable test vs `LAPACKE_?ormqr` (including a
+  `?geqp3` column-pivoted QR + back-permutation solve); MKL test of `op(Q) C` vs dense
   `LAPACKE_dormqr` over `layout x side x trans` (`20 s eps`) plus the
   `mkl_dgeqrf_compact -> cbk_dormqr_compact -> mkl_dtrsm_compact` solve
   (`100 n eps`).
@@ -50,7 +51,7 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   (`1 - tau` diagonal, `-tau`-scaled reflector body, zeros above). In place on
   the `?geqrf_compact` output (`m >= n >= k`); both layouts through the one
   strided kernel; no scratch (the MKL-style `lwork = -1` query answers 1).
-- **Validated (design 7):** BLAS-free test vs a scalar `dorg2r` plus the
+- **Validated (design 7):** portable test vs `LAPACKE_?orgqr` plus the
   independent invariants (`Q^T Q = I`, `Q R = A`, padded lanes exactly
   identity), covering `k < n`, `k = 0` and both layouts; MKL test vs dense
   `LAPACKE_dorgqr` (cross-check tolerance) gating orthogonality (`100 n eps`)
@@ -75,14 +76,14 @@ compact `potrs` or `posv`.
   The solve as two non-unit `trsm` group sweeps (`?sytrsnp` minus the diagonal
   step); `posv` factoring and solving each group while its factor is
   cache-resident, bit-identical to the two calls.
-- **Validated (design 7):** BLAS-free test vs a scalar `potf2` (both `uplo`,
-  both layouts, padding, non-SPD lane isolation), the end-to-end SPD solve
+- **Validated (design 7):** portable test vs `LAPACKE_?potrf` (both `uplo`,
+  both layouts, padding, the `cond` knob, non-SPD lane isolation) gating the
+  factor (`20 n eps`, relative), the reconstruction residual (`20 n eps`)
+  and the untouched triangle (bit-for-bit), the end-to-end SPD solve
   (two-step and fused) and C-API validation of all three entry points;
-  MKL/LAPACK test gating the
-  reconstruction residual (`20 n eps`), the untouched triangle (bit-for-bit),
-  the factor vs `LAPACKE_dpotrf` (`20 n eps`), the cross-check vs
-  `mkl_dpotrf_compact` (bit-exact), the SPD solve through `mkl_?trsm_compact`
-  and through `potrs` (`100 n eps`), and the fused driver's bit-identity.
+  MKL test with the cross-check vs `mkl_dpotrf_compact` (bit-exact), the SPD
+  solve through `mkl_?trsm_compact` and through `potrs` (`100 n eps`), and
+  the fused driver's bit-identity.
 - **Benchmarked:** `bench_potrf_compact` (the factorization) and
   `bench_posv_compact` (the end-to-end solve: fused vs its own two-step calls
   vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv`).
@@ -124,8 +125,10 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   `sysvnp` factoring and solving each group while its factor is cache-resident,
   bit-identical to the two calls. The upper convention is `A = U^T D U`
   (design 6.3), not `?sytrf`'s `U D U^T`.
-- **Validated (design 7):** BLAS-free test over `(T, V, uplo, layout)` with
-  padding, the end-to-end indefinite solve (two-step and fused), the zero-pivot
+- **Validated (design 7):** portable test over `(T, V, uplo, layout)` with
+  padding (vs the one hand-rolled scalar reference left, itself validated
+  against `cblas_?trmm`), the end-to-end indefinite solve (two-step and
+  fused), the zero-pivot
   semantics of design 6.2, and C-API validation of all three entry points;
   MKL test gating reconstruction (`20 n eps`), the untouched triangle, an
   elementwise `(L, D)` cross-check vs `mkl_?getrfnp_compact` (`~3e-15` FP64),
@@ -152,8 +155,8 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   tuned (4/2/1 register-blocked row-dot, contiguous axpy for the leftover
   column); the group kernel routes on views, so a transposed column-major view
   reaches the tuned path too (used by gels). Other combinations are strided.
-- **Validated (design 7):** BLAS-free test vs a scalar `?trsm` (forward error
-  and `||op(A) X - alpha B||`); MKL cross-check vs `mkl_?trsm_compact` over the
+- **Validated (design 7):** portable test vs `cblas_?trsm` (forward error
+  and `||op(A) X - alpha B||` by `cblas_?trmm`); MKL cross-check vs `mkl_?trsm_compact` over the
   full feature matrix plus the end-to-end solve.
 - **Performance vs `mkl_?trsm_compact`** (single thread, AVX-512, orders
   10-148, measured before the view-based routing): `nrhs = 1` ~`1.0x`, `nrhs`
@@ -176,8 +179,8 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   sides. A fused factor-and-apply kernel for the least-squares case was
   retired (design 6.2): no arithmetic saved, and it evicted `B` from L1 at
   mid sizes.
-- **Validated (design 7):** BLAS-free test vs a scalar `ref_gels` (`X`,
-  factorization and `tau` elementwise) plus the defining properties formed
+- **Validated (design 7):** portable test vs `LAPACKE_?gels` and
+  `?geqrf`/`?gelqf` (`X`, factorization and `tau`, relative) plus the defining properties formed
   independently, C-API validation, and the `min(m,n) = 0` quick return; MKL
   test vs per-matrix `LAPACKE_?gels` over every `(layout, trans)` and
   square/tall/wide shape (forward error `100 max(m,n) eps`, residual
@@ -202,14 +205,26 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 ## Project-wide
 
 - **Precision coverage.** Every suite is templated on the scalar type and runs
-  in FP64 and FP32 through the `compat<T>` / `mkl<T>` / `lapack<T>` dispatch
-  of `tests/test_mkl_util.hpp`; FP32 cross-checks agree with `mkl_s*_compact`
-  to ~1e-6, gated at 1e-4.
-- **Planned: test against a real BLAS/LAPACK (issue #27).** The portable
-  suites hand-roll their scalar reference routines. Instead, assume a library
-  is present for testing -- `find_package(LAPACK REQUIRED)` -- and validate
-  against it, rather than maintaining our own reference versions. This also
-  opens the dense cross-checks (today MKL-only) to any BLAS/LAPACK stack.
+  in FP64 and FP32 through the `compact<T>` / `lapack<T>` dispatch of
+  `tests/test_compact_util.hpp` / `test_lapack_util.hpp` and the `compat<T>`
+  / `mkl<T>` one of `tests/test_mkl_util.hpp`; FP32 cross-checks agree with
+  `mkl_s*_compact` to ~1e-6, gated at 1e-4.
+- **Done: test against a real BLAS/LAPACK (issue #27).** The suites validate
+  against LAPACKE + CBLAS (`tests/test_lapack_util.hpp`): the `ref_*`
+  procedures forward to `LAPACKE_?geqr2` / `?ormqr` / `?orgqr` / `?geqp3` /
+  `?potrf` / `?gels` and `cblas_?trsm` / `?trmm` / `?gemm`, with the
+  unpivoted LDL^T (`ref_sytf2np`, which LAPACK lacks) the one hand-rolled
+  reference left, validated against `cblas_?trmm` in its suite.
+  `cmake/FindLAPACKE.cmake` takes MKL's LAPACKE with the MKL extension and
+  OpenBLAS, Netlib or any `lapacke` + `find_package(LAPACK)` pair without
+  (`-DCBK_TEST_LAPACK`); CI runs OpenBLAS and Netlib under gcc and clang. The
+  dense cross-checks of the MKL suites (`geqrf`'s and `potrf`'s section 7.1)
+  moved into the portable suites, on every stack. Where a reference is
+  LAPACK's blocked driver, the gate is relative to the operand norms at a
+  multiple of `n eps` (design 7.1), not elementwise at `~eps`; only `?geqr2`
+  stays an elementwise `~eps` comparison. macOS through Accelerate +
+  accelerate-lapacke has a tag-only workflow (`.github/workflows/macos.yml`),
+  not yet exercised.
 - **Planned: LAPACK-style test coverage.** Adopt the testing approaches of the
   reference LAPACK repository (its `TESTING/LIN` drivers): `?latms`-style
   generators with prescribed condition number and spectral distribution, and

@@ -34,7 +34,9 @@ groups of `V` matrices with OpenMP (`-DCBK_WITH_OPENMP=OFF` disables it).
 
 ## Getting started
 
-Requires CMake >= 3.28 and a C++17 compiler (GCC/Clang); nothing else.
+Requires CMake >= 3.28 and a C++17 compiler (GCC/Clang); the library needs
+nothing else, and the tests a LAPACKE + CBLAS stack (OpenBLAS, Netlib or MKL)
+to validate against.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS="-O3 -march=native"

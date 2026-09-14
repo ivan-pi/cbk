@@ -3,11 +3,13 @@
 ```
 include/   public headers
 src/       kernels and the two adapter sources
-tests/     portable (no BLAS) and MKL-backed test suites; tests/install/ checks
-           an installed cbk from a downstream project
+tests/     the portable C API's suites (vs LAPACKE/CBLAS, any stack) and the
+           MKL-backed ones; tests/install/ checks an installed cbk from a
+           downstream project
 examples/  worked solve + benchmarks (see examples/BENCHMARKS.md)
 docs/      design documents and guides (see docs/README.md)
-cmake/     FindMKLCompact.cmake, cbkConfig.cmake.in (the installed package)
+cmake/     FindMKLCompact.cmake, FindLAPACKE.cmake (the tests' stack),
+           cbkConfig.cmake.in (the installed package)
 ```
 
 ## Public interface
@@ -45,10 +47,11 @@ scalar, `0` on success).
 | `src/cbk_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf, ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
 | `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
 | `src/cbk_compat.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |
-| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, scalar reference kernels, Compact pack/unpack, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, no MKL. |
-| `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `compat<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels), `lapack<T>` (LAPACKE/CBLAS references). |
-| `tests/test_*_compact.cpp` | Portable self-contained suites (no BLAS): each kernel vs its scalar reference, plus C API validation, in FP64 and FP32. |
-| `tests/test_*_mkl.cpp` | MKL + dense-LAPACK validation, templated on the scalar type and run in FP64 and FP32: invariants vs LAPACK, cross-checks vs MKL's compact kernels, end-to-end solves. |
+| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, Compact pack/unpack, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, library-free. |
+| `tests/test_lapack_util.hpp` | The dense references on a real LAPACKE + CBLAS: `lapack<T>` (the LAPACKE/CBLAS dispatch), the `ref_*` procedures over views (`ref_geqr2`, `ref_orm2r`, `ref_potf2`, `ref_trsm`, `ref_gels`, ...), `matmul`, `tri_apply`, `solve_errors`. The stack comes from `cmake/FindLAPACKE.cmake`. |
+| `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `compat<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels). |
+| `tests/test_*_compact.cpp` | The portable C API's suites, on any LAPACKE stack: each kernel vs its LAPACK counterpart (elementwise where that is the same unblocked algorithm, residual and invariant gates elsewhere), plus C API validation, in FP64 and FP32. |
+| `tests/test_*_mkl.cpp` | MKL validation, templated on the scalar type and run in FP64 and FP32: the MKL-style API through MKL's pack/unpack, cross-checks vs MKL's compact kernels, end-to-end solves. |
 | `examples/bench_util.hpp` | The benchmarks' shared harness (timing, aligned storage, command line). |
 
 The contributor conventions behind this layout -- one kernel per routine over

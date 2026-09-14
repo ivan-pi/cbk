@@ -1,16 +1,17 @@
 // test_potrf_compact.cpp
 //
-// Self-contained validation of the templated compact Cholesky factorization
-// (dpotrf_compact / spotrf_compact), its solve companion (dpotrs_compact /
-// spotrs_compact) and the fused factor-and-solve (dposv_compact /
-// sposv_compact), with no BLAS dependency. The reference is the unblocked
-// Cholesky (LAPACK ?potf2) implemented in scalar form -- the same algorithm
-// the vectorized kernel executes V lanes at a time, so a correct kernel
-// matches it to working precision.
+// Validation of the templated compact Cholesky factorization (dpotrf_compact
+// / spotrf_compact), its solve companion (dpotrs_compact / spotrs_compact)
+// and the fused factor-and-solve (dposv_compact / sposv_compact) against
+// LAPACKE (test_lapack_util.hpp): the reference factor is LAPACKE_?potrf
+// (recursive / blocked, so its rounding differs from the kernel's
+// right-looking sweep, but the SPD factor is unique).
 //
 // Checks per (T, V, uplo, layout):
-//   1. named-triangle factor  ==  scalar potf2 factor   (elementwise, ~eps*scale)
-//   2. reconstruction  L L^T == A  (lower) / U^T U == A  (upper)
+//   1. named-triangle factor  ==  LAPACKE_?potrf factor, relative to the
+//      reference factor's L1 norm at 20 n eps (design 7.1: the unique factor
+//      agrees to a few n eps between backward-stable implementations)
+//   2. reconstruction  L L^T == A  (lower) / U^T U == A  (upper), by ?trmm
 //   3. the strictly-opposite triangle of the compact buffer is bit-for-bit
 //      unchanged from the input (the routine must not reference or write it)
 //   4. end-to-end solve: factor + ?potrs_compact recovers a known X, and
@@ -27,59 +28,24 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, frand, gen_spd, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_potf2, tri_apply, gen_spd, pack/unpack
 
 using namespace cbk::test;
 
-// ----------------------- reference kernel (scalar) ------------------
-// Unblocked right-looking potf2 on a dense column-major n x n matrix, in place.
-// Lower: A = L L^T, factor in the lower triangle. Upper: A = U^T U, factor in
-// the upper triangle. Only the named triangle is read or written. No SPD check
-// (mirrors the routine under test): a bad pivot yields NaN/Inf.
-
-template <class T> static void ref_potf2(char uplo, MatrixView<T> A)
-{
-    assert(A.rows == A.cols);
-    const bool upper = (uplo == 'U' || uplo == 'u');
-    const int n = A.rows;
-    if (!upper) {
-        for (int j = 0; j < n; ++j) {
-            T d = std::sqrt(A(j, j));
-            A(j, j) = d;
-            T invd = T(1) / d;
-            for (int i = j + 1; i < n; ++i)
-                A(i, j) *= invd;               // scale pivot column
-            for (int jj = j + 1; jj < n; ++jj) // rank-1 trailing update, lower
-                for (int i = jj; i < n; ++i)
-                    A(i, jj) -= A(i, j) * A(jj, j);
-        }
-    }
-    else {
-        for (int j = 0; j < n; ++j) {
-            T d = std::sqrt(A(j, j));
-            A(j, j) = d;
-            T invd = T(1) / d;
-            for (int c = j + 1; c < n; ++c)
-                A(j, c) *= invd;            // scale pivot row
-            for (int c = j + 1; c < n; ++c) // rank-1 trailing update, upper
-                for (int r = j + 1; r <= c; ++r)
-                    A(r, c) -= A(j, r) * A(j, c);
-        }
-    }
-}
-
 // --------------------------- one test case --------------------------
 
-template <class T, int V> static int run_case(int nm, int n, char uplo, char layout)
+template <class T, int V>
+static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
 {
     const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const bool upper = (uplo == 'U' || uplo == 'u');
 
-    // random SPD batch + scalar reference factor for this uplo
+    // random SPD batch (cond > 0 squeezes its spectrum) + LAPACKE's factor
+    // for this uplo
     MatrixBatch<T> A(nm, n, n), Aref(nm, n, n);
     for (int idx = 0; idx < nm; ++idx) {
-        gen_spd(A.view(idx));
+        gen_spd(A.view(idx), cond);
         std::copy(A[idx], A[idx] + (size_t)n * n, Aref[idx]);
         ref_potf2(uplo, Aref.view(idx));
     }
@@ -91,50 +57,52 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
     double e_fac = 0, e_rec = 0, e_untouched = 0;
-    std::vector<T> Recs((size_t)n * n);
-    const auto Rec = mat_view(Recs.data(), n, n);
+    std::vector<T> Fs((size_t)n * n), Recs((size_t)n * n);
+    const auto F = mat_view(Fs.data(), n, n), Rec = mat_view(Recs.data(), n, n);
     for (int idx = 0; idx < nm; ++idx) {
-        // check 1: named-triangle factor vs scalar reference (elementwise)
+        const auto Fac = Aout.view(idx), Ref = Aref.view(idx), Ain = A.view(idx);
+        // check 1: named-triangle factor vs LAPACKE_?potrf, relative to the
+        // reference factor's L1 norm (the unique SPD factor: a sharp signal)
         // check 3: strictly-opposite triangle unchanged from the input A
+        double el = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (named)
-                    e_fac = std::max(e_fac,
-                                     (double)std::abs(Aout(idx, i, j) - Aref(idx, i, j)));
+                    el = std::max(el, (double)std::abs(Fac(i, j) - Ref(i, j)));
                 else
-                    e_untouched = std::max(
-                        e_untouched, (double)std::abs(Aout(idx, i, j) - A(idx, i, j)));
+                    e_untouched =
+                        std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
             }
+        e_fac = std::max(e_fac, el / std::max(norm1(Ref), norm_floor));
 
-        // check 2: reconstruction of A from the named triangle's factor
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                double s = 0;
-                if (!upper) // A = L L^T : sum_l L(i,l) L(j,l), l <= min(i,j)
-                    for (int l = 0; l <= std::min(i, j); ++l)
-                        s += (double)Aout(idx, i, l) * (double)Aout(idx, j, l);
-                else // A = U^T U : sum_l U(l,i) U(l,j), l <= min(i,j)
-                    for (int l = 0; l <= std::min(i, j); ++l)
-                        s += (double)Aout(idx, l, i) * (double)Aout(idx, l, j);
-                Rec(i, j) = (T)s;
-            }
-        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)n * n));
+        // check 2: reconstruction of A from the named triangle's factor, by
+        // ?trmm: F is the factor with the other triangle zeroed, so
+        // L L^T = F L^T (side 'R') and U^T U = U^T F (side 'L')
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i)
+                F(i, j) = (upper ? (i <= j) : (i >= j)) ? Fac(i, j) : T(0);
+        if (!upper)
+            tri_apply('R', 'L', 'T', 'N', Fac, F, Rec);
+        else
+            tri_apply('L', 'U', 'T', 'N', Fac, F, Rec);
+        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)n * n) /
+                                    std::max(norm1(Ain), norm_floor));
     }
 
     const double scale = std::max(1, n);
-    const double tol_fac = 20.0 * eps * scale;         // same op sequence, unique factor
-    const double tol_rec = 40.0 * eps * scale * scale; // O(n) accumulation in recon
+    const double tol_fac = 20.0 * eps * scale; // design 7.1: unique factor, n eps
+    const double tol_rec = 20.0 * eps * scale; // ||L L^T - A|| / ||A||: backward stable
     bool ok_f = e_fac <= tol_fac;
     bool ok_r = e_rec <= tol_rec;
     bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
     bool ok_i = (info == 0);
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d | fac:%.1e %s rec:%.1e %s "
-                "untouched:%s | info=%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, e_fac, ok_f ? "OK" : "FAIL",
-                e_rec, ok_r ? "OK" : "FAIL", ok_u ? "OK" : "FAIL", info,
-                ok_i ? "OK" : "FAIL");
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d cond=%.0f | fac:%.1e %s "
+                "rec:%.1e %s untouched:%s | info=%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, cond, e_fac,
+                ok_f ? "OK" : "FAIL", e_rec, ok_r ? "OK" : "FAIL", ok_u ? "OK" : "FAIL",
+                info, ok_i ? "OK" : "FAIL");
     return (!ok_f) + (!ok_r) + (!ok_u) + (!ok_i);
 }
 
@@ -254,10 +222,11 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
-    double e_spd = 0; // worst error over the SPD sibling lanes
+    double e_spd = 0; // worst relative error over the SPD sibling lanes
     bool spd_finite = true;
     bool bad_poisoned = false; // the non-SPD lane must carry NaN/Inf
-    for (int idx = 0; idx < nm; ++idx)
+    for (int idx = 0; idx < nm; ++idx) {
+        double el = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
@@ -268,9 +237,12 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
                 }
                 else {
                     if (!std::isfinite((double)x)) spd_finite = false;
-                    e_spd = std::max(e_spd, (double)std::abs(x - Aref(idx, i, j)));
+                    el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
                 }
             }
+        if (idx != badlane) // vs LAPACKE_?potrf, relative to its factor's norm
+            e_spd = std::max(e_spd, el / std::max(norm1(Aref.view(idx)), norm_floor));
+    }
 
     const double tol = 20.0 * std::numeric_limits<T>::epsilon() * std::max(1, n);
     bool ok_spd = spd_finite && (e_spd <= tol); // siblings uncontaminated & correct
@@ -318,8 +290,11 @@ int main()
             fails += run_case<double, 8>(11, 43, u, l); // padded partial group
             fails += run_case<double, 4>(3, 3, u, l);   // smallest, padded
             fails += run_case<float, 8>(16, 30, u, l);
-            fails += run_case<float, 16>(17, 24, u, l); // padded partial group
+            fails += run_case<float, 16>(17, 24, u, l);     // padded partial group
+            fails += run_case<double, 4>(8, 40, u, l, 2.0); // dynamic range (cond knob)
         }
+    fails += run_case<double, 8>(8, 128, 'L', 'C'); // LAPACK's blocked potrf
+    fails += run_case<float, 8>(8, 128, 'U', 'R');
 
     // End-to-end solve A X = B on SPD batches, closing the pipeline (factor +
     // potrs, and the fused posv), over uplo/layout/precision, padded groups,

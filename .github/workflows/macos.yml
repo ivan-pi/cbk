@@ -1,0 +1,40 @@
+name: macOS
+
+# The test suites on macOS, against Apple's Accelerate through
+# accelerate-lapacke (https://github.com/lepus2589/accelerate-lapacke), which
+# builds the LAPACKE interface Accelerate lacks. macOS runners are expensive,
+# so this runs only for release tags and on manual dispatch, never per push
+# or pull request. Unverified as of its introduction (no macOS machine was at
+# hand): expect to adjust the accelerate-lapacke preset or the CBLAS header
+# mapping (CBK_LAPACKE_ACCELERATE in tests/test_lapack_util.hpp) on the first
+# run.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  accelerate:
+    name: AppleClang / Accelerate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build accelerate-lapacke
+        run: |
+          git clone --depth 1 https://github.com/lepus2589/accelerate-lapacke.git "$RUNNER_TEMP/accelerate-lapacke"
+          cd "$RUNNER_TEMP/accelerate-lapacke"
+          cmake --workflow --preset accelerate-lapacke32-install
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCBK_TEST_LAPACK=accelerate
+          -DCMAKE_PREFIX_PATH="$HOME/.local"
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

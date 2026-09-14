@@ -32,7 +32,7 @@
  * Assisted-by: Claude:claude-fable-5
  */
 
-#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the MKL-free helpers */
+#include "test_mkl_util.hpp" /* compat<T>, mkl<T>, lapack<T> + the shared helpers */
 
 #include <cstdio>
 #include <cstdlib>

@@ -249,10 +249,11 @@ must satisfy the same numerical invariants as an unbatched `?trsm`. Tolerances
 are purely relative to the working precision. All suites below are
 CTest-registered.
 
-### 7.1 Suite 1 -- Portable, vs a scalar `?trsm` reference (no BLAS)
+### 7.1 Suite 1 -- Portable, vs `cblas_?trsm`
 
-`tests/test_trsm_compact.cpp` validates the templated kernel directly against a
-scalar `?trsm` (the same algorithm, one matrix at a time) over the full
+`tests/test_trsm_compact.cpp` validates the templated kernel directly against
+the library's `?trsm` (`cblas_?trsm` through `ref_trsm`, on any LAPACKE +
+CBLAS stack: the same algorithm, one matrix at a time) over the full
 `side x uplo x transa x diag` matrix, across precisions (FP32/FP64), interleave
 widths, and padded final packs, column-major. The row-dot kernels run the
 identical operation sequence one lane per matrix and so match the reference to
@@ -261,9 +262,9 @@ accumulates in a different (but equally backward-stable) order and agrees to
 working precision (~`1e-16`).
 Two gates, both at a generous multiple of `eps` on the diagonal-boosted (well
 conditioned) factors: the relative forward error of `X` against the reference
-solve, and the solve's own residual `||op(A) X - alpha B||` formed with an
-independent triangular multiply -- so a bug shared by the scalar reference and
-the kernel cannot pass unseen (the `?trsm` analogue of the reconstruction check
+solve, and the solve's own residual `||op(A) X - alpha B||` formed with the
+library's triangular multiply (`cblas_?trmm`) -- so a bug shared by the
+reference and the kernel cannot pass unseen (the `?trsm` analogue of the reconstruction check
 the `geqrf`/`potrf` self-tests apply).
 
 ### 7.2 Suite 2 -- MKL cross-check, vs `mkl_?trsm_compact`

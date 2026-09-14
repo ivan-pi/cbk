@@ -1,14 +1,17 @@
 /* test_ormqr_compact.cpp
  *
- * Self-contained validation of the templated compact ormqr.
- * Reference: unblocked Householder QR (dgeqr2-style, LAPACK reflector
- * convention) + scalar dorm2r + back substitution, all templated on T.
+ * Validation of the templated compact ormqr against LAPACKE
+ * (test_lapack_util.hpp): the reflectors come from LAPACKE_?geqr2 (or
+ * LAPACKE_?geqp3 for the pivoted pipeline), the reference application from
+ * LAPACKE_?ormqr, the back substitution from cblas_?trsm.
  *
  * Test design: X(:,j) = j+1 (ones, twos, threes, ...), B = A*X, so the
  * b columns are scaled row sums of A; the solve must recover X.
  *
  * Checks per (T, V):
- *   1. compact Q^T B  ==  scalar dorm2r Q^T B (elementwise, ~eps)
+ *   1. compact Q^T B  ==  LAPACKE_?ormqr Q^T B, relative to ||Q^T B||_1 at
+ *      20 m eps (the design's 7.1 gate: two backward-stable applications of
+ *      the same reflectors, LAPACK's blocked above its crossover)
  *   2. back substitution recovers X
  *   3. applying 'N' after 'T' recovers the original B  (Q Q^T = I)
  *
@@ -24,54 +27,9 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_compact_util.hpp" // compact<T>, scalar references, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_geqr2/orm2r/geqp3/trsm_upper, pack/unpack
 
 using namespace cbk::test;
-
-/* ----------------------- reference kernels (scalar) ----------------- */
-/* ref_larfg / ref_geqr2 / ref_orm2r / ref_trsm_upper come from test_compact_util.hpp. */
-
-/* Column-pivoted Householder QR (dgeqp3-style, greedy max trailing-column
- * norm). On exit A holds the reflectors below the diagonal and R on/above it
- * for the *permuted* matrix A(:,jpvt); jpvt[j] is the ORIGINAL (0-based)
- * column index placed at position j, so A(:,jpvt) = Q R. Used to drive the
- * kernel from a rank-revealing factorization + back-permutation solve --
- * the production (RBF-FD) use case the kernel must support. */
-template <class T> static void ref_geqp3(MatrixView<T> A, int *jpvt, T *tau)
-{
-    const int m = A.rows, n = A.cols, k = std::min(m, n);
-    for (int j = 0; j < n; ++j)
-        jpvt[j] = j;
-
-    for (int kk = 0; kk < k; ++kk) {
-        int piv = kk;
-        T best = -1;
-        for (int j = kk; j < n; ++j) {
-            T s = 0;
-            for (int i = kk; i < m; ++i)
-                s += A(i, j) * A(i, j);
-            if (s > best) {
-                best = s;
-                piv = j;
-            }
-        }
-        if (piv != kk) {
-            for (int i = 0; i < m; ++i)
-                std::swap(A(i, kk), A(i, piv));
-            std::swap(jpvt[kk], jpvt[piv]);
-        }
-        /* as in ref_geqr2: the reflector is the contiguous column tail */
-        ref_larfg(m - kk, &A(kk, kk), A.col(kk) + kk + 1, &tau[kk]);
-        for (int j = kk + 1; j < n; ++j) {
-            T w = A(kk, j);
-            for (int i = kk + 1; i < m; ++i)
-                w += A(i, kk) * A(i, j);
-            A(kk, j) -= tau[kk] * w;
-            for (int i = kk + 1; i < m; ++i)
-                A(i, j) -= tau[kk] * A(i, kk) * w;
-        }
-    }
-}
 
 /* --------------------------- one test case -------------------------- */
 
@@ -79,7 +37,8 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
 {
     const int k = m;
     const T eps = std::numeric_limits<T>::epsilon();
-    const double tol_exact = 100.0 * eps;   /* same op sequence */
+    const double tol_el = 20.0 * eps * m;   /* vs LAPACKE_?ormqr, relative */
+    const double tol_exact = 100.0 * eps;   /* the 'N' after 'T' round trip */
     const double tol_solve = 1e5 * eps * m; /* cond(A)-dependent */
 
     const std::vector<T> Xs = known_solution<T>(m, nrhs);
@@ -101,12 +60,13 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     std::vector<T> tp = pack_tau(tau, V);
     std::vector<T> bp = pack_compact(B, m, V);
 
-    /* check 1: compact Q^T B vs scalar */
+    /* check 1: compact Q^T B vs LAPACKE_?ormqr, relative to ||Q^T B||_1 */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
     unpack_compact(Bout, bp.data(), m, V);
     double e1 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        e1 = std::max<double>(e1, max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs));
+        e1 = std::max<double>(e1, max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs) /
+                                      std::max(norm1(Bref.view(kk)), norm_floor));
 
     /* check 2: solve recovers X */
     double e2 = 0;
@@ -123,7 +83,7 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
         e3 = std::max<double>(e3, max_abs_diff(Bout[kk], B[kk], (size_t)m * nrhs));
 
     /* scale-aware: B entries are O(m), QQ^t roundtrip accumulates a bit */
-    bool ok1 = e1 <= tol_exact * m, ok2 = e2 <= tol_solve, ok3 = e3 <= tol_exact * m * 10;
+    bool ok1 = e1 <= tol_el, ok2 = e2 <= tol_solve, ok3 = e3 <= tol_exact * m * 10;
     std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d nrhs=%d | QtB: %.2e %s | solve X: %.2e %s "
                 "| QQt=I: %.2e %s\n",
                 compact<T>::name, V, nm, m, nrhs, e1, ok1 ? "OK" : "FAIL", e2,
@@ -133,8 +93,9 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
 
 /* ------------------- pivoted-QR + back-permutation solve ------------ */
 /* Salvaged from the former ArmPL cross-check: feed the kernel reflectors
- * from a column-pivoted (rank-revealing) QR and recover X through a
- * jpvt back-permutation, i.e. solve A x = b with A(:,jpvt) = Q R:
+ * from a column-pivoted (rank-revealing) QR, LAPACKE_?geqp3 through
+ * ref_geqp3 (0-based jpvt), and recover X through a jpvt back-permutation,
+ * i.e. solve A x = b with A(:,jpvt) = Q R:
  *   R y = Q^T b   (kernel applies Q^T),   x(jpvt(j)) = y(j).
  * Unpivoted tests never exercise this end-to-end permuted pipeline. */
 template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
@@ -147,7 +108,7 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
     const auto X = mat_view(Xs.data(), m, nrhs);
 
     MatrixBatch<T> Afac(nm, m, m), B(nm, m, nrhs), Bout(nm, m, nrhs), tau(nm, m, 1);
-    MatrixBatch<int> jpvt(nm, m, 1);
+    MatrixBatch<lapack_int> jpvt(nm, m, 1);
     for (int kk = 0; kk < nm; ++kk) {
         std::vector<T> As((size_t)m * m);
         const auto A = mat_view(As.data(), m, m);
