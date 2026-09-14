@@ -162,6 +162,14 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
         exit(EXIT_FAILURE);
     }
 
+    /* Touch every buffer once, so the phases below time the work and not the
+       page faults of a first write (measured: at 32 x 32 they were most of the
+       unpack time and half of the multiply phase). */
+    memset(ap, 0, sizeof(double) * total_size_A);
+    memset(rp, 0, sizeof(double) * total_size_A);
+    memset(taup, 0, sizeof(double) * total_size_tau);
+    memset(QR_lpk_p, 0, sizeof(double) * ldqr * n * nm);
+
     srand(4733);
     /* Populate the LAPACK format matrices with random values in [0,1) */
     for (size_t i = 0; i < (size_t)m * n * nm; i++) {
@@ -195,13 +203,13 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
         printf("Info: reconstructing A.\n");
     }
 
-    /* Make a copy of R */
-    memcpy(rp, ap, sizeof(double) * total_size_A);
-
-    /* Zero lower-triangular part of R, padded slots included */
+    /* Make a copy of R and zero its lower-triangular part, group by group
+       (padded slots included) -- one parallel pass, not a single-threaded
+       memcpy of the whole batch */
 #pragma omp parallel for
     for (size_t g = 0; g < ngroups; g++) {
         double *R_g = &rp[g * ldap * n * V];
+        memcpy(R_g, &ap[g * ldap * n * V], sizeof(double) * ldap * n * V);
         for (int j = 0; j < n; j++) {
             for (int i = j + 1; i < m; i++) {
                 for (int v = 0; v < V; v++) {
@@ -311,6 +319,8 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
         fprintf(stderr, "Error allocating the batch, exit.\n");
         exit(EXIT_FAILURE);
     }
+    memset(R_lpk_p, 0,
+           sizeof(double) * lda * n * nm); /* touched before the timer, as above */
 
     srand(4733);
     /* Populate the LAPACK format matrices with random values in [0,1) */

@@ -28,7 +28,16 @@ MKL's compact kernels and LAPACKE.
   (the library does not): MKL's with `-DCBK_WITH_MKL=ON`, otherwise the one
   `find_package(LAPACK)` locates (`liblapack-dev`, OpenBLAS, ...), and
   OpenMP for C; it is skipped without either. Arm's 32768-matrix runs are
-  `32768 8 <n> <n>` or `32768 4 <n> <n>` here.
+  `32768 8 <n> <n>` or `32768 4 <n> <n>` here. Every buffer is touched
+  before the timers, so the phases time the work and not the page faults of
+  a first write, and the copy of `R` is made group by group in the parallel
+  loop. What to expect: the gain lives at Arm's sizes, 3 to 20 (measured 2.6x
+  at `10 x 10` on an Apple M2 Pro against Accelerate, 1.1x at `32 x 32`, and
+  a loss at `100 x 100`, where a matrix is 80 KB and the per-matrix path is
+  already level-3 efficient); `V` should be the machine's double-precision
+  pack width (2 on NEON, where wider packs spill); and on cores of unequal
+  speed pin `OMP_NUM_THREADS` to the fast ones, since the static schedule
+  waits for the slowest.
 
 ## Worked example
 
