@@ -27,9 +27,15 @@
  * number of groups, nm/V rounded up. ArmPL's pack and unpack routines have no
  * counterpart in cbk's C API, so pack_compact and unpack_compact are written
  * out below; ArmPL's rank-revealing QR becomes dgeqrf_compact (no column
- * pivoting, so no jpvt and no rank check) and its ormqr dormqr_compact. The
- * LAPACK comparison of the original (run_lpk_version) is left out: the
- * portable build links no LAPACK.
+ * pivoting, so no jpvt and no rank check) and its ormqr dormqr_compact.
+ *
+ * The LAPACK comparison of the original (run_lpk_version: the same work as
+ * one dgeqrf and one dormqr per matrix from an OpenMP loop) needs a LAPACK,
+ * which the portable build does not link; CMake links the one
+ * find_package(LAPACK) locates (MKL's under -DCBK_WITH_MKL=ON) and defines
+ * CBK_EXAMPLE_WITH_LAPACK, and the comparison is reported only then. The
+ * Fortran entry points are declared here (LP64: 32-bit integers, and the
+ * hidden character-length arguments left off, as the original does).
  *
  * The matrices must be square or tall (m >= n): dormqr_compact reads the
  * reflectors as an (ldap, k) batch, k = min(m,n), exactly as LAPACK dormqr's
@@ -49,14 +55,23 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+void dgeqrf_(const int *m, const int *n, double *a, const int *lda, double *tau,
+             double *work, const int *lwork, int *info);
+void dormqr_(const char *side, const char *trans, const int *m, const int *n,
+             const int *k, const double *a, const int *lda, const double *tau, double *c,
+             const int *ldc, double *work, const int *lwork, int *info);
+#endif
+
 /*
- * Offset of element (i,j) of matrix idx in a compact column-major batch of
- * matrices with n columns and leading dimension ldap: the formula of cbk.h.
+ * Offset, within one compact column-major group, of element (i,j) of the
+ * matrix in slot v (0 <= v < V), at leading dimension ldap: the in-group part
+ * of the layout formula of cbk.h. Group g of a batch of m x n matrices starts
+ * at ap[g*ldap*n*V]; the callers take that base pointer once per group.
  */
-static size_t compact_at(int idx, int i, int j, int ldap, int n, int V)
+static size_t compact_at(int i, int j, int v, int ldap, int V)
 {
-    const size_t g = (size_t)idx / V, v = (size_t)idx % V;
-    return g * ldap * n * V + ((size_t)j * ldap + i) * V + v;
+    return ((size_t)j * ldap + i) * V + v;
 }
 
 /*
@@ -73,12 +88,13 @@ static void pack_compact(int nm, int V, int m, int n, const double *A_lpk_p, int
     const int ngroups = (nm + V - 1) / V;
 #pragma omp parallel for
     for (int g = 0; g < ngroups; g++) {
+        double *A_g = &ap[(size_t)g * ldap * n * V];
         for (int v = 0; v < V; v++) {
             const int idx = g * V + v;
             const double *A_lpk = &A_lpk_p[(size_t)idx * lda * n];
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < m; i++) {
-                    ap[compact_at(idx, i, j, ldap, n, V)] =
+                    A_g[compact_at(i, j, v, ldap, V)] =
                         idx < nm ? A_lpk[lda * j + i] : (i == j ? 1.0 : 0.0);
                 }
             }
@@ -92,13 +108,14 @@ static void unpack_compact(int nm, int V, int m, int n, const double *ap, int ld
     const int ngroups = (nm + V - 1) / V;
 #pragma omp parallel for
     for (int g = 0; g < ngroups; g++) {
+        const double *A_g = &ap[(size_t)g * ldap * n * V];
         for (int v = 0; v < V; v++) {
             const int idx = g * V + v;
             if (idx >= nm) continue;
             double *A_lpk = &A_lpk_p[(size_t)idx * lda * n];
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < m; i++) {
-                    A_lpk[lda * j + i] = ap[compact_at(idx, i, j, ldap, n, V)];
+                    A_lpk[lda * j + i] = A_g[compact_at(i, j, v, ldap, V)];
                 }
             }
         }
@@ -185,10 +202,11 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     /* Zero lower-triangular part of R, padded slots included */
 #pragma omp parallel for
     for (int g = 0; g < ngroups; g++) {
+        double *R_g = &rp[(size_t)g * ldap * n * V];
         for (int j = 0; j < n; j++) {
             for (int i = j + 1; i < m; i++) {
                 for (int v = 0; v < V; v++) {
-                    rp[compact_at(g * V + v, i, j, ldap, n, V)] = 0.0;
+                    R_g[compact_at(i, j, v, ldap, V)] = 0.0;
                 }
             }
         }
@@ -270,6 +288,143 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     return fail == 0 ? t2_ib - t1_ib : -1.0;
 }
 
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+/*
+ * This function does the same as above with standard LAPACK calls, one
+ * matrix at a time from a parallel loop, and returns the time taken in
+ * seconds (negative if a routine failed or the result check did not pass).
+ * V plays no part; it is taken so both versions are called alike.
+ */
+double run_lpk_version(int nm, int V, int m, int n, int check_result)
+{
+    (void)V;
+
+    /* LAPACK setup */
+    int lda = m;
+    double *A_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
+    double *R_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
+    double *A_orig_lpk_p = (double *)malloc(sizeof(double) * lda * n * nm);
+    int ldqr = m;
+    int nthreads = omp_get_max_threads();
+    double *tau_lpk_p = (double *)malloc(sizeof(double) * n * nthreads);
+
+    if (!A_lpk_p || !R_lpk_p || !A_orig_lpk_p || !tau_lpk_p) {
+        fprintf(stderr, "Error allocating the batch, exit.\n");
+        return -1.0;
+    }
+
+    srand(4733);
+    /* Populate the LAPACK format matrices with random values in [0,1) */
+    for (size_t i = 0; i < (size_t)m * n * nm; i++) {
+        A_lpk_p[i] = (double)rand() / RAND_MAX;
+        A_orig_lpk_p[i] = A_lpk_p[i];
+    }
+
+    /* Workspace query, for both routines, one buffer per thread */
+    int lwork = -1;
+    double dlwork_qr, dlwork_mq;
+    int info;
+    char side = 'L';
+    char transQ = 'N';
+    dgeqrf_(&m, &n, A_lpk_p, &lda, tau_lpk_p, &dlwork_qr, &lwork, &info);
+    dormqr_(&side, &transQ, &m, &n, &n, A_lpk_p, &lda, tau_lpk_p, R_lpk_p, &lda,
+            &dlwork_mq, &lwork, &info);
+    lwork = (int)MAX(dlwork_qr, dlwork_mq);
+    if (lwork < 1) {
+        fprintf(stderr, "Error: LAPACK workspace query failed. Exiting.\n");
+        return -1.0;
+    }
+    double *work_lpk_p = (double *)malloc(sizeof(double) * lwork * nthreads);
+    if (!work_lpk_p) {
+        fprintf(stderr, "Error allocating the workspace, exit.\n");
+        return -1.0;
+    }
+
+    const double eps = nextafter(1.0, 2.0) - 1.0;
+    int fail = 0;
+    int error = 0;
+
+    /* Time a parallelized loop over equivalent LAPACK calls */
+    double t1_lpk = omp_get_wtime();
+#pragma omp parallel for
+    for (int idx = 0; idx < nm; idx++) {
+        double *A_lpk = &A_lpk_p[(size_t)idx * lda * n];
+        double *work_lpk = &work_lpk_p[(size_t)lwork * omp_get_thread_num()];
+        double *tau_lpk = &tau_lpk_p[(size_t)n * omp_get_thread_num()];
+        int info_t;
+
+        dgeqrf_(&m, &n, A_lpk, &lda, tau_lpk, work_lpk, &lwork, &info_t);
+        if (info_t != 0) {
+            fprintf(stderr, "Error performing LAPACK QR factorization, exit.\n");
+#pragma omp atomic update
+            error++;
+        }
+
+        /* Extract R */
+        double *R_lpk = &R_lpk_p[(size_t)idx * lda * n];
+        memcpy((void *)R_lpk, (void *)A_lpk, sizeof(double) * lda * n);
+
+        for (int j = 0; j < n; j++) {
+            for (int i = j + 1; i < m; i++) {
+                R_lpk[j * lda + i] = 0.0;
+            }
+        }
+
+        dormqr_(&side, &transQ, &m, &n, &n, A_lpk, &lda, tau_lpk, R_lpk, &lda, work_lpk,
+                &lwork, &info_t);
+        if (info_t != 0) {
+            fprintf(stderr, "Error multiplying LAPACK QR, exit.\n");
+#pragma omp atomic update
+            error++;
+        }
+
+        if (check_result) {
+            double *A_orig = &A_orig_lpk_p[(size_t)idx * lda * n];
+            double norm_a_minus_qr = 0.0;
+            double norm_a = 0.0;
+            for (int j = 0; j < n; j++) {
+                double sum_diff = 0.0;
+                double sum_col_a = 0.0;
+                for (int i = 0; i < m; i++) {
+                    sum_diff += fabs(A_orig[lda * j + i] - R_lpk[ldqr * j + i]);
+                    sum_col_a += fabs(A_orig[lda * j + i]);
+                }
+                norm_a_minus_qr = MAX(sum_diff, norm_a_minus_qr);
+                norm_a = MAX(sum_col_a, norm_a);
+            }
+
+            /* Check that norm1(A-QR) <= eps*m*n*norm1(A) */
+            double tol = 5.0 * eps * m * n * norm_a;
+            if (norm_a_minus_qr > tol) {
+#pragma omp atomic update
+                fail++;
+            }
+        }
+    }
+    double t2_lpk = omp_get_wtime();
+
+    if (check_result) {
+        if (fail == 0) {
+            printf("LAPACK result check passed: ");
+            printf("norm1(A-QR) < eps*n*norm1(A) for all cases.\n");
+        }
+        else {
+            printf("LAPACK result check failed:\n");
+            printf("\tnumber of cases where norm1(A-QR) > eps*n*norm1(A) = ");
+            printf("%d.\n", fail);
+        }
+    }
+
+    free(A_lpk_p);
+    free(R_lpk_p);
+    free(A_orig_lpk_p);
+    free(tau_lpk_p);
+    free(work_lpk_p);
+
+    return (error == 0 && fail == 0) ? t2_lpk - t1_lpk : -1.0;
+}
+#endif /* CBK_EXAMPLE_WITH_LAPACK */
+
 int main(int argc, char **argv)
 {
 
@@ -300,18 +455,35 @@ int main(int argc, char **argv)
            nm % V ? " (the last one padded)" : "");
 
     double t_ib;
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+    double t_lpk;
+#endif
 
     /* Warm-up runs */
     for (int nw = 0; nw < 3; nw++) {
         t_ib = run_ib_version(nm, V, m, n, 0);
         if (t_ib < 0) return EXIT_FAILURE;
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+        t_lpk = run_lpk_version(nm, V, m, n, 0);
+        if (t_lpk < 0) return EXIT_FAILURE;
+#endif
     }
 
-    /* Reported run */
+    /* Reported runs */
     t_ib = run_ib_version(nm, V, m, n, 1);
     if (t_ib < 0) return EXIT_FAILURE;
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+    t_lpk = run_lpk_version(nm, V, m, n, 1);
+    if (t_lpk < 0) return EXIT_FAILURE;
+#endif
 
     printf("Time for compact-batch computation: %f\n", t_ib);
+#ifdef CBK_EXAMPLE_WITH_LAPACK
+    printf("Time for LAPACK computation: %f\n", t_lpk);
+    printf("Speedup for compact-batch over LAPACK: %f\n", t_lpk / t_ib);
+#else
+    printf("(built without LAPACK: no per-matrix LAPACK comparison)\n");
+#endif
 
     return EXIT_SUCCESS;
 }

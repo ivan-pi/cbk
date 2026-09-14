@@ -21,9 +21,13 @@ MKL's compact kernels and LAPACKE.
   `nm` and `V` and the layout formula of `cbk.h`, in place of ArmPL's
   `nbatch`, `ninter` and explicit strides (`ninter` is `V`, `nbatch` the
   number of groups); the source (`examples/qr_workflow_compact.c`) writes
-  the pack and unpack out as two static functions, the LAPACK comparison is
-  left out (the portable build links no LAPACK), and ArmPL's column pivoting
-  has no counterpart. Arm's 32768-matrix runs are `32768 8 <n> <n>` or
+  the pack and unpack out as two static functions, and ArmPL's column
+  pivoting has no counterpart. The original's per-matrix LAPACK comparison
+  (`dgeqrf` and `dormqr` on each matrix from an OpenMP loop, and the speedup
+  of the compact path over it) is built whenever a LAPACK is at hand: MKL's
+  with `-DCBK_WITH_MKL=ON`, otherwise the one `find_package(LAPACK)` locates
+  (`liblapack-dev`, OpenBLAS, ...); without one the example reports the
+  compact path alone. Arm's 32768-matrix runs are `32768 8 <n> <n>` or
   `32768 4 <n> <n>` here. Needs OpenMP for C; skipped without.
 
 ## Worked example
