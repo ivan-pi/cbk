@@ -191,37 +191,37 @@ A(i,j) *= invd                  for i > j           // scale -> L(i,j)
 Only the lower trapezoid is touched, so the strictly-upper triangle passes
 through untouched. The update runs on the still-unscaled column with the
 weights scaled by `1/d`, and the column is scaled after it, so the next pivot
-waits on one divide, a multiply and an FMA (`potrf`'s design 6.2 reorders its
-pivot the same way; this is the form it borrows). Compared with Cholesky at the
-same size the flop count is the same to `O(n^2)` (the `n` square roots are
-replaced by `n` reciprocals).
+waits on one divide, a multiply and an FMA (the pivot order `potrf`'s design
+6.2 adopts). Compared with Cholesky at the same size the flop count is the
+same to `O(n^2)`: `n` reciprocals in place of `n` square roots.
 
-The sweep is blocked exactly as `potrf`'s (its design 6.1 gives the traffic
-argument: the plain rank-1 sweep is one FMA per pack loaded and stored, and
-streams the trailing matrix through the L2 once per pivot as soon as a group
-outgrows the L1). The columns are split in halves at `NB`-column boundaries
-down to panels of at most `NB` pivots (`sytrfnp_nb`, default 8;
-`-DCBK_SYTRFNP_NB` overrides): a panel runs the sweep above with each pivot's
-rank-1 update confined to the panel's remaining columns, and a wider range
-factors its left half, applies it to the right half as one register-tiled
-rank-`K` update
+The sweep is blocked exactly as `potrf`'s, for the reason its design 6.1
+gives: the plain rank-1 sweep is one FMA per pack loaded and stored, and once
+a group outgrows the L1 it streams the trailing matrix through the L2 once per
+pivot. The columns are split in halves at `NB`-column boundaries down to
+panels of at most `NB` pivots (`sytrfnp_nb`, default 8; `-DCBK_SYTRFNP_NB`
+overrides). A panel runs the sweep above with each pivot's rank-1 update
+confined to the panel's remaining columns. A wider range factors its left
+half, applies it to the right half as one register-tiled rank-`K` update,
 
 ```
 A(mid:n, mid:j1) -= L(mid:n, j0:mid) D(j0:mid) L(mid:j1, j0:mid)^T
 ```
 
-and factors the right half. The tile, the column block and the trailing update
-are `potrf`'s, shared through `cbk_sytrfnp_compact.hpp` with one compile-time
-switch: here the pivot `D(k)` is loaded once per `k` and folded into the tile's
-column weights, one extra multiply per weight (`potrf`'s columns are already
-scaled, `D = I`); the `4 x 4` tile's 16 accumulators, its unscaled and scaled
-weights, the pivot and one loaded pack still fit the 32 AVX-512 registers.
+and factors the right half.
+
+The tile, the column block and the trailing update are `potrf`'s, shared
+through `cbk_sytrfnp_compact.hpp` behind one compile-time switch. Here the
+pivot `D(k)` is loaded once per `k` and folded into the tile's column weights,
+one extra multiply per weight; `potrf`'s columns are already scaled (`D = I`).
+The `4 x 4` tile's 16 accumulators, its unscaled and scaled weights, the pivot
+and one loaded pack fit the 32 AVX-512 registers.
+
 Every trailing element thus takes its updates once per split level instead of
-once per pivot, in the same pivot order, so the tiled update is the sweep's
-arithmetic without the store and reload between subtractions; only the
-association of the rank-`K` sums differs from the plain sweep's, within the
-same backward-error bound (section 7). The fused solve (section 6.8) inherits
-the blocking unchanged, since it calls the same group kernel.
+once per pivot, in the same pivot order. Only the association of the rank-`K`
+sums differs from the plain sweep's, within the same backward-error bound
+(section 7). The fused solve (section 6.8) calls the same group kernel and
+inherits the blocking.
 
 ### 6.2 Zero pivots: what "no pivoting" does and does not tolerate
 

@@ -220,8 +220,8 @@ and ignore it.
 Two codegen prerequisites decide what this benchmark measures
 (`docs/building.md`): `-march` for the vector width, and full-width vectors
 under clang and icpx (set by the kernel headers), which the blocked
-factorization's register-tiled update depends on. A build missing either runs
-a different kernel.
+factorization's register-tiled update depends on. A build missing either
+compiles the same kernel to slower code.
 
 ## Notes
 
