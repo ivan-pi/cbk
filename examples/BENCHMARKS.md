@@ -148,16 +148,16 @@ bench_posv_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8
 
 Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512
 matrices, one RHS): the fused compact solve matched MKL's compact pipeline
-(geometric mean `0.90x`, `0.84-1.2x` per size) and outran per-matrix
-`LAPACKE_dposv` by `3-4x` at orders `8-48` and `1.3-2.1x` at `60-105`, with the
-crossover near `128-168` and LAPACK ahead from there (`0.17x` at `500`) -- a
-geometric mean of `1.27x` over the default size list. fused-vs-2-step was
-`~1.0x` throughout: at 512 matrices the pools are cache-resident up to
-`n ~ 90`, and past the crossover the solve is a small fraction of the
-factorization at one RHS. On out-of-cache pools the fusion showed directly:
-`1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64` (8192), `1.14x` at
-`n = 96` (4096), each with `nrhs = 8`. Every path recovered the known solution
-to `~5e-15`.
+(geometric mean `0.9-1.0x`, `0.7-1.3x` per size) and outran per-matrix
+`LAPACKE_dposv` by `2-9x` at orders `8-48` and `1.4-2.2x` at `60-105`, with the
+crossover near `128-168` and LAPACK ahead from there (`0.25x` at `256`) -- a
+geometric mean of `1.7x` over the size list. fused-vs-2-step was `~1.0x`
+throughout: at 512 matrices the pools are cache-resident up to `n ~ 90`, and
+past the crossover the solve is a small fraction of the factorization at one
+RHS. On out-of-cache pools the fusion
+showed directly: `1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64`
+(8192), `1.14x` at `n = 96` (4096), each with `nrhs = 8`. Every path recovered
+the known solution to `~5e-15`.
 
 ## `bench_sysvnp_compact`
 
@@ -191,12 +191,12 @@ bench_sysvnp_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4
 command line of `bench_util.hpp`, so the factorization benchmarks accept it too
 and ignore it.
 
-Indicative run (4-core AVX-512 container, gcc `-O2 -march=native`, 512 matrices,
-one RHS): the fused compact solve outran per-matrix `LAPACKE_dsysv` by `7-9x` at
-orders `8-32`, `3-5x` at `45-64`, `1.1-2x` at `96-256`, and fell behind at
-`384` and `500` (`0.6x`, `0.35x`), where LAPACK's blocked, pivoted factorization
-is the better tool -- a geometric mean of `2.7x` over the default size list.
-Both paths recovered the known solution to `~6e-15`.
+Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512 matrices,
+one RHS): the fused compact solve outran per-matrix `LAPACKE_dsysv` by `5-9x` at
+orders `8-32`, `3-5x` at `45-64`, `1.8-2.3x` at `96-128`, and `1.0-1.4x` at
+`168-256`, where LAPACK's blocked, pivoted factorization catches up -- a
+geometric mean of `3.1x` over the size list. Both paths recovered the known
+solution to `~6e-15`.
 
 ## Notes
 
@@ -207,17 +207,22 @@ Both paths recovered the known solution to `~6e-15`.
   interleave width than the host default (a wider-than-native width is rejected);
   `--size-sweep=nmin:nmax[:stride]` switches to a cbk-only throughput scan (no
   cross-check) to resolve the SIMD "staircase" finely.
-* **Size list.** The default deliberately mixes sizes that are *not* multiples of
-  the interleave width `V` (30, 45, 60, 105, 168) with round powers, so the SIMD
-  remainder handling stays visible across the target small-to-medium range.
+* **Size list.** One list, `bench_sizes` in `bench_util.hpp`, shared by every
+  benchmark but `bench_qr_compact` (five paths per size keep it on `10..120`), so
+  the set of orders moves in one place. It deliberately mixes sizes that are *not*
+  multiples of the interleave width `V` (30, 45, 60, 105, 168) with round powers,
+  so the SIMD remainder handling stays visible.
+* **It ends at `256`.** Larger orders make a run long and the batched gains are
+  hard to realize there; the regime this library is about is below `128`.
+  `--size-sweep` is not capped, for a deliberate scan past `256`.
 * **`gels` vs the three-step chain.** With the benchmark's single right-hand
-  side the two are equal (`1.00x` geometric mean over `n = 10..100`): the
+  side the two are level (`0.9x` geometric mean over `n = 10..120`): the
   `O(n^3)` factorization dominates and fusing the apply-`Q^T` into it saves an
   `O(n^2)` sweep, so the fusion pays in proportion to `nrhs`, not `n`. The
   column is there to show the one-call routine costs nothing over the chain.
-  Against per-matrix `LAPACKE_dgels` it measured `3.2x` (geometric mean, 4
-  threads, AVX-512, `n = 10..100`; `8.5x` at `n = 10` down to `1.9x` at
-  `n = 100`), within a few percent of its ratio to the unbatched chain --
+  Against per-matrix `LAPACKE_dgels` it measured `2.8x` (geometric mean, 4
+  threads, AVX-512, `n = 10..120`; `7.7x` at `n = 10` down to `1.4x` at
+  `n = 120`), within a few percent of its ratio to the unbatched chain --
   `dgels`'s own bookkeeping costs little at these sizes.
 * **Reading the numbers.** On a `-march=native` build over the small-size range,
   the compact paths outrun per-matrix LAPACK and are competitive with MKL's
