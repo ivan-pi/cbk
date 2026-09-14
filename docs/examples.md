@@ -7,22 +7,24 @@ MKL's compact kernels and LAPACKE.
 
 ## Portable example
 
-* `qr_workflow_compact <nbatch> <ninter> <nrows> <ncols>` - the
-  interleave-batch QR workflow example Arm ships with Arm Performance
-  Libraries, transcribed onto the C API of `cbk.h` in plain C99 with no
-  internal helpers: a batch of `nbatch` groups of `ninter` (= `V`, so 2, 4, 8
-  or 16) square or tall `m x n` matrices is packed into the compact layout,
-  QR-factored with `dgeqrf_compact`, its `R` extracted, rebuilt as `Q R` with
-  `dormqr_compact`, unpacked, and checked, `norm1(A - QR) <= 5 eps m n norm1(A)`
-  for every matrix, after three warm-up runs; each phase is timed with
-  `omp_get_wtime` and the pack, extract and unpack loops are OpenMP loops over
-  the groups, as in the original. The ArmPL strides map one to one onto the
-  compact layout (`istrd = ninter`, `jstrd = ninter*m`, `bstrd = jstrd*n`), so
-  the source (`examples/qr_workflow_compact.c`) keeps the original's setup
-  and indexing verbatim; the LAPACK comparison is left out (the portable build
-  links no LAPACK) and ArmPL's column pivoting has no counterpart. Arm's
-  32768-matrix runs are `1024 32`, `2048 16` and `4096 8` there; here
-  `4096 8 <n> <n>` or `8192 4 <n> <n>`. Needs OpenMP for C; skipped without.
+* `qr_workflow_compact <nm> <V> <nrows> <ncols>` - the interleave-batch QR
+  workflow example Arm ships with Arm Performance Libraries, transcribed onto
+  the C API of `cbk.h` in plain C99 with no internal helpers: a batch of `nm`
+  square or tall `m x n` matrices is packed into the compact layout with
+  interleave width `V` (2, 4, 8 or 16; a last group `V` does not fill is
+  padded with identities), QR-factored with `dgeqrf_compact`, its `R`
+  extracted, rebuilt as `Q R` with `dormqr_compact`, unpacked, and checked,
+  `norm1(A - QR) <= 5 eps m n norm1(A)` for every matrix, after three warm-up
+  runs; each phase is timed with `omp_get_wtime` and the pack, extract and
+  unpack loops are OpenMP loops over the groups, as in the original. The
+  batch is described the way this library (and MKL's compact API) does, by
+  `nm` and `V` and the layout formula of `cbk.h`, in place of ArmPL's
+  `nbatch`, `ninter` and explicit strides (`ninter` is `V`, `nbatch` the
+  number of groups); the source (`examples/qr_workflow_compact.c`) writes
+  the pack and unpack out as two static functions, the LAPACK comparison is
+  left out (the portable build links no LAPACK), and ArmPL's column pivoting
+  has no counterpart. Arm's 32768-matrix runs are `32768 8 <n> <n>` or
+  `32768 4 <n> <n>` here. Needs OpenMP for C; skipped without.
 
 ## Worked example
 

@@ -135,10 +135,11 @@ if(CBK_BUILD_TESTS)
 
   # The portable example self-validates (A = Q R rebuilt from the factors), so
   # it doubles as an integration test of the C API: a small batch of square
-  # and of tall matrices (nbatch groups of ninter, then m and n).
+  # and of tall matrices (nm, V, then m and n), 33 of them so the padded last
+  # group is exercised too.
   if(TARGET qr_workflow_compact)
-    add_test(NAME example_qr_workflow_square COMMAND qr_workflow_compact 9 4 5 5)
-    add_test(NAME example_qr_workflow_tall COMMAND qr_workflow_compact 17 2 7 5)
+    add_test(NAME example_qr_workflow_square COMMAND qr_workflow_compact 33 4 5 5)
+    add_test(NAME example_qr_workflow_tall COMMAND qr_workflow_compact 33 2 7 5)
   endif()
 
   if(CBK_WITH_MKL)
