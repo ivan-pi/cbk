@@ -47,7 +47,6 @@
 
 #include "bench_util.hpp"
 
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <vector>
@@ -187,16 +186,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Square sizes spanning the target range (order 3..256, emphasis below 128).
-     * Deliberately mixes sizes that are not multiples of the SIMD width V -- 30,
-     * 45, 60, 105, 168, from 2-D/3-D RBF-FD stencils -- with the round powers, so
-     * the remainder handling (the staircase SIMD effect) is visible; then a few
-     * larger sizes for the crossover. Use --size-sweep for a finer cbk-only scan. */
-    constexpr std::array sizes = {8,  16, 24,  30,  32,  45,  48, 60,
-                                  64, 96, 105, 128, 168, 170, 256};
-    static_assert(*std::max_element(sizes.begin(), sizes.end()) <= max_bench_size,
-                  "benchmark size lists stop at max_bench_size");
-
     std::printf("Cholesky factorization throughput: cbk_dpotrf_compact vs "
                 "mkl_dpotrf_compact vs per-matrix LAPACKE_dpotrf\n");
     std::printf("matrices=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  (SPD, "
@@ -212,7 +201,7 @@ int main(int argc, char **argv)
         "---------+---------+------------------\n");
 
     double log_speed_vs_lapack = 0.0;
-    for (int n : sizes) {
+    for (int n : bench_sizes) {
         const MatrixPool P = make_pool(n, nmat);
 
         /* pristine packed pool + one working copy both compact paths share */
@@ -252,6 +241,6 @@ int main(int argc, char **argv)
         "-----+-------------+-------------+-------------+--------------+---------+"
         "---------+---------+------------------\n");
     std::printf("geometric-mean speedup (cbk compact vs per-matrix LAPACK): %.2fx\n",
-                std::exp(log_speed_vs_lapack / sizes.size()));
+                std::exp(log_speed_vs_lapack / bench_sizes.size()));
     return 0;
 }

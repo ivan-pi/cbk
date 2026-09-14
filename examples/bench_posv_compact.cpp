@@ -54,8 +54,6 @@
 
 #include "bench_util.hpp"
 
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 
@@ -189,14 +187,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Square sizes spanning the target range (order 3..256, emphasis below 128),
-     * mixing sizes that are not multiples of the SIMD width V with the round
-     * powers, as in the factorization benchmarks. */
-    constexpr std::array sizes = {8,  16, 24,  30,  32,  45,  48, 60,
-                                  64, 96, 105, 128, 168, 170, 256};
-    static_assert(*std::max_element(sizes.begin(), sizes.end()) <= max_bench_size,
-                  "benchmark size lists stop at max_bench_size");
-
     std::printf("SPD solve throughput: cbk_dposv_compact (fused Cholesky factor + "
                 "solve) vs cbk two-step vs MKL compact pipeline vs per-matrix "
                 "LAPACKE_dposv\n");
@@ -214,7 +204,7 @@ int main(int argc, char **argv)
                 "--------------+---------+---------+---------+------------\n");
 
     double log_speed_vs_lapack = 0.0, log_speed_vs_2step = 0.0, log_speed_vs_mkl = 0.0;
-    for (int n : sizes) {
+    for (int n : bench_sizes) {
         const Systems P(n, nmat, nrhs);
         PackedSystems pk(P.a, P.b, fmt);
 
@@ -271,7 +261,7 @@ int main(int argc, char **argv)
 
     std::printf("-----+-------------+-------------+-------------+-------------+"
                 "--------------+---------+---------+---------+------------\n");
-    const double denom = sizes.size();
+    const double denom = bench_sizes.size();
     std::printf("geometric-mean speedups of the fused compact solve: %.2fx vs its own "
                 "two-step calls, %.2fx vs the MKL compact pipeline, %.2fx vs "
                 "per-matrix LAPACKE_dposv\n",

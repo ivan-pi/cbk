@@ -209,12 +209,15 @@ Both paths recovered the known solution to `~6e-15`.
   interleave width than the host default (a wider-than-native width is rejected);
   `--size-sweep=nmin:nmax[:stride]` switches to a cbk-only throughput scan (no
   cross-check) to resolve the SIMD "staircase" finely.
-* **Size list.** The default deliberately mixes sizes that are *not* multiples of
-  the interleave width `V` (30, 45, 60, 105, 168) with round powers, so the SIMD
-  remainder handling stays visible across the target small-to-medium range.
+* **Size list.** One list, `bench_sizes` in `bench_util.hpp`, shared by every
+  benchmark but `bench_qr_compact` (whose five paths per size keep it on a
+  narrower `10..100`), so the set of orders moves in one place. It deliberately
+  mixes sizes that are *not* multiples of the interleave width `V` (30, 45, 60,
+  105, 168) with round powers, so the SIMD remainder handling stays visible
+  across the target small-to-medium range.
 * **Order `256` is the ceiling.** No benchmark runs a larger matrix, by the size
-  list or by `--size-sweep` (`max_bench_size` in `bench_util.hpp` caps both, and
-  an `nmax` above it is rejected). There is nothing to learn above it: blocked,
+  list or by `--size-sweep`: `max_bench_size` in `bench_util.hpp` states it, and
+  an `nmax` above it is rejected. There is nothing to learn above it: blocked,
   cache-tuned LAPACK owns that regime, the crossover is already visible near
   `128-168`, and the compact kernels' gains are below `128` -- most of them below
   `64`. The larger points only made a run take longer.

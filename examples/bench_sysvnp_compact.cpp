@@ -46,11 +46,9 @@
 
 #include "bench_util.hpp"
 
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <vector>
-#include <algorithm>
 
 namespace {
 
@@ -161,14 +159,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Square sizes spanning the target range (order 3..256, emphasis below 128),
-     * mixing sizes that are not multiples of the SIMD width V with the round
-     * powers, as in the factorization benchmarks. */
-    constexpr std::array sizes = {8,  16, 24,  30,  32,  45,  48, 60,
-                                  64, 96, 105, 128, 168, 170, 256};
-    static_assert(*std::max_element(sizes.begin(), sizes.end()) <= max_bench_size,
-                  "benchmark size lists stop at max_bench_size");
-
     std::printf("Symmetric solve throughput: cbk_dsysvnp_compact (fused unpivoted "
                 "LDL^T) vs per-matrix LAPACKE_dsysv (Bunch-Kaufman)\n");
     std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
@@ -182,11 +172,11 @@ int main(int argc, char **argv)
     std::printf("-----+-------------+-------------+--------------+---------+"
                 "-------------+---------------\n");
 
-    /* one ipiv per thread, sized for the largest order in the list */
-    std::vector<MKL_INT> ipiv((size_t)nthreads *
-                              *std::max_element(sizes.begin(), sizes.end()));
+    /* one ipiv per thread, sized for the largest order in the list -- its back,
+     * since bench_sizes is ascending (bench_util.hpp) */
+    std::vector<MKL_INT> ipiv((size_t)nthreads * bench_sizes.back());
     double log_speed = 0.0;
-    for (int n : sizes) {
+    for (int n : bench_sizes) {
         const Systems P(n, nmat, nrhs);
         PackedSystems pk(P.a, P.b, fmt);
 
@@ -228,6 +218,6 @@ int main(int argc, char **argv)
                 "-------------+---------------\n");
     std::printf("geometric-mean speedup (cbk fused compact solve vs per-matrix "
                 "LAPACKE_dsysv): %.2fx\n",
-                std::exp(log_speed / sizes.size()));
+                std::exp(log_speed / bench_sizes.size()));
     return 0;
 }
