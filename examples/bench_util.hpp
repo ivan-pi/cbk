@@ -165,8 +165,8 @@ inline double chol_gflop(int n)
 /* Bytes of the compact image of nmat rows x cols matrices in format fmt: what
  * mkl_dget_size_compact reports, computed in size_t. MKL returns it as MKL_INT,
  * which is 32-bit under the LP64 interface the benchmarks link by default, so
- * a pool past 2 GB (10000 matrices at n = 168) came back negative there and
- * mkl_malloc was asked for ~1.8e19 bytes: a std::bad_alloc abort mid-table. */
+ * any pool past 2 GB came back negative there and mkl_malloc was asked for
+ * ~1.8e19 bytes: a std::bad_alloc abort mid-table. */
 inline std::size_t packed_bytes(int rows, int cols, MKL_COMPACT_PACK fmt, int nmat)
 {
     const std::size_t V = (std::size_t)vlen_for_format<double>(fmt);
