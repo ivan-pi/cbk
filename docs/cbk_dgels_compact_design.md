@@ -156,12 +156,10 @@ The underdetermined case cannot fuse: `Q` is applied after the triangular
 solve, in descending order, so the factorization must be complete first. It
 runs the three steps in sequence, still per group.
 
-The fusion absorbs an `O(p q nrhs)` sweep into an `O(p q^2)` factorization,
-so its value grows with `nrhs`. At `nrhs = 1`, `bench_qr_compact` measures the
-one-call routine at parity with the three-step chain driven group by group
-(`1.00x` geometric mean, `n = 10..100`, 4 threads, AVX-512); there the
-routine's value is the interface, the rectangular cases, and threading the
-whole solve inside the library.
+The fused path completes all three steps on one group before moving on to
+the next, so a group's `A` and `B` are read from memory once and stay in cache
+from factorization to solution. The arithmetic is the same as the chain's;
+what changes is the order the memory is touched in.
 
 ### 6.3 Threading
 

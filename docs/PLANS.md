@@ -32,9 +32,15 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   `LAPACKE_dormqr` over `layout x side x trans` (`20 s eps`) plus the
   `mkl_dgeqrf_compact -> cbk_dormqr_compact -> mkl_dtrsm_compact` solve
   (`100 n eps`).
+- **Benchmarked:** through `bench_qr_compact --nrhs=k` (both batched chains
+  share it; at large `nrhs` it and the triangular solve are most of the chain).
 - **Known gap:** the stress structures of design 7.3 (`cond` knob, banded /
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases.
+- **Open:** the one-column tail of `larf` (all of `nrhs < 4`) reduces `v^T c`
+  into a single accumulator and runs at FMA latency; split it into several.
+  `larf_block` takes `tau` by reference to a pack, which is safe only while it
+  inlines (`.claude/CLAUDE.md`); pass the pointer and index instead.
 
 ## orgqr
 
@@ -156,10 +162,20 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   `LAPACKE_dgels`: `3.2x` geometric mean over `n = 10..100` (4 threads,
   AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`). At `nrhs = 1` it matches
   the three-step chain (`1.00x`): the fused apply-`Q^T` saves an `O(n^2)`
-  sweep against an `O(n^3)` factorization, so the fusion's gain scales with
-  `nrhs`.
+  sweep against an `O(n^3)` factorization; `--nrhs` up to 64 did not change
+  that (BENCHMARKS.md).
 - **Scoped out (design 6.6):** no rank-deficiency test (a zero diagonal of `R`
   divides to `Inf`/`NaN` in that lane), no `?lascl` rescaling, no pivoting.
+- **Open (fusion vs L1):** the fused panel kernel is `15-25%` slower than
+  `geqrf` + `ormqr` on one cache-resident group at `n = 24..50` (`V = 8`,
+  48 KB L1d), at every `nrhs`: each reflector step sweeps `A`'s trailing block
+  and then all of `C`, and once the two exceed L1 the `A` sweep evicts `C`
+  every step (cachegrind: twice the L1 misses, fewer instructions), whereas
+  the chain's `ormqr` touches `C` plus one column of `A` and keeps `C` in L1.
+  Below `n ~ 20` (both fit) the fusion is `5-10%` faster, from `n ~ 100` (both
+  in L2) the two are level. Candidate fix: in `gels_compact_group`, run the
+  plain factorization followed by the `ormqr` sweep when `A`'s group block
+  exceeds the L1 size, and the fused kernel below it.
 - **Open:** row-major runs through the strided kernels. A whole-batch,
   library-threaded `gels` call has not been benchmarked against the
   caller-threaded per-group loop. The unblocked factorization is
