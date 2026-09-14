@@ -128,7 +128,7 @@ double factor_error(const MatrixPool &P, const PackedPool &pristine, MKL_COMPACT
     /* factor a fresh working copy of the pristine pack */
     auto ap = pristine.work();
     pristine.restore_into(ap.get());
-    auto tp = cbk::detail::mkl_alloc_bytes<double>(packed_bytes(k, 1, fmt, nmat));
+    auto tp = cbk::detail::mkl_alloc_bytes<double>(compact_bytes(k, 1, fmt, nmat));
 
     MKL_INT lwork = -1, info;
     double wq;
@@ -184,7 +184,7 @@ void run_sweep(int nmat, int reps, int nmin, int nmax, int stride, MKL_COMPACT_P
 
         const PackedPool pristine(P, fmt);
         auto work_ap = pristine.work();
-        auto taup = cbk::detail::mkl_alloc_bytes<double>(packed_bytes(k, 1, fmt, nmat));
+        auto taup = cbk::detail::mkl_alloc_bytes<double>(compact_bytes(k, 1, fmt, nmat));
 
         double wq;
         MKL_INT info;
@@ -252,7 +252,7 @@ int main(int argc, char **argv)
         /* pristine packed pool + one working copy both compact paths share */
         const PackedPool pristine(P, fmt);
         auto work_ap = pristine.work();
-        auto taup = cbk::detail::mkl_alloc_bytes<double>(packed_bytes(k, 1, fmt, nmat));
+        auto taup = cbk::detail::mkl_alloc_bytes<double>(compact_bytes(k, 1, fmt, nmat));
 
         /* Each routine reports its own optimal lwork (MKL's compact geqrf needs
          * real scratch; ours needs none). Query both and size per path. */
