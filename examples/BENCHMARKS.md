@@ -99,9 +99,9 @@ Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR
 The two three-step batched paths share `cbk_dormqr_compact` (MKL ships no
 compact `ormqr`), so the cbk path runs the whole solve with *no* MKL compute
 kernel and the cbk-vs-MKL ratio is the end-to-end open-vs-MKL comparison. The
-gels path runs the same open kernels fused into one call -- the apply-`Q^T`
-folded into the factorization, no separate sweep over the reflectors -- between
-the same pack and unpack, so gels-vs-cbk-batch is what the fusion buys.
+gels path runs the same open group kernels inside one call between the same
+pack and unpack, so gels-vs-cbk-batch is the cost of the one-call driver over
+the hand-driven chain.
 `LAPACKE_dgels` is the like-for-like baseline for the one-call routine (it runs
 the same three steps inside, blocked, plus its norm scaling and rank test), so
 gels-vs-dgels is the headline one-call-vs-one-call batched win; the unbatched
@@ -119,19 +119,19 @@ right-hand side the `O(n^3)` factorization dominates and the chain measures
 over, so a large `--nrhs` is how to weigh `cbk_dormqr_compact` (shared by both
 batched chains) and `cbk_dtrsm_compact` against per-matrix `dormqr` and
 `dtrsm`. Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`,
-1000 matrices, `n = 10..100`, one thread):
+1000 matrices, `n = 10..120`, one thread):
 
 | `--nrhs` | gels vs `dgels`, geomean | at `n = 100` | cbk-batch vs MKL-batch | gels vs cbk-batch |
 |---|---|---|---|---|
-| 1 | `2.9x` | `1.5x` | `1.29x` | `0.99x` |
-| 4 | `2.6x` | `1.4x` | `1.24x` | `0.95x` |
-| 16 | `1.9x` | `1.3x` | `1.21x` | `0.92x` |
-| 64 | `1.3x` | `0.97x` | `1.11x` | `0.98x` |
+| 1 | `2.7x` | `1.5x` | `1.25x` | `1.01x` |
+| 4 | `2.5x` | `1.5x` | `1.24x` | `1.00x` |
+| 16 | `2.0x` | `1.4x` | `1.22x` | `1.00x` |
+| 64 | `1.3x` | `1.0x` | `1.12x` | `1.01x` |
 
 The batched win over per-matrix LAPACK narrows as `nrhs` grows: at `nrhs = 64`
-the compact chain is still `1.5-2.3x` ahead at `n <= 30`, level from `n = 50`,
-and slightly behind at `n = 80..100`. Against MKL's compact pipeline the open
-kernels stay ahead at every `nrhs`.
+the compact chain is still `1.5-2.5x` ahead at `n <= 30`, level at `n = 60`
+and `100`, and `0.85-0.95x` at `n = 80` and `120`. Against MKL's compact
+pipeline the open kernels stay ahead at every `nrhs`.
 
 ## `bench_posv_compact`
 
@@ -234,12 +234,11 @@ solution to `~6e-15`.
 * **It ends at `256`.** Larger orders make a run long and the batched gains are
   hard to realize there; the regime this library is about is below `128`.
   `--size-sweep` is not capped, for a deliberate scan past `256`.
-* **`gels` vs the three-step chain.** With one right-hand side the two are
-  level (`0.9x` geometric mean over `n = 10..120`), and `--nrhs` up to 64 did
-  not change that (`0.92-0.99x`, table above): the fused kernel wins while
-  `A` and `B` fit L1 together and loses by `15-25%` at `n = 24..50`, where its
-  per-step sweep of `A` evicts `B` (PLANS.md, gels). The column is there to
-  show the one-call routine costs (almost) nothing over the chain. Against
+* **`gels` vs the three-step chain.** The two run the same group kernels in
+  the same order, so the column should read `~1.0x` at every `nrhs`; the
+  column is there to show the one-call driver costs nothing over the chain.
+  Measured `1.00-1.01x` at `nrhs = 1..64`. (A fused factor-and-apply kernel
+  that measured `0.92-0.99x` here was retired; PLANS.md, gels.) Against
   per-matrix `LAPACKE_dgels` it measured `2.8x` (geometric mean, 4 threads,
   AVX-512, `n = 10..120`; `7.7x` at `n = 10` down to `1.4x` at `n = 120`),
   within a few percent of its ratio to the unbatched chain -- `dgels`'s own

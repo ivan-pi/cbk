@@ -28,13 +28,10 @@
  *   (m >= n & 'T',                   (X = Q [Y; 0] is the minimum-norm solution)
  *    m <  n & 'N')
  *
- * The overdetermined reduction is fused: geqrf_panel_compact_group applies
- * each reflector to B as it is built (the QR of [F | B] truncated to q
- * reflectors), so Q^T B costs no second sweep over the reflectors. B stays a
- * separate array with its own leading dimension, as ?gels requires: the panel
- * kernel reaches it through its own view, not an augmented buffer. The
- * underdetermined case needs the factorization complete before Q is applied,
- * so it runs the three steps in sequence.
+ * Both cases run the three group kernels in sequence -- geqrf, ormqr, trsm --
+ * on the group's buffers. (A fused variant that applied each reflector to B as
+ * it was built saved no arithmetic and, once F's trailing block and B together
+ * outgrew L1, evicted B on every step; it was retired for the plain sequence.)
  *
  * Compact storage (matches mkl_?gepack_compact); group g = idx/V, slot v = idx%V:
  *     A_v(i,j)  = ap  [ g*ldap*n*V    + (j*ldap + i)*V + v ]   (column-major)
@@ -92,9 +89,9 @@ void gels_compact_group(bool overdet, Int p, Int q, Int nrhs, BatchView<T, V, In
 
     const auto Fc = F.as_const();
     if (overdet) {
-        /* F = Q [R; 0], with B := Q^T B fused into the factorization; then
-         * R X = (Q^T B)(0:q). */
-        geqrf_panel_compact_group<T, V, Int>(p, q, F, tau_, B, nrhs);
+        /* F = Q [R; 0]: B := Q^T B, then R X = (Q^T B)(0:q). */
+        geqrf_compact_group<T, V, Int>(p, q, F, tau_);
+        ormqr_compact_group<T, V, Int>(Direction::Forward, p, nrhs, q, Fc, tau_, B);
         trsm_compact_group<T, V, Int>(true, true, false, false, q, nrhs, T(1), Fc, B);
     }
     else {

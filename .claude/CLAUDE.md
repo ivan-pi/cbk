@@ -213,7 +213,7 @@ workspace contract, or the benchmarks' threading.
   signature for a new caller, even ones compiled out: GCC's interprocedural
   passes key on the signature, and geqrf's plain path lost 8-13% that way
   (measured). Share the step as an inline helper and give the new caller its
-  own kernel, as `geqrf_panel_compact_group` does. Register blocking is
+  own kernel. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like

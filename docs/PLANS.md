@@ -143,13 +143,14 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Implemented (design 6):** LAPACK `?gels` for the compact format, both
   layouts, `trans in {N, T}`, any `m x n`. The four cases are one kernel: QR
   of the tall orientation of `A` (its view, transposed when `m < n`, which is
-  `?gelqf` storage for free), `B := Q^T B` fused into the factorization and
-  `R X = B` (least squares), or `R^T Y = B`, `B := Q [Y; 0]` (minimum norm),
+  `?gelqf` storage for free), `B := Q^T B` and `R X = B` (least squares), or `R^T Y = B`, `B := Q [Y; 0]` (minimum norm),
   one `for_each_group` body over the `geqrf`/`ormqr`/`trsm` group kernels. The
   MKL-style `work` is the per-group `tau` scratch (`lwork >= min(m,n) * V *
   ceil(nm/V)`) and holds `tau` on exit; the portable C API takes it as an
   explicit `taup` output. `(ap, tau)` feed `ormqr` for further right-hand
-  sides.
+  sides. A fused factor-and-apply kernel for the least-squares case was
+  retired (design 6.2): no arithmetic saved, and it evicted `B` from L1 at
+  mid sizes.
 - **Validated (design 7):** BLAS-free test vs a scalar `ref_gels` (`X`,
   factorization and `tau` elementwise) plus the defining properties formed
   independently, C-API validation, and the `min(m,n) = 0` quick return; MKL
@@ -160,22 +161,11 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   mkl_?trsm_compact` pipeline on the same packed input.
 - **Benchmarked:** the `cbk-gels` path of `bench_qr_compact` vs per-matrix
   `LAPACKE_dgels`: `3.2x` geometric mean over `n = 10..100` (4 threads,
-  AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`). At `nrhs = 1` it matches
-  the three-step chain (`1.00x`): the fused apply-`Q^T` saves an `O(n^2)`
-  sweep against an `O(n^3)` factorization; `--nrhs` up to 64 did not change
-  that (BENCHMARKS.md).
+  AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`, with the retired fused
+  kernel). It runs the chain's group kernels, so gels-vs-cbk-batch there is
+  the driver's overhead alone (BENCHMARKS.md).
 - **Scoped out (design 6.6):** no rank-deficiency test (a zero diagonal of `R`
   divides to `Inf`/`NaN` in that lane), no `?lascl` rescaling, no pivoting.
-- **Open (fusion vs L1):** the fused panel kernel is `15-25%` slower than
-  `geqrf` + `ormqr` on one cache-resident group at `n = 24..50` (`V = 8`,
-  48 KB L1d), at every `nrhs`: each reflector step sweeps `A`'s trailing block
-  and then all of `C`, and once the two exceed L1 the `A` sweep evicts `C`
-  every step (cachegrind: twice the L1 misses, fewer instructions), whereas
-  the chain's `ormqr` touches `C` plus one column of `A` and keeps `C` in L1.
-  Below `n ~ 20` (both fit) the fusion is `5-10%` faster, from `n ~ 100` (both
-  in L2) the two are level. Candidate fix: in `gels_compact_group`, run the
-  plain factorization followed by the `ormqr` sweep when `A`'s group block
-  exceeds the L1 size, and the fused kernel below it.
 - **Open:** row-major runs through the strided kernels. A whole-batch,
   library-threaded `gels` call has not been benchmarked against the
   caller-threaded per-group loop. The unblocked factorization is

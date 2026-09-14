@@ -15,9 +15,9 @@
  * and `cbk_?trsm_compact`, so the cbk path runs the whole solve with no MKL
  * compute kernel (MKL only packs and unpacks) and their ratio is the end-to-end
  * MKL-vs-open comparison. MKL has no compact `ormqr`, so `cbk_dormqr_compact`
- * is shared by both. The gels path is the same open math fused into one call
- * (the apply-Q^T folded into the factorization, no separate reflector sweep), so
- * gels vs cbk-batch is what the fusion buys. The unbatched path is the
+ * is shared by both. The gels path runs the same open group kernels inside one
+ * call, so gels vs cbk-batch is the cost of the one-call driver over the
+ * hand-driven chain. The unbatched path is the
  * conventional per-matrix LAPACK baseline, and LAPACKE_dgels the like-for-like
  * one-call baseline for cbk_dgels_compact (it runs the same three steps
  * inside, blocked, plus its norm scaling and rank test).
