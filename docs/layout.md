@@ -5,7 +5,7 @@ include/   public headers
 src/       kernels and the two adapter sources
 tests/     portable (no BLAS) and MKL-backed test suites; tests/install/ checks
            an installed cbk from a downstream project
-examples/  worked solve + benchmarks (see examples/BENCHMARKS.md)
+examples/  portable QR round trip, worked MKL solve + benchmarks (see docs/examples.md)
 docs/      design documents and guides (see docs/README.md)
 cmake/     FindMKLCompact.cmake, cbkConfig.cmake.in (the installed package)
 ```

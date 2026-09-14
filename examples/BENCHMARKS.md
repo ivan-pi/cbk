@@ -19,8 +19,9 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cbk_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cbk_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
 
-The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
-the same folder; see [`docs/examples.md`](../docs/examples.md).
+The worked, self-validating solver `solve_qr_compact` and the portable QR
+round trip `qr_reconstruct_compact` (neither a benchmark) live in the same
+folder; see [`docs/examples.md`](../docs/examples.md).
 
 ## Running them
 

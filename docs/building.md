@@ -123,7 +123,7 @@ CI builds against a fresh install for every MKL / static / shared combination
 
 | Option | Default | Effect |
 |--------|---------|--------|
-| `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
+| `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the worked solve example and the benchmarks; requires Intel MKL. The portable example `qr_reconstruct_compact` builds regardless. |
 | `CBK_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
 | `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
 | `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcbk` shared instead of static. |

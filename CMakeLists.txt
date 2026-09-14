@@ -72,6 +72,15 @@ set_target_properties(cbk PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 add_library(cbk::cbk ALIAS cbk)
 
+# The portable example: the QR round trip of examples/qr_reconstruct_compact.cpp
+# (pack, dgeqrf_compact, dormqr_compact, unpack, check) on the C API alone, so
+# it builds in the default configure. src/ is on its include path for the
+# dense MatrixBatch the examples share with the tests; the public API stays
+# include/.
+add_executable(qr_reconstruct_compact examples/qr_reconstruct_compact.cpp)
+target_link_libraries(qr_reconstruct_compact PRIVATE cbk)
+target_include_directories(qr_reconstruct_compact PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+
 # ---------------------------------------------------------------------------
 # Optional Intel MKL compact extension (-DCBK_WITH_MKL=ON): cbk_?{geqrf,
 # ormqr,orgqr,potrf,potrs,posv,sytrfnp,sytrsnp,sysvnp,trsm,gels}_compact, the
@@ -86,10 +95,10 @@ if(CBK_WITH_MKL)
   # MKL types appear in the public header (no link dependency).
   target_link_libraries(cbk PUBLIC MKL::CompactHeaders)
 
-  # Examples: the worked batched solve and the five throughput benchmarks
-  # (examples/BENCHMARKS.md). All link MKL for the pack/unpack routines and the
-  # per-matrix LAPACK baselines; the benchmarks parallelize their outer loop
-  # with OpenMP when available.
+  # The MKL examples: the worked batched solve and the five throughput
+  # benchmarks (examples/BENCHMARKS.md). All link MKL for the pack/unpack
+  # routines and the per-matrix LAPACK baselines; the benchmarks parallelize
+  # their outer loop with OpenMP when available.
   foreach(prog solve_qr_compact bench_qr_compact bench_geqrf_compact bench_potrf_compact
                bench_posv_compact bench_sysvnp_compact)
     add_executable(${prog} examples/${prog}.cpp)
@@ -118,6 +127,12 @@ if(CBK_BUILD_TESTS)
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
   endforeach()
+
+  # The portable example self-validates (A = Q R rebuilt from the factors), so
+  # it doubles as an integration test of the C API: a small batch of square
+  # and of tall matrices, 33 of them so the padded last group is exercised too.
+  add_test(NAME example_qr_reconstruct_square COMMAND qr_reconstruct_compact 33 4 5 5)
+  add_test(NAME example_qr_reconstruct_tall COMMAND qr_reconstruct_compact 33 2 7 5)
 
   if(CBK_WITH_MKL)
     # MKL + dense-LAPACK validation of each cbk_?*_compact routine (the

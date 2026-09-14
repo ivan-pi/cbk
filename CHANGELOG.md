@@ -5,6 +5,17 @@ All notable changes to cbk are recorded here. The format follows
 numbers [Semantic Versioning](https://semver.org/): until 1.0.0, a minor
 release may change the API.
 
+## [Unreleased]
+
+### Added
+
+- `examples/qr_reconstruct_compact.cpp`, a standalone example of the portable
+  C API built in every configuration: a batch QR-factored with
+  `dgeqrf_compact` and rebuilt as `Q R` with `dormqr_compact`, packed and
+  unpacked by hand, each phase timed and every matrix checked -- the
+  interleave-batch QR example of Arm Performance Libraries on this library's
+  routines. Registered with CTest.
+
 ## [0.1.0] - 2026-09-13
 
 The first release: batched QR, Cholesky and unpivoted LDL^T factorizations,

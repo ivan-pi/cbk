@@ -71,8 +71,9 @@ Intel MKL (oneAPI, or `sudo apt-get install libmkl-dev` on Debian/Ubuntu).
   with a caller's own parallel loop.
 * [Source layout](docs/layout.md) - the public headers, the kernels, the test
   and benchmark helpers.
-* [Examples and benchmarks](docs/examples.md) - the worked solve and the five
-  benchmarks; measured results in [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
+* [Examples and benchmarks](docs/examples.md) - the portable QR round trip,
+  the worked MKL solve and the five benchmarks; measured results in
+  [`examples/BENCHMARKS.md`](examples/BENCHMARKS.md).
 * One design document per routine, linked from the table above.
 * [CHANGELOG.md](CHANGELOG.md) - what each release changed.
 
