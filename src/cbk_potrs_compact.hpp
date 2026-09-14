@@ -36,6 +36,8 @@
 #include <cstddef>
 #include <cassert>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* One group: the two sweeps on the factor at `a` and the RHS block at `b`.
@@ -81,5 +83,7 @@ void potrs_compact(bool rowmajor, bool upper, Int n, Int nrhs, const T *ap, Int 
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_POTRS_COMPACT_HPP */

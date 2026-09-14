@@ -57,6 +57,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* Symmetric rank-1 trailing update of the JB columns jj .. jj+JB-1 by pivot
@@ -67,7 +69,8 @@ namespace cbk::detail {
  * the per-column weight w[c] = L(c,j) * d, one extra multiply per block column.
  * The near-diagonal corner fills in triangularly (column c touches rows
  * i >= c); below it all JB columns take the same A(i,j), loaded once. JB is
- * compile-time so w[] stays in registers. */
+ * compile-time so w[] stays in registers. Also potrf's in-panel update, with
+ * 1/a parked at A(j,j) (cbk_potrf_compact.hpp). */
 template <int JB, typename T, int V, typename Int>
 inline void sytrfnp_update_block(Int j, Int n, const BatchView<T, V, Int> &A, Int jj)
 {
@@ -141,5 +144,7 @@ void sytrfnp_compact(bool rowmajor, bool upper, Int n, T *ap, Int ldap, Int nm)
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_SYTRFNP_COMPACT_HPP */

@@ -39,6 +39,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* Single-column column-oriented (gaxpy) solve, side='L', column-major, op(A)=A:
@@ -297,5 +299,7 @@ void trsm_compact(bool left, bool upper, bool rowmajor, bool tran, bool unit, In
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_TRSM_COMPACT_HPP */

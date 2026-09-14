@@ -159,6 +159,19 @@ workspace contract, or the benchmarks' threading.
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
   (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
   because they always inline.
+- **clang splits 512-bit packs in half unless told otherwise.** On x86, clang
+  (icpx included) legalizes vector operations to its *preferred* width, which
+  its tuning for AVX-512 CPUs sets to 256 bits: a V=8 double pack becomes two
+  ymm halves, half the FMA rate and twice the register pressure, so the
+  register-tiled updates spill (measured: the blocked potrf ran at ~15 GFLOP/s
+  under clang against ~28 under gcc from the same source; icpx defaults its
+  zmm usage the same way, `-qopt-zmm-usage=low`, on pre-Sapphire-Rapids
+  targets). Every kernel header therefore wraps its body in
+  `CBK_KERNEL_BEGIN` / `CBK_KERNEL_END` (`cbk_common.hpp`), which under clang
+  marks every function declared there `min_vector_width(512)`, the attribute
+  clang's own intrinsics headers use; wrap new kernel headers the same way.
+  GCC lowers explicit vector types at their natural width and needs nothing.
+  Check codegen with `objdump -d libcbk.a | grep -c zmm` (zero means split).
 - **Build and test with both gcc and clang before pushing.** CI runs both, and
   the packs' alignment is exactly the kind of contract only one of them
   enforces: both alignment faults so far (issue #34 and the one above) were
@@ -197,6 +210,13 @@ workspace contract, or the benchmarks' threading.
   exception by construction -- it carries strides, not extents, so a kernel
   cannot self-check; the kernels' dimension contract is the portable C API's
   argument validation.
+  Pass a `BatchView` **by value** to any function that may stay out of line
+  (a recursive driver, a large block helper): the pack element type is
+  `may_alias`, so after every store through a view held *by reference* the
+  compiler must reload its `data`/`si`/`sj` and redo the `i*si + j*sj`
+  multiplies -- potrf's recursion measured 1.3-1.7x slower at `n <= 32` that
+  way. The view is 16 bytes, two registers. The small `inline` helpers that
+  always inline may keep `const BatchView &`.
   Dense batches everywhere are `MatrixBatch` (`src/cbk_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`

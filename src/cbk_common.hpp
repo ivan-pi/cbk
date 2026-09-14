@@ -39,6 +39,27 @@
 #include <omp.h>
 #endif
 
+/* CBK_KERNEL_BEGIN / CBK_KERNEL_END wrap every kernel header. Under clang
+ * (icpx included) they mark each function declared between them
+ * min_vector_width(512): clang otherwise legalizes vector operations to its
+ * preferred width, 256 bits on AVX-512 CPUs, splitting a 512-bit pack into two
+ * ymm halves -- half the FMA rate, twice the register pressure. 512 is a floor,
+ * not a widening: narrower packs and other targets are unaffected. GCC lowers
+ * explicit vector types at their natural width and needs nothing. Details and
+ * the measurement: .claude/CLAUDE.md, docs/building.md. */
+
+#if defined(__clang__) && defined(__x86_64__)
+// clang-format off
+#define CBK_KERNEL_BEGIN _Pragma("clang attribute push (__attribute__((min_vector_width(512))), apply_to = function)")
+#define CBK_KERNEL_END _Pragma("clang attribute pop")
+// clang-format on
+#else
+#define CBK_KERNEL_BEGIN
+#define CBK_KERNEL_END
+#endif
+
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +110,10 @@ template <typename T, int V> struct pack {
 /* local -- larger helpers re-read the value from the view instead.    */
 /* ------------------------------------------------------------------ */
 
-/* r := sqrt(x), lane-wise. The short loop lowers to one vsqrt* on GCC/Clang. */
+/* r := sqrt(x), lane-wise. GCC and clang lower the loop to one vsqrt*
+ * instruction under -fno-math-errno, which the library's CMakeLists sets
+ * (docs/building.md); with math errno on, each lane is a guarded scalar sqrt
+ * plus a libm call. The kernels never read errno. */
 template <typename T, int V>
 inline void vsqrt(typename pack<T, V>::type &r,
                   const typename pack<T, V>::type &x) noexcept
@@ -297,5 +321,7 @@ void zero_compact(bool rowmajor, Int rows, Int cols, T *bp, Int ldbp, Int nm)
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_COMMON_HPP */

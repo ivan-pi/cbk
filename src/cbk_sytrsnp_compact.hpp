@@ -41,6 +41,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* One group: the three sweeps on the factor at `a` and the RHS block at `b`.
@@ -101,5 +103,7 @@ void sytrsnp_compact(bool rowmajor, bool upper, Int n, Int nrhs, const T *ap, In
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_SYTRSNP_COMPACT_HPP */

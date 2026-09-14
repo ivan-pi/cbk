@@ -85,6 +85,12 @@ without an `O(n^3)` `M^T M`).
 bench_potrf_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
 ```
 
+Three codegen prerequisites decide what this benchmark measures
+(`docs/building.md`): `-march` for the vector width, `-fno-math-errno` for the
+vector square root (set by the library's own CMake), and full-width vectors
+under clang and icpx (set by the kernel headers). A build missing any of them
+runs a different kernel.
+
 ## `bench_qr_compact`
 
 Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR

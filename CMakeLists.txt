@@ -52,6 +52,12 @@ target_include_directories(cbk
 # A build requirement of the kernels, not of the public headers (C, and
 # C++-agnostic), so consumers of the installed package are not bound to it.
 target_compile_features(cbk PRIVATE cxx_std_17)
+# The pivots' lane-wise sqrt (vsqrt in src/cbk_common.hpp) is one vector
+# instruction only without the C standard's errno-on-negative-input; the
+# kernels never read errno. PRIVATE: a codegen setting for the kernels, not an
+# ISA or fast-math choice, and consumers are not bound to it.
+target_compile_options(cbk PRIVATE
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang,IntelLLVM>:-fno-math-errno>)
 # cbk.h's CBK_VERSION_* macros must agree with project(VERSION) above;
 # src/cbk.cpp static_asserts it.
 target_compile_definitions(cbk PRIVATE
