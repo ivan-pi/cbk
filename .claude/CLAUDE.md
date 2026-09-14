@@ -155,7 +155,7 @@ workspace contract, or the benchmarks' threading.
   configuration CI uses, while the same source passed every test under gcc.
   Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
   Instead give the helper the view and the indices and let it load what it
-  needs (`potrf_update_block` / `sytrfnp_update_block` do exactly that), or
+  needs (`sytrfnp_update_block`, which `potrf`'s panel calls too, does exactly that), or
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
   (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
   because they always inline.
