@@ -24,7 +24,7 @@
 #include "cbk_matrix_view.hpp"
 
 #include <mkl.h>         /* cblas_dgemm, for the known-solution RHS */
-#include <mkl_compact.h> /* mkl_dget_size_compact / mkl_dgepack_compact */
+#include <mkl_compact.h> /* mkl_dgepack_compact, for PackedPool */
 
 #include <chrono>
 #include <cstdio>
@@ -162,15 +162,27 @@ inline double chol_gflop(int n)
     return (dn * dn * dn / 3.0 + dn * dn / 2.0 + dn / 6.0) * 1e-9;
 }
 
+/* Bytes of the compact image of nmat rows x cols matrices in format fmt: what
+ * mkl_dget_size_compact reports, computed in size_t. MKL returns it as MKL_INT,
+ * which is 32-bit under the LP64 interface the benchmarks link by default, so
+ * a pool past 2 GB (10000 matrices at n = 168) came back negative there and
+ * mkl_malloc was asked for ~1.8e19 bytes: a std::bad_alloc abort mid-table. */
+inline std::size_t packed_bytes(int rows, int cols, MKL_COMPACT_PACK fmt, int nmat)
+{
+    const std::size_t V = (std::size_t)vlen_for_format<double>(fmt);
+    const std::size_t groups = ((std::size_t)nmat + V - 1) / V;
+    return groups * V * (std::size_t)rows * (std::size_t)cols * sizeof(double);
+}
+
 /* A pool packed column-major into a compact buffer it owns: the pristine bytes
  * an in-place compact routine's working copy is restored from before every
  * timed pass (the pack itself stays untimed). */
 struct PackedPool {
-    MKL_INT bytes; /* mkl_dget_size_compact reports bytes */
+    std::size_t bytes; /* packed_bytes(): sized in size_t, not MKL_INT */
     cbk::detail::mkl_buffer<double> p;
 
     PackedPool(const MatrixPool &P, MKL_COMPACT_PACK fmt)
-        : bytes(mkl_dget_size_compact(P.rows(), P.cols(), fmt, P.count())),
+        : bytes(packed_bytes(P.rows(), P.cols(), fmt, P.count())),
           p(cbk::detail::mkl_alloc_bytes<double>(bytes))
     {
         auto ptrs = P.base_ptrs();
