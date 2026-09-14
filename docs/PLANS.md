@@ -32,9 +32,15 @@ pivoting, and overflow/underflow-safe scaling are out of scope throughout.
   `LAPACKE_dormqr` over `layout x side x trans` (`20 s eps`) plus the
   `mkl_dgeqrf_compact -> cbk_dormqr_compact -> mkl_dtrsm_compact` solve
   (`100 n eps`).
+- **Benchmarked:** through `bench_qr_compact --nrhs=k` (both batched chains
+  share it; at large `nrhs` it and the triangular solve are most of the chain).
 - **Known gap:** the stress structures of design 7.3 (`cond` knob, banded /
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases.
+- **Open:** the one-column tail of `larf` (all of `nrhs < 4`) reduces `v^T c`
+  into a single accumulator and runs at FMA latency; split it into several.
+  `larf_block` takes `tau` by reference to a pack, which is safe only while it
+  inlines (`.claude/CLAUDE.md`); pass the pointer and index instead.
 
 ## orgqr
 
@@ -137,13 +143,14 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Implemented (design 6):** LAPACK `?gels` for the compact format, both
   layouts, `trans in {N, T}`, any `m x n`. The four cases are one kernel: QR
   of the tall orientation of `A` (its view, transposed when `m < n`, which is
-  `?gelqf` storage for free), `B := Q^T B` fused into the factorization and
-  `R X = B` (least squares), or `R^T Y = B`, `B := Q [Y; 0]` (minimum norm),
+  `?gelqf` storage for free), `B := Q^T B` and `R X = B` (least squares), or `R^T Y = B`, `B := Q [Y; 0]` (minimum norm),
   one `for_each_group` body over the `geqrf`/`ormqr`/`trsm` group kernels. The
   MKL-style `work` is the per-group `tau` scratch (`lwork >= min(m,n) * V *
   ceil(nm/V)`) and holds `tau` on exit; the portable C API takes it as an
   explicit `taup` output. `(ap, tau)` feed `ormqr` for further right-hand
-  sides.
+  sides. A fused factor-and-apply kernel for the least-squares case was
+  retired (design 6.2): no arithmetic saved, and it evicted `B` from L1 at
+  mid sizes.
 - **Validated (design 7):** BLAS-free test vs a scalar `ref_gels` (`X`,
   factorization and `tau` elementwise) plus the defining properties formed
   independently, C-API validation, and the `min(m,n) = 0` quick return; MKL
@@ -154,10 +161,9 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   mkl_?trsm_compact` pipeline on the same packed input.
 - **Benchmarked:** the `cbk-gels` path of `bench_qr_compact` vs per-matrix
   `LAPACKE_dgels`: `3.2x` geometric mean over `n = 10..100` (4 threads,
-  AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`). At `nrhs = 1` it matches
-  the three-step chain (`1.00x`): the fused apply-`Q^T` saves an `O(n^2)`
-  sweep against an `O(n^3)` factorization, so the fusion's gain scales with
-  `nrhs`.
+  AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`, with the retired fused
+  kernel). It runs the chain's group kernels, so gels-vs-cbk-batch there is
+  the driver's overhead alone (BENCHMARKS.md).
 - **Scoped out (design 6.6):** no rank-deficiency test (a zero diagonal of `R`
   divides to `Inf`/`NaN` in that lane), no `?lascl` rescaling, no pivoting.
 - **Open:** row-major runs through the strided kernels. A whole-batch,

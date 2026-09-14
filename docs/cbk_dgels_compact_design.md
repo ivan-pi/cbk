@@ -134,34 +134,26 @@ directly, and for `m < n` through the transposed view, where `R` is the lower
 triangle `L = R^T` of `A`'s own storage and the solve flips `uplo` and
 `transa`. Row-major goes through the strided kernel.
 
-### 6.2 The fused `[F | B]` reduction
+### 6.2 The three steps per group
 
-In the overdetermined case `Q^T B` is not a separate sweep.
-`geqrf_panel_compact_group`, a sibling of `geqrf_compact_group` sharing the
-one-reflector step `geqrf_reflector`, applies each reflector, right after it
-is built from column `kk` of `F`, to the trailing columns of `F` and to all
-columns of `B`: the QR factorization of `[F | B]` truncated to `F`'s `q`
-reflectors. The arithmetic is that of `ormqr('L','T')` (same reflectors, same
-ascending order), so the result matches the separate sweep to rounding, but
-each reflector is loaded once for both panels while it is in cache. `B` keeps
-its own buffer and leading dimension: the panel is a second view, not an
-augmented matrix.
+Both cases run the existing group kernels in sequence on one group before
+moving on to the next: `geqrf_compact_group` on `F`, `ormqr_compact_group`
+over `B` (ascending, `Q^T B`, in the overdetermined case; descending, `Q B`,
+after the transposed triangular solve and the zeroing of rows `q..p-1` in the
+underdetermined one), and `trsm`'s group kernel on the `q x q` triangle `R`.
+The routine owns no arithmetic of its own, so its result matches the
+three-step chain driven group by group exactly, and a group's `A` and `B` are
+read from memory once and stay in cache from factorization to solution.
 
-It is a separate kernel rather than a flag on `geqrf_compact_group` because
-an extra parameter, even one compiled out, changed GCC's code generation for
-the plain path (frame and register allocation; measured 8-13% slower). With
-the plain signature untouched its assembly matches the pre-`gels` kernel.
-
-The underdetermined case cannot fuse: `Q` is applied after the triangular
-solve, in descending order, so the factorization must be complete first. It
-runs the three steps in sequence, still per group.
-
-The fusion absorbs an `O(p q nrhs)` sweep into an `O(p q^2)` factorization,
-so its value grows with `nrhs`. At `nrhs = 1`, `bench_qr_compact` measures the
-one-call routine at parity with the three-step chain driven group by group
-(`1.00x` geometric mean, `n = 10..100`, 4 threads, AVX-512); there the
-routine's value is the interface, the rectangular cases, and threading the
-whole solve inside the library.
+A fused variant of the overdetermined case, which applied each reflector to
+`B` right after building it from column `kk` of `F` (the QR of `[F | B]`
+truncated to `q` reflectors), was tried and retired. It saves no arithmetic.
+It touches `F`'s trailing block and all of `B` on every step, so once the two
+together outgrow L1 the sweep of `F` evicts `B` each step, where the separate
+`ormqr` sweep, touching `B` and one column of `F`, keeps `B` in L1; below that
+size the fusion gains little, and switching on size would need the L1 size,
+which the library does not know. The plain sequence is also the easier one to
+maintain: one factorization kernel, not two.
 
 ### 6.3 Threading
 
@@ -183,8 +175,8 @@ the scratch is the `tau` of the factorization left in `ap`.
 
 When `nm` is not a multiple of `V`, `mkl_?gepack_compact` fills the last
 pack's unused slots with identity matrices, of `A` and `B` alike. An identity
-`A` factors to `R = I`, `tau = 0`, so the fused reduction and the apply-`Q`
-sweep are no-ops in those lanes and the triangular solve divides by `1`: the
+`A` factors to `R = I`, `tau = 0`, so the apply-`Q` sweeps are no-ops in
+those lanes and the triangular solve divides by `1`: the
 kernel runs unmasked at full width without a `NaN` or a corrupted real lane.
 Nothing is validated, as for every compact routine here and MKL's own; the
 portable `?gels_compact` of `cbk.h` is the checked surface.
@@ -202,7 +194,7 @@ omitted, as throughout the toolkit; complex precisions are out of scope.
 
 ## 7. Testing
 
-Matching LAPACK `?gels` to working precision is the bar; fusion, views and the
+Matching LAPACK `?gels` to working precision is the bar; views and the
 group-at-a-time driver are internal. All suites are CTest-registered and run
 in FP64 and FP32.
 
@@ -241,8 +233,8 @@ in FP64 and FP32.
 * **Kernel** (`src/cbk_gels_compact.hpp`): `gels_compact_group<T,V>` over the
   tall view `F` and the right-hand-side view `B`, driven by `gels_compact<T,V>`
   (one `for_each_group`), which both adapters call. It owns no arithmetic:
-  `geqrf_panel_compact_group` / `geqrf_compact_group`, `ormqr_compact_group`,
-  and `trsm`'s group kernel do the work; `gels_lwork` is the workspace rule.
+  `geqrf_compact_group`, `ormqr_compact_group` and `trsm`'s group kernel do
+  the work; `gels_lwork` is the workspace rule.
 
 The routine is `?gels` minus its scaling and rank test, over the unblocked
 kernels the toolkit already validates, and the `(ap, work)` it leaves behind

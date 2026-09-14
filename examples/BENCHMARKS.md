@@ -88,7 +88,7 @@ bench_potrf_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [
 ## `bench_qr_compact`
 
 Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR
-(`X = R^-1 Q^T B`, single RHS), five ways:
+(`X = R^-1 Q^T B`, `--nrhs` right-hand sides per system, default one), five ways:
 
 * **MKL batched** -- `mkl_dgeqrf_compact` -> `cbk_dormqr_compact` -> `mkl_dtrsm_compact`
 * **cbk batched** -- `cbk_dgeqrf_compact` -> `cbk_dormqr_compact` -> `cbk_dtrsm_compact`
@@ -99,19 +99,39 @@ Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR
 The two three-step batched paths share `cbk_dormqr_compact` (MKL ships no
 compact `ormqr`), so the cbk path runs the whole solve with *no* MKL compute
 kernel and the cbk-vs-MKL ratio is the end-to-end open-vs-MKL comparison. The
-gels path runs the same open kernels fused into one call -- the apply-`Q^T`
-folded into the factorization, no separate sweep over the reflectors -- between
-the same pack and unpack, so gels-vs-cbk-batch is what the fusion buys.
+gels path runs the same open group kernels inside one call between the same
+pack and unpack, so gels-vs-cbk-batch is the cost of the one-call driver over
+the hand-driven chain.
 `LAPACKE_dgels` is the like-for-like baseline for the one-call routine (it runs
 the same three steps inside, blocked, plus its norm scaling and rank test), so
 gels-vs-dgels is the headline one-call-vs-one-call batched win; the unbatched
 chain stays as the hand-rolled LAPACK reference. Every path is checked against
-the known solution `X == 1`, so the reported error is a forward error, not a
-comparison to LAPACK.
+the known solution `X(:,j) = j + 1`, so the reported error is a forward error,
+not a comparison to LAPACK.
 
 ```
-bench_qr_compact [nmat] [reps]
+bench_qr_compact [--nrhs=k] [--simdlen=2|4|8] [nmat] [reps]
 ```
+
+`--nrhs` (default 1) moves the weight of the solve between its steps: with one
+right-hand side the `O(n^3)` factorization dominates and the chain measures
+`geqrf`; with many, the `O(n^2 nrhs)` apply-`Q^T` and triangular solve take
+over, so a large `--nrhs` is how to weigh `cbk_dormqr_compact` (shared by both
+batched chains) and `cbk_dtrsm_compact` against per-matrix `dormqr` and
+`dtrsm`. Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`,
+1000 matrices, `n = 10..120`, one thread):
+
+| `--nrhs` | gels vs `dgels`, geomean | at `n = 100` | cbk-batch vs MKL-batch | gels vs cbk-batch |
+|---|---|---|---|---|
+| 1 | `2.7x` | `1.5x` | `1.25x` | `1.01x` |
+| 4 | `2.5x` | `1.5x` | `1.24x` | `1.00x` |
+| 16 | `2.0x` | `1.4x` | `1.22x` | `1.00x` |
+| 64 | `1.3x` | `1.0x` | `1.12x` | `1.01x` |
+
+The batched win over per-matrix LAPACK narrows as `nrhs` grows: at `nrhs = 64`
+the compact chain is still `1.5-2.5x` ahead at `n <= 30`, level at `n = 60`
+and `100`, and `0.85-0.95x` at `n = 80` and `120`. Against MKL's compact
+pipeline the open kernels stay ahead at every `nrhs`.
 
 ## `bench_posv_compact`
 
@@ -200,13 +220,12 @@ solution to `~6e-15`.
 
 ## Notes
 
-* **Defaults:** 512 matrices / 3 reps for the factorization benchmarks,
-  `bench_posv_compact` and `bench_sysvnp_compact`, 1000 / 3 for
-  `bench_qr_compact`.
+* **Defaults:** 512 matrices / 3 reps for every benchmark.
 * **Flags (factorization benchmarks).** `--simdlen=2|4|8` forces a narrower
   interleave width than the host default (a wider-than-native width is rejected);
   `--size-sweep=nmin:nmax[:stride]` switches to a cbk-only throughput scan (no
-  cross-check) to resolve the SIMD "staircase" finely.
+  cross-check) to resolve the SIMD "staircase" finely. `bench_qr_compact` takes
+  `--simdlen` and `--nrhs` but has no sweep.
 * **Size list.** One list, `bench_sizes` in `bench_util.hpp`, shared by every
   benchmark but `bench_qr_compact` (five paths per size keep it on `10..120`), so
   the set of orders moves in one place. It deliberately mixes sizes that are *not*
@@ -215,15 +234,15 @@ solution to `~6e-15`.
 * **It ends at `256`.** Larger orders make a run long and the batched gains are
   hard to realize there; the regime this library is about is below `128`.
   `--size-sweep` is not capped, for a deliberate scan past `256`.
-* **`gels` vs the three-step chain.** With the benchmark's single right-hand
-  side the two are level (`0.9x` geometric mean over `n = 10..120`): the
-  `O(n^3)` factorization dominates and fusing the apply-`Q^T` into it saves an
-  `O(n^2)` sweep, so the fusion pays in proportion to `nrhs`, not `n`. The
-  column is there to show the one-call routine costs nothing over the chain.
-  Against per-matrix `LAPACKE_dgels` it measured `2.8x` (geometric mean, 4
-  threads, AVX-512, `n = 10..120`; `7.7x` at `n = 10` down to `1.4x` at
-  `n = 120`), within a few percent of its ratio to the unbatched chain --
-  `dgels`'s own bookkeeping costs little at these sizes.
+* **`gels` vs the three-step chain.** The two run the same group kernels in
+  the same order, so the column should read `~1.0x` at every `nrhs`; the
+  column is there to show the one-call driver costs nothing over the chain.
+  Measured `1.00-1.01x` at `nrhs = 1..64`. (A fused factor-and-apply kernel
+  that measured `0.92-0.99x` here was retired; PLANS.md, gels.) Against
+  per-matrix `LAPACKE_dgels` it measured `2.8x` (geometric mean, 4 threads,
+  AVX-512, `n = 10..120`; `7.7x` at `n = 10` down to `1.4x` at `n = 120`),
+  within a few percent of its ratio to the unbatched chain -- `dgels`'s own
+  bookkeeping costs little at these sizes.
 * **Reading the numbers.** On a `-march=native` build over the small-size range,
   the compact paths outrun per-matrix LAPACK and are competitive with MKL's
   compact kernels; LAPACK's cache-blocked algorithm crosses ahead only at larger

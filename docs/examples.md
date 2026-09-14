@@ -15,11 +15,14 @@ MKL's compact kernels and LAPACKE.
 
 ## Benchmarks
 
-* `bench_qr_compact [nmat] [reps]` - throughput of the fully open compact *solve*
-  pipeline (the three-step chain and the one-call `cbk_dgels_compact`) vs.
-  MKL's batched pipeline and the one-matrix-at-a-time LAPACK paths (the chain
-  and `LAPACKE_dgels`), over pools of small matrices (order 10-120), reporting
-  geometric-mean speedups. All paths are checked against the known solution.
+* `bench_qr_compact [--nrhs=k] [--simdlen=2|4|8] [nmat] [reps]` - throughput
+  of the fully open compact *solve* pipeline (the three-step chain and the
+  one-call `cbk_dgels_compact`) vs. MKL's batched pipeline and the
+  one-matrix-at-a-time LAPACK paths (the chain and `LAPACKE_dgels`), over pools
+  of small matrices (order 10-120), reporting geometric-mean speedups. `--nrhs`
+  sets the right-hand sides per system (default 1); a large value weighs the
+  apply-`Q^T` and triangular solve rather than the factorization. All paths are
+  checked against the known solution.
 * `bench_geqrf_compact [nmat] [reps]` - throughput of the QR *factorization*:
   `cbk_dgeqrf_compact` vs `mkl_dgeqrf_compact` vs per-matrix
   `LAPACKE_dgeqrf`, across the target square-size range, reporting GFLOP/s and a

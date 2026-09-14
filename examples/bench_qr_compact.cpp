@@ -15,21 +15,21 @@
  * and `cbk_?trsm_compact`, so the cbk path runs the whole solve with no MKL
  * compute kernel (MKL only packs and unpacks) and their ratio is the end-to-end
  * MKL-vs-open comparison. MKL has no compact `ormqr`, so `cbk_dormqr_compact`
- * is shared by both. The gels path is the same open math fused into one call
- * (the apply-Q^T folded into the factorization, no separate reflector sweep), so
- * gels vs cbk-batch is what the fusion buys. The unbatched path is the
+ * is shared by both. The gels path runs the same open group kernels inside one
+ * call, so gels vs cbk-batch is the cost of the one-call driver over the
+ * hand-driven chain. The unbatched path is the
  * conventional per-matrix LAPACK baseline, and LAPACKE_dgels the like-for-like
  * one-call baseline for cbk_dgels_compact (it runs the same three steps
  * inside, blocked, plus its norm scaling and rank test).
  *
- * For each size, a pool of `nmat` well-conditioned matrices with known solution
- * X == 1 is built once, and each path solves it -- the batched paths packing
- * each group of `V` (the compact SIMD width) on the fly, the per-matrix path
- * factoring in place. The outer loop over the pool runs under OpenMP (MKL's own
- * threading pinned to 1); each size is timed `reps` times keeping the best, and
- * geometric-mean speedups across sizes are printed at the end. (Details on the
- * timing harness and the in-place working copy are at best_time() and
- * run_unbatched().)
+ * For each size, a pool of `nmat` well-conditioned matrices with the known
+ * solution X(:,j) = j + 1 (bench_util's fill_known_rhs) is built once, and each
+ * path solves it -- the batched paths packing each group of `V` (the compact
+ * SIMD width) on the fly, the per-matrix path factoring in place. The outer
+ * loop over the pool runs under OpenMP (MKL's own threading pinned to 1); each
+ * size is timed `reps` times keeping the best, and geometric-mean speedups
+ * across sizes are printed at the end. (Details on the timing harness and the
+ * in-place working copy are at best_time() and run_unbatched().)
  *
  * The batched pipeline is deliberately driven group by group from the caller's
  * loop, not as three whole-pool calls (which the routines would thread
@@ -37,11 +37,14 @@
  * group's buffers, a few tens of KB that stay in L1/L2 across the five steps,
  * whereas whole-pool calls stream the entire pool through five separate passes.
  * Measured on 4 cores, the whole-pool variant was 15-55% slower over n = 10..100.
- * (For a single factorization the two are equivalent; see bench_geqrf_compact.) A single right-hand side per system (nrhs = 1); every path
- * is checked against the known solution X == 1, so the reported error is a
- * forward error, not a comparison to LAPACK.
  *
- * Usage:  bench_qr_compact [nmat] [reps]      (defaults: 1000 matrices, 3 reps)
+ * `--nrhs=k` sets the right-hand sides per system (default 1); BENCHMARKS.md
+ * says what to read from it. Every path is checked against the known
+ * solution, so the reported error is a forward error, not a comparison to
+ * LAPACK.
+ *
+ * Usage:  bench_qr_compact [--nrhs=k] [--simdlen=2|4|8] [nmat] [reps]
+ *         (defaults: 1 right-hand side, host SIMD width, 512 matrices, 3 reps)
  *
  * Build: needs Intel MKL plus this repo's cbk_ormqr_compact and
  * cbk_trsm_compact; wired up by CMakeLists.txt as the `bench_qr_compact`
@@ -72,42 +75,29 @@ namespace {
 
 using namespace cbk::bench;
 
-/* The batch of systems: `nmat` square matrices of order n in `a`, and their
- * matching right-hand sides in `b` (one RHS per system). The exact solution is
- * X == 1, so each RHS is the row sum b_v = A_v 1, and a correct solve returns
- * all ones. */
+/* The batch of systems: `nmat` square matrices of order n in `a` (random
+ * entries in [-1,1] plus a diagonal of 2n, so they are well conditioned and
+ * far from any breakdown), and their right-hand sides B = A X (n x nrhs) in
+ * `b` for the known solution X(:,j) = j + 1 (fill_known_rhs), which
+ * forward_error measures the solves against. */
 struct Systems {
     MatrixPool a, b;
 
-    Systems(int n, int nmat) : a(nmat, n, n), b(nmat, n, 1)
+    Systems(int n, int nmat, int nrhs) : a(nmat, n, n), b(nmat, n, nrhs)
     {
         std::mt19937_64 rng(42);
         std::uniform_real_distribution<double> dist(-1.0, 1.0);
         for (int v = 0; v < nmat; ++v) {
-            const auto A = a.view(v), B = b.view(v);
+            const auto A = a.view(v);
             for (int j = 0; j < n; ++j)
                 for (int i = 0; i < n; ++i)
                     A(i, j) = dist(rng);
             for (int d = 0; d < n; ++d)
-                A(d, d) += 2.0 * n;       /* diag dominant */
-            for (int i = 0; i < n; ++i) { /* B = A * ones */
-                double s = 0.0;
-                for (int j = 0; j < n; ++j)
-                    s += A(i, j);
-                B(i, 0) = s;
-            }
+                A(d, d) += 2.0 * n; /* diag dominant */
         }
+        fill_known_rhs(a, b);
     }
 };
-
-/* Largest deviation of a computed solution (expected all ones) from 1. */
-double sol_error(const double *x, int n)
-{
-    double e = 0.0;
-    for (int i = 0; i < n; ++i)
-        e = std::max(e, std::fabs(x[i] - 1.0));
-    return e;
-}
 
 /* What runs the batched compute between the shared pack and unpack: the
  * three-step pipeline with MKL's or cbk's geqrf and trsm (MKL has no compact
@@ -120,10 +110,10 @@ enum class Backend { Mkl, Cbk, Gels };
  * trsm (MKL's compact kernels, or this repo's open drop-ins) -- the shared
  * cbk_dormqr and the pack/unpack around them are identical for both -- or
  * the one-call cbk_dgels_compact between the same pack and unpack. Returns
- * the max solution error. */
+ * the max forward error. */
 double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
 {
-    const int n = P.a.rows(), nmat = P.a.count(), nrhs = 1;
+    const int n = P.a.rows(), nmat = P.a.count(), nrhs = P.b.cols();
     const int ngroups = (nmat + V - 1) / V;
     double maxerr = 0.0;
 
@@ -160,8 +150,8 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
         const MKL_INT lwork = (MKL_INT)wq;
         std::vector<double> work((size_t)std::max<MKL_INT>(lwork, 1));
 
-        std::vector<const double *> Aptr(V), Bptr(V); /* per-matrix base pointers */
-        std::vector<double> xout((size_t)V * n);      /* unpacked solutions      */
+        std::vector<const double *> Aptr(V), Bptr(V);   /* per-matrix base pointers */
+        std::vector<double> xout((size_t)V * n * nrhs); /* unpacked solutions      */
         std::vector<double *> Xptr(V);
 
 #pragma omp for schedule(static)
@@ -172,7 +162,7 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             for (int s = 0; s < cnt; ++s) {
                 Aptr[s] = P.a[base + s];
                 Bptr[s] = P.b[base + s];
-                Xptr[s] = xout.data() + (size_t)s * n;
+                Xptr[s] = xout.data() + (size_t)s * n * nrhs;
             }
 
             mkl_dgepack_compact(MKL_COL_MAJOR, n, n, Aptr.data(), n, ap, n, fmt, cnt);
@@ -195,7 +185,7 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
             mkl_dgeunpack_compact(MKL_COL_MAJOR, n, nrhs, Xptr.data(), n, bp, n, fmt,
                                   cnt);
             for (int s = 0; s < cnt; ++s)
-                maxerr = std::max(maxerr, sol_error(Xptr[s], n));
+                maxerr = std::max(maxerr, forward_error(Xptr[s], n, nrhs, 1));
         }
         /* ap/taup/bp freed by their RAII owners at end of the parallel region. */
     }
@@ -210,11 +200,10 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
  * bookkeeping; dgels is the like-for-like baseline for cbk-gels). The caller
  * refreshes `a`/`b` from the pristine pool outside the timed region, since the
  * factorization destroys them. `a` holds the matrices (n*n each), `b` the
- * right-hand sides (n each, overwritten with the solutions). Returns the max
- * solution error. */
-double run_unbatched(int n, int nmat, double *a, double *b, bool dgels)
+ * right-hand sides (n*nrhs each, overwritten with the solutions). Returns the
+ * max forward error. */
+double run_unbatched(int n, int nrhs, int nmat, double *a, double *b, bool dgels)
 {
-    const int nrhs = 1;
     double maxerr = 0.0;
 
 #pragma omp parallel reduction(max : maxerr)
@@ -223,8 +212,8 @@ double run_unbatched(int n, int nmat, double *a, double *b, bool dgels)
 
 #pragma omp for schedule(static)
         for (int v = 0; v < nmat; ++v) {
-            double *A = a + (size_t)v * n * n; /* overwritten with (H, R) */
-            double *B = b + (size_t)v * n;     /* overwritten with X */
+            double *A = a + (size_t)v * n * n;    /* overwritten with (H, R) */
+            double *B = b + (size_t)v * n * nrhs; /* overwritten with X */
 
             if (dgels)
                 LAPACKE_dgels(LAPACK_COL_MAJOR, 'N', n, n, nrhs, A, n, B, n);
@@ -235,7 +224,7 @@ double run_unbatched(int n, int nmat, double *a, double *b, bool dgels)
                 cblas_dtrsm(CblasColMajor, CblasLeft, CblasUpper, CblasNoTrans,
                             CblasNonUnit, n, nrhs, 1.0, A, n, B, n);
             }
-            maxerr = std::max(maxerr, sol_error(B, n));
+            maxerr = std::max(maxerr, forward_error(B, n, nrhs, 1));
         }
     }
     return maxerr;
@@ -245,14 +234,11 @@ double run_unbatched(int n, int nmat, double *a, double *b, bool dgels)
 
 int main(int argc, char **argv)
 {
-    const int nmat = (argc > 1) ? std::atoi(argv[1]) : 1000;
-    const int reps = (argc > 2) ? std::atoi(argv[2]) : 3;
-    check(nmat > 0 && reps > 0, "usage: bench_qr_compact [nmat>0] [reps>0]");
-
-    /* mkl_get_format_compact() returns the architecture's optimal packing
-     * format -- always one of SSE/AVX/AVX512 -- so V is one of 2/4/8. */
-    const MKL_COMPACT_PACK fmt = mkl_get_format_compact();
-    const int V = vlen_for_format<double>(fmt);
+    const CmdArgs args(argc, argv, "bench_qr_compact");
+    const int nmat = args.nmat, reps = args.reps, nrhs = args.nrhs, V = args.V;
+    const MKL_COMPACT_PACK fmt = args.fmt;
+    check(!args.sweep, "bench_qr_compact has no --size-sweep scan (see "
+                       "bench_geqrf_compact for the factorization's)");
 
     /* Pin MKL's internal threading: the OpenMP outer loop is the only
      * parallelism, so per-call MKL threads would just oversubscribe. */
@@ -267,7 +253,6 @@ int main(int argc, char **argv)
      * bench_sizes (bench_util.hpp) is the wider default the others share. */
     const int sizes[] = {10, 20, 30, 40, 50, 60, 80, 100, 120};
     const int nsizes = (int)(sizeof(sizes) / sizeof(sizes[0]));
-    const int nrhs = 1; /* single RHS per system (see Systems / run_batched) */
     const double eps = std::numeric_limits<double>::epsilon();
 
     std::printf("QR solve throughput (matrices/second), five paths:\n");
@@ -281,13 +266,13 @@ int main(int argc, char **argv)
                 "cblas_dtrsm\n");
     std::printf("  dgels      LAPACKE_dgels          (LAPACK's one-call driver, per "
                 "matrix)\n");
-    std::printf("matrices=%d  reps=%d  rhs=%d  simdlen=%d (%s)  OpenMP threads=%d\n\n",
+    std::printf("matrices=%d  reps=%d  nrhs=%d  simdlen=%d (%s)  OpenMP threads=%d\n\n",
                 nmat, reps, nrhs, V, compact_format_name(fmt), nthreads);
     /* Throughput as matrices/second for each path, then the four speedups
      * BENCHMARKS.md explains; the error is the forward error vs the known
-     * solution X == 1, not vs LAPACK. */
+     * solution X(:,j) = j + 1, relative to max|X| = nrhs, not vs LAPACK. */
     std::printf("   n | MKL-batch   cbk-batch   cbk-gels    unbatched   dgels      | "
-                "gels/dgels | gels/unbat | gels/cbk | cbk/MKL | max fwd err (vs X=1)\n");
+                "gels/dgels | gels/unbat | gels/cbk | cbk/MKL | max fwd err (vs X)\n");
     std::printf("     |  (mat/s)     (mat/s)     (mat/s)     (mat/s)     (mat/s)    | "
                 "           |            |          |         |\n");
     std::printf("-----+-------------------------------------------------------------+-"
@@ -296,7 +281,7 @@ int main(int argc, char **argv)
     double log_gels_vs_dgels = 0.0, log_gels_vs_unbat = 0.0, log_gels_vs_cbk = 0.0,
            log_cbk_vs_mkl = 0.0;
     for (const int n : sizes) {
-        const Systems P(n, nmat);
+        const Systems P(n, nmat, nrhs);
 
         /* The batched paths read the pool read-only (pack copies into the
          * interleaved buffers), so they need no reset. The non-batched path
@@ -317,10 +302,10 @@ int main(int argc, char **argv)
         const double tb_gels = best_time(
             reps, [] {}, [&] { err_g = run_batched(P, fmt, V, Backend::Gels); });
         const double tu = best_time(reps, restore, [&] {
-            err_u = run_unbatched(n, nmat, wa.data(), wb.data(), false);
+            err_u = run_unbatched(n, nrhs, nmat, wa.data(), wb.data(), false);
         });
         const double td = best_time(reps, restore, [&] {
-            err_d = run_unbatched(n, nmat, wa.data(), wb.data(), true);
+            err_d = run_unbatched(n, nrhs, nmat, wa.data(), wb.data(), true);
         });
 
         const double rtol = 100.0 * n * eps;

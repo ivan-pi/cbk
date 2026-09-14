@@ -307,10 +307,9 @@ int strsm_compact(char layout, char side, char uplo, char transa, char diag, int
  * columns op(A) X = B is overdetermined and X is the least-squares solution;
  * with more columns than rows it is underdetermined and X is the minimum-norm
  * solution. Per group of V matrices the routine factors A (QR when m >= n, LQ
- * when m < n), applies Q to B (fused into the factorization in the
- * least-squares case) and back-substitutes, on the group's cache-resident
- * buffers; a whole-batch ?geqrf_compact -> ?ormqr_compact -> ?trsm_compact
- * chain streams the batch three times instead.
+ * when m < n), applies Q^T or Q to B and back-substitutes, on the group's
+ * cache-resident buffers; a whole-batch ?geqrf_compact -> ?ormqr_compact ->
+ * ?trsm_compact chain streams the batch three times instead.
  *   layout   'C'/'c' column-major (tuned) or 'R'/'r' row-major
  *   trans    'N' (A X = B) or 'T'/'C' (A^T X = B)
  *   m, n     rows, columns of A
