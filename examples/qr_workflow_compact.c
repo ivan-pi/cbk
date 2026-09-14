@@ -30,12 +30,12 @@
  * pivoting, so no jpvt and no rank check) and its ormqr dormqr_compact.
  *
  * The LAPACK comparison of the original (run_lpk_version: the same work as
- * one dgeqrf and one dormqr per matrix from an OpenMP loop) needs a LAPACK,
- * which the portable build does not link; CMake links the one
- * find_package(LAPACK) locates (MKL's under -DCBK_WITH_MKL=ON) and defines
- * CBK_EXAMPLE_WITH_LAPACK, and the comparison is reported only then. The
- * Fortran entry points are declared here (LP64: 32-bit integers, and the
- * hidden character-length arguments left off, as the original does).
+ * one dgeqrf and one dormqr per matrix from an OpenMP loop) is kept, so the
+ * example needs a LAPACK, which the library itself does not: CMake links the
+ * one find_package(LAPACK) locates (MKL's under -DCBK_WITH_MKL=ON) and skips
+ * the example without one. The Fortran entry points are declared here (LP64:
+ * 32-bit integers, and the hidden character-length arguments left off, as
+ * the original does).
  *
  * The matrices must be square or tall (m >= n): dormqr_compact reads the
  * reflectors as an (ldap, k) batch, k = min(m,n), exactly as LAPACK dormqr's
@@ -55,13 +55,11 @@
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
 
-#ifdef CBK_EXAMPLE_WITH_LAPACK
 void dgeqrf_(const int *m, const int *n, double *a, const int *lda, double *tau,
              double *work, const int *lwork, int *info);
 void dormqr_(const char *side, const char *trans, const int *m, const int *n,
              const int *k, const double *a, const int *lda, const double *tau, double *c,
              const int *ldc, double *work, const int *lwork, int *info);
-#endif
 
 /*
  * Offset, within one compact column-major group, of element (i,j) of the
@@ -288,7 +286,6 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
     return fail == 0 ? t2_ib - t1_ib : -1.0;
 }
 
-#ifdef CBK_EXAMPLE_WITH_LAPACK
 /*
  * This function does the same as above with standard LAPACK calls, one
  * matrix at a time from a parallel loop, and returns the time taken in
@@ -423,7 +420,6 @@ double run_lpk_version(int nm, int V, int m, int n, int check_result)
 
     return (error == 0 && fail == 0) ? t2_lpk - t1_lpk : -1.0;
 }
-#endif /* CBK_EXAMPLE_WITH_LAPACK */
 
 int main(int argc, char **argv)
 {
@@ -455,35 +451,25 @@ int main(int argc, char **argv)
            nm % V ? " (the last one padded)" : "");
 
     double t_ib;
-#ifdef CBK_EXAMPLE_WITH_LAPACK
     double t_lpk;
-#endif
 
     /* Warm-up runs */
     for (int nw = 0; nw < 3; nw++) {
         t_ib = run_ib_version(nm, V, m, n, 0);
         if (t_ib < 0) return EXIT_FAILURE;
-#ifdef CBK_EXAMPLE_WITH_LAPACK
         t_lpk = run_lpk_version(nm, V, m, n, 0);
         if (t_lpk < 0) return EXIT_FAILURE;
-#endif
     }
 
     /* Reported runs */
     t_ib = run_ib_version(nm, V, m, n, 1);
     if (t_ib < 0) return EXIT_FAILURE;
-#ifdef CBK_EXAMPLE_WITH_LAPACK
     t_lpk = run_lpk_version(nm, V, m, n, 1);
     if (t_lpk < 0) return EXIT_FAILURE;
-#endif
 
     printf("Time for compact-batch computation: %f\n", t_ib);
-#ifdef CBK_EXAMPLE_WITH_LAPACK
     printf("Time for LAPACK computation: %f\n", t_lpk);
     printf("Speedup for compact-batch over LAPACK: %f\n", t_lpk / t_ib);
-#else
-    printf("(built without LAPACK: no per-matrix LAPACK comparison)\n");
-#endif
 
     return EXIT_SUCCESS;
 }

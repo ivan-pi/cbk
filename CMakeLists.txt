@@ -104,35 +104,28 @@ if(CBK_WITH_MKL)
 endif()
 
 # The portable example: the interleave-batch QR workflow example of Arm
-# Performance Libraries (examples/qr_workflow_compact.c) on the C API alone --
-# pack, dgeqrf_compact, extract R, dormqr_compact, unpack, check -- in plain
-# C99, so it builds in the default configure: a downstream C caller in
-# miniature. It needs OpenMP (omp_get_wtime, and its loops over groups). Its
-# per-matrix LAPACK comparison, the point of the original, links whatever
-# LAPACK is at hand: MKL's with the extension, otherwise the one
-# find_package(LAPACK) locates (liblapack-dev, OpenBLAS, ...); without one
-# the example still builds and reports the compact path alone.
-if(CBK_WITH_OPENMP AND OpenMP_C_FOUND)
+# Performance Libraries (examples/qr_workflow_compact.c) on the C API --
+# pack, dgeqrf_compact, extract R, dormqr_compact, unpack, check, against
+# the same work in per-matrix LAPACK calls -- in plain C99: a downstream C
+# caller in miniature. It needs OpenMP (omp_get_wtime, and its loops over
+# groups) and a LAPACK for the comparison: MKL's with the extension,
+# otherwise the one find_package(LAPACK) locates (liblapack-dev, OpenBLAS,
+# ...). Without either it is skipped; the library itself needs neither.
+if(CBK_WITH_MKL)
+  set(_example_lapack MKL::Compact)
+else()
+  find_package(LAPACK QUIET)
+  if(LAPACK_FOUND)
+    set(_example_lapack LAPACK::LAPACK)
+  endif()
+endif()
+if(CBK_WITH_OPENMP AND OpenMP_C_FOUND AND _example_lapack)
   add_executable(qr_workflow_compact examples/qr_workflow_compact.c)
   target_compile_features(qr_workflow_compact PRIVATE c_std_99)
   set_target_properties(qr_workflow_compact PROPERTIES C_EXTENSIONS OFF)
-  target_link_libraries(qr_workflow_compact PRIVATE cbk OpenMP::OpenMP_C)
-  if(CBK_WITH_MKL)
-    set(_example_lapack MKL::Compact)
-  else()
-    find_package(LAPACK QUIET)
-    if(LAPACK_FOUND)
-      set(_example_lapack LAPACK::LAPACK)
-    endif()
-  endif()
-  if(_example_lapack)
-    target_compile_definitions(qr_workflow_compact PRIVATE CBK_EXAMPLE_WITH_LAPACK=1)
-    target_link_libraries(qr_workflow_compact PRIVATE ${_example_lapack})
-  else()
-    message(STATUS "No LAPACK found: qr_workflow_compact is built without its LAPACK comparison")
-  endif()
+  target_link_libraries(qr_workflow_compact PRIVATE cbk OpenMP::OpenMP_C ${_example_lapack})
 else()
-  message(STATUS "OpenMP not found for C: skipping the example qr_workflow_compact")
+  message(STATUS "OpenMP for C or a LAPACK not found: skipping the example qr_workflow_compact")
 endif()
 
 # ---------------------------------------------------------------------------

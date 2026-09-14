@@ -10,11 +10,12 @@ release may change the API.
 ### Added
 
 - `examples/qr_workflow_compact.c`, a standalone C99 example of the portable
-  C API built in the default configure (OpenMP required): the interleave-batch
-  QR workflow example of Arm Performance Libraries, transcribed step for step
-  onto `dgeqrf_compact` and `dormqr_compact` -- pack, factor, extract `R`,
-  form `Q R`, unpack, check, each phase timed, against the same work in
-  per-matrix LAPACK calls when a LAPACK is found. Registered with CTest.
+  C API built in the default configure (it needs OpenMP and a LAPACK, the
+  library neither): the interleave-batch QR workflow example of Arm
+  Performance Libraries, transcribed step for step onto `dgeqrf_compact` and
+  `dormqr_compact` -- pack, factor, extract `R`, form `Q R`, unpack, check,
+  each phase timed -- against the same work in per-matrix LAPACK calls.
+  Registered with CTest.
 
 ## [0.1.0] - 2026-09-13
 

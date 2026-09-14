@@ -1,7 +1,7 @@
 # Examples and benchmarks
 
 One program under `examples/` builds in the default configure, on the portable
-C API alone (it needs OpenMP); the rest need the MKL build (`-DCBK_WITH_MKL=ON`, off by
+C API (it needs OpenMP and a LAPACK, the library neither); the rest need the MKL build (`-DCBK_WITH_MKL=ON`, off by
 default), since they pack with MKL's compact routines and compare against
 MKL's compact kernels and LAPACKE.
 
@@ -23,12 +23,12 @@ MKL's compact kernels and LAPACKE.
   number of groups); the source (`examples/qr_workflow_compact.c`) writes
   the pack and unpack out as two static functions, and ArmPL's column
   pivoting has no counterpart. The original's per-matrix LAPACK comparison
-  (`dgeqrf` and `dormqr` on each matrix from an OpenMP loop, and the speedup
-  of the compact path over it) is built whenever a LAPACK is at hand: MKL's
-  with `-DCBK_WITH_MKL=ON`, otherwise the one `find_package(LAPACK)` locates
-  (`liblapack-dev`, OpenBLAS, ...); without one the example reports the
-  compact path alone. Arm's 32768-matrix runs are `32768 8 <n> <n>` or
-  `32768 4 <n> <n>` here. Needs OpenMP for C; skipped without.
+  is kept: `dgeqrf` and `dormqr` on each matrix from an OpenMP loop, and the
+  speedup of the compact path over it. The example therefore needs a LAPACK
+  (the library does not): MKL's with `-DCBK_WITH_MKL=ON`, otherwise the one
+  `find_package(LAPACK)` locates (`liblapack-dev`, OpenBLAS, ...), and
+  OpenMP for C; it is skipped without either. Arm's 32768-matrix runs are
+  `32768 8 <n> <n>` or `32768 4 <n> <n>` here.
 
 ## Worked example
 
@@ -86,7 +86,7 @@ results are documented in detail in
 
 All programs are registered with CTest, on a small pool, so they double as
 integration tests: `example_qr_workflow_square` and
-`example_qr_workflow_tall` in every build with OpenMP, and with the MKL build
+`example_qr_workflow_tall` in every build with OpenMP and a LAPACK, and with the MKL build
 `example_solve_qr_compact`, `bench_qr_compact_integration`,
 `bench_geqrf_compact_integration`, `bench_potrf_compact_integration`,
 `bench_posv_compact_integration`, `bench_sysvnp_compact_integration`.
