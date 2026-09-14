@@ -101,6 +101,7 @@ if(CBK_WITH_MKL)
                bench_posv_compact bench_sysvnp_compact)
     add_executable(${prog} examples/${prog}.cpp)
     target_link_libraries(${prog} PRIVATE cbk MKL::Compact)
+    target_compile_features(${prog} PRIVATE cxx_std_17)
     # src/ for the internal header-only helpers the examples share with the
     # tests (cbk_matrix_view.hpp); the public API stays include/.
     target_include_directories(${prog} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -111,7 +112,10 @@ if(CBK_WITH_MKL)
 endif()
 
 # ---------------------------------------------------------------------------
-# Tests
+# Tests. Like the examples above, each executable asks for C++17 itself: the
+# library's cxx_std_17 is PRIVATE (a build requirement of the kernels, not of
+# its C headers), so nothing propagates it, and AppleClang's default standard
+# is older than gcc's and clang's on Linux.
 # ---------------------------------------------------------------------------
 if(CBK_BUILD_TESTS)
   enable_testing()
@@ -145,6 +149,7 @@ if(CBK_BUILD_TESTS)
   foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
     target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
+    target_compile_features(test_${routine}_compact PRIVATE cxx_std_17)
     target_include_directories(test_${routine}_compact
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
@@ -157,6 +162,7 @@ if(CBK_BUILD_TESTS)
     foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_${routine}_mkl tests/test_${routine}_mkl.cpp)
       target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact LAPACKE::LAPACKE)
+      target_compile_features(test_${routine}_mkl PRIVATE cxx_std_17)
       target_include_directories(test_${routine}_mkl
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
       add_test(NAME mkl_${routine}_suites COMMAND test_${routine}_mkl)

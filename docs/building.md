@@ -31,7 +31,7 @@ On macOS, Accelerate provides LAPACK and CBLAS but no LAPACKE;
 [accelerate-lapacke](https://github.com/lepus2589/accelerate-lapacke) builds
 one on top of it (its configure needs a Fortran compiler, `brew install gcc`),
 and `-DCBK_TEST_LAPACK=accelerate` with `-DCMAKE_PREFIX_PATH` at its install
-(`~/.local` by default) looks for that: the `lapacke` package plus
+(its own prefix; the workflow caches it) looks for that: the `lapacke` package plus
 Accelerate's own CBLAS through `<vecLib/cblas.h>`. `.github/workflows/macos.yml`
 runs exactly this on the macOS runners, one job next to the Linux matrix.
 
