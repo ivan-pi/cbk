@@ -131,12 +131,12 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
     {
         /* Per-thread compact buffers, sized for a full group of V. */
         const int align = 64;
-        auto ap_buf = cbk::detail::mkl_alloc_bytes<double>(
-            mkl_dget_size_compact(n, n, fmt, V), align);
-        auto taup_buf = cbk::detail::mkl_alloc_bytes<double>(
-            mkl_dget_size_compact(n, 1, fmt, V), align);
-        auto bp_buf = cbk::detail::mkl_alloc_bytes<double>(
-            mkl_dget_size_compact(n, nrhs, fmt, V), align);
+        auto ap_buf =
+            cbk::detail::mkl_alloc_bytes<double>(compact_bytes(n, n, fmt, V), align);
+        auto taup_buf =
+            cbk::detail::mkl_alloc_bytes<double>(compact_bytes(n, 1, fmt, V), align);
+        auto bp_buf =
+            cbk::detail::mkl_alloc_bytes<double>(compact_bytes(n, nrhs, fmt, V), align);
         double *ap = ap_buf.get(), *taup = taup_buf.get(), *bp = bp_buf.get();
 
         /* Select the pipeline's kernels once: MKL's own compact kernels, or this

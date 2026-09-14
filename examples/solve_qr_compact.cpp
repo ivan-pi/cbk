@@ -178,12 +178,16 @@ void batch_solve(int nm, int n, int nrhs)
      * geqrf_compact -> dormqr_compact -> dtrsm_compact, all on the         *
      * interleaved buffers ap / taup / bp.                                  */
     const int compact_align = 64; /* byte alignment for the compact buffers */
-    auto ap_buf = cbk::detail::mkl_alloc_bytes<double>(
-        mkl_dget_size_compact(n, n, fmt, nm), compact_align);
-    auto taup_buf = cbk::detail::mkl_alloc_bytes<double>(
-        mkl_dget_size_compact(n, 1, fmt, nm), compact_align);
-    auto bp_buf = cbk::detail::mkl_alloc_bytes<double>(
-        mkl_dget_size_compact(n, nrhs, fmt, nm), compact_align);
+    /* mkl_dget_size_compact returns MKL_INT (32-bit under LP64): a batch whose
+     * image passes 2 GB comes back wrapped negative, so refuse it. */
+    const MKL_INT a_bytes = mkl_dget_size_compact(n, n, fmt, nm);
+    const MKL_INT t_bytes = mkl_dget_size_compact(n, 1, fmt, nm);
+    const MKL_INT b_bytes = mkl_dget_size_compact(n, nrhs, fmt, nm);
+    check(a_bytes > 0 && t_bytes > 0 && b_bytes > 0,
+          "compact image within the MKL_INT range of mkl_dget_size_compact");
+    auto ap_buf = cbk::detail::mkl_alloc_bytes<double>(a_bytes, compact_align);
+    auto taup_buf = cbk::detail::mkl_alloc_bytes<double>(t_bytes, compact_align);
+    auto bp_buf = cbk::detail::mkl_alloc_bytes<double>(b_bytes, compact_align);
     double *ap = ap_buf.get(), *taup = taup_buf.get(), *bp = bp_buf.get();
 
     /* pack the dense batches into compact (interleaved) layout (again before
