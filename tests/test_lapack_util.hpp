@@ -115,12 +115,15 @@ CBK_TEST_LAPACK_DISPATCH(float, s)
 // without a copy when one stride is 1 and the other is at least the extent
 // along it -- column-major (si == 1, ld = sj) or row-major (sj == 1, ld = si);
 // the ambiguous degenerate shapes (a single row or column) are read as
-// whichever description satisfies the library's ld >= extent rule.
+// whichever description satisfies the library's ld >= extent rule. An empty
+// extent constrains nothing (mat_view of a 0 x n matrix has sj = 0); the
+// library's ld >= max(1, extent) is then lapack_ld's business.
 
 template <class Mv> bool is_rowmajor(const Mv &M)
 {
-    if (M.si == 1 && M.sj >= std::max(M.rows, 1)) return false;
-    assert(M.sj == 1 && M.si >= std::max(M.cols, 1) && "view is not a BLAS layout");
+    if (M.si == 1 && (M.rows == 0 || M.sj >= std::max(M.rows, 1))) return false;
+    assert(M.sj == 1 && (M.cols == 0 || M.si >= std::max(M.cols, 1)) &&
+           "view is not a BLAS layout");
     return true;
 }
 
@@ -206,16 +209,28 @@ template <class T> class Staged {
 // sequence: the suites gate such comparisons relative to the operand norms,
 // at a multiple of n * eps. Only ?geqr2 is unblocked by definition, and only
 // it is compared elementwise at ~eps.
+//
+// Each takes LAPACK's own quick return on an empty operand before the call:
+// the routine would do nothing, but LAPACKE's NaN check runs first and an
+// empty batch's operand is a possibly null pointer (MatrixBatch hands out
+// std::vector storage), which not every stack's check guards.
+
+template <class Mv> bool is_empty(const Mv &M)
+{
+    return M.rows == 0 || M.cols == 0;
+}
 
 // ?geqr2: unblocked Householder QR, (H, tau) in the LAPACK convention.
 template <class T> void ref_geqr2(MatrixView<T> A, T *tau)
 {
+    if (is_empty(A)) return;
     lapack<T>::geqr2(lapack_layout(A), A.rows, A.cols, A.data, lapack_ld(A), tau);
 }
 
 // ?geqrf: the blocked driver, for the invariants suites.
 template <class T> void ref_geqrf(MatrixView<T> A, T *tau)
 {
+    if (is_empty(A)) return;
     lapack<T>::geqrf(lapack_layout(A), A.rows, A.cols, A.data, lapack_ld(A), tau);
 }
 
@@ -225,6 +240,7 @@ template <class T, class Av>
 void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
     assert(A.rows == B.rows && k <= std::min(A.rows, A.cols));
+    if (is_empty(B) || k == 0) return;
     const Staged<T> Bs(B, is_rowmajor(A));
     lapack<T>::ormqr(lapack_layout(A), 'L', trans, B.rows, B.cols, k, A.data,
                      lapack_ld(A), tau, Bs.data(), Bs.ld());
@@ -235,6 +251,7 @@ void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 template <class T> void ref_orgqr(int k, MatrixView<T> A, const T *tau)
 {
     assert(k <= A.cols && A.cols <= A.rows);
+    if (is_empty(A)) return; /* k = 0 is not empty: Q = I(:, 0:n-1) is written */
     lapack<T>::orgqr(lapack_layout(A), A.rows, A.cols, k, A.data, lapack_ld(A), tau);
 }
 
@@ -257,6 +274,7 @@ template <class T> void ref_geqp3(MatrixView<T> A, lapack_int *jpvt, T *tau)
 template <class T> lapack_int ref_potrf(char uplo, MatrixView<T> A)
 {
     assert(A.rows == A.cols);
+    if (is_empty(A)) return 0;
     return lapack<T>::potrf(lapack_layout(A), uplo, A.rows, A.data, lapack_ld(A));
 }
 
@@ -306,10 +324,18 @@ template <class T, class Rv> void ref_trsm_upper(Rv R, MatrixView<T> B)
 // ?gelqf storage (m < n) -- and tau its min(m,n) reflector scalars. LAPACK's
 // ?gels keeps tau in its workspace, so it runs on a copy of A for X, and
 // (A, tau) come from ?geqrf / ?gelqf on A itself, the same call ?gels makes.
+// min(m, n) = 0 is ?gels's quick return, B := 0 over all max(m, n) rows (no
+// factorization, no least-squares solution: the residual rows hold zeros too).
 template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T *tau)
 {
     const int m = A.rows, n = A.cols, nrhs = B.cols;
     assert(B.rows == std::max(m, n));
+    if (is_empty(A)) {
+        for (int j = 0; j < nrhs; ++j)
+            for (int i = 0; i < B.rows; ++i)
+                B(i, j) = T(0);
+        return;
+    }
     const bool row = is_rowmajor(A);
 
     std::vector<T> A0s((std::size_t)m * n);

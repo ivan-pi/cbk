@@ -17,8 +17,10 @@
 //      residual sums of squares in rows n..m-1 of B equal ||B - op(A) X||^2
 //      minimum norm: op(A) X = B, and X equals the minimum-norm solution formed
 //      the other way, X = op(A)^T Z with (op(A) op(A)^T) Z = B
-// plus LAPACK-style argument validation of the C API and the min(m,n) = 0 case
-// (B := 0).
+// over the suite's shapes and the small-dimension cross product (small_dims:
+// m x n from 0 to 5 per (layout, trans), so every over-/underdetermined case
+// meets the empty operand and the single row or column), plus LAPACK-style
+// argument validation of the C API and the min(m,n) = 0 case (B := 0).
 //
 // Assisted-by: Claude:claude-fable-5
 
@@ -63,7 +65,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
     }
 
     // pack in the requested layout, solve, unpack
-    const int lda = row ? n : m, ldb = row ? nrhs : p;
+    const int lda = std::max(1, row ? n : m), ldb = std::max(1, row ? nrhs : p);
     std::vector<T> ap = pack_compact(A, lda, V, row);
     std::vector<T> bp = pack_compact(B, ldb, V, row);
     std::vector<T> tp = compact_buffer<T>(nm, q, 1, q, V); /* the kernel fills it */
@@ -111,8 +113,10 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
                 e_prop = std::max(e_prop, std::abs((double)Ss[e]) / scale);
             // rows cols_op..rows_op-1 of B hold the residual: squared column
             // norms == ||r_j||^2 (relative to ||b_j||^2: a square system has no
-            // residual rows and a zero residual)
-            for (int j = 0; j < nrhs; ++j) {
+            // residual rows and a zero residual). Not at min(m,n) = 0: that is
+            // ?gels's quick return, B := 0 (checked against ref_gels above),
+            // and the residual is B itself.
+            for (int j = 0; q > 0 && j < nrhs; ++j) {
                 double rss = 0, rss_b = 0, bb = 0;
                 for (int i = 0; i < rows_op; ++i) {
                     rss += (double)R(i, j) * R(i, j);
@@ -264,6 +268,18 @@ int main()
     fails += run_case<double, 4>('C', 'N', 8, 1, 5, 2);   // a single row
     fails += run_case<double, 4>('C', 'N', 8, 64, 20, 6); // wider RHS blocks (4+2 tail)
     fails += run_case<double, 4>('C', 'T', 8, 64, 20, 7); // (4+2+1 tail)
+
+    // the small-dimension cross product (small_dims): m x n per (layout,
+    // trans), so every over-/underdetermined case meets the empty operand, a
+    // single row or column, and the orders around the register block; a
+    // padded group
+    for (int mm : small_dims)
+        for (int nn : small_dims) {
+            for (char lay : {'C', 'R'})
+                for (char tr : {'N', 'T'})
+                    fails += run_case<double, 4>(lay, tr, 5, mm, nn, 2);
+            fails += run_case<float, 8>('R', 'T', 9, mm, nn, 1);
+        }
 
     return finish(fails);
 }

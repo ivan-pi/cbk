@@ -14,6 +14,9 @@
  *      the same reflectors, LAPACK's blocked above its crossover)
  *   2. back substitution recovers X
  *   3. applying 'N' after 'T' recovers the original B  (Q Q^T = I)
+ * over the suite's shapes and the small-dimension cross product (small_dims:
+ * m x nrhs from 0 to 5, the empty operand and the 1/2/3-column right-hand
+ * side blocks included).
  *
  * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
@@ -56,13 +59,14 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
         ref_ormqr('T', k, Afac.view(kk), tau[kk], Bref.view(kk));
     }
 
-    std::vector<T> ap = pack_compact(Afac, m, V);
+    const int ld = std::max(1, m);
+    std::vector<T> ap = pack_compact(Afac, ld, V);
     std::vector<T> tp = pack_tau(tau, V);
-    std::vector<T> bp = pack_compact(B, m, V);
+    std::vector<T> bp = pack_compact(B, ld, V);
 
     /* check 1: compact Q^T B vs LAPACKE_?ormqr, relative to ||Q^T B||_1 */
-    compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
-    unpack_compact(Bout, bp.data(), m, V);
+    compact<T>::ormqr('T', m, nrhs, k, ap.data(), ld, tp.data(), bp.data(), ld, V, nm);
+    unpack_compact(Bout, bp.data(), ld, V);
     double e1 = 0;
     for (int kk = 0; kk < nm; ++kk)
         e1 = std::max<double>(e1, max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs) /
@@ -76,8 +80,8 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     }
 
     /* check 3: 'N' undoes 'T' */
-    compact<T>::ormqr('N', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
-    unpack_compact(Bout, bp.data(), m, V);
+    compact<T>::ormqr('N', m, nrhs, k, ap.data(), ld, tp.data(), bp.data(), ld, V, nm);
+    unpack_compact(Bout, bp.data(), ld, V);
     double e3 = 0;
     for (int kk = 0; kk < nm; ++kk)
         e3 = std::max<double>(e3, max_abs_diff(Bout[kk], B[kk], (size_t)m * nrhs));
@@ -230,6 +234,14 @@ int main(int argc, char **)
     fails += run_case<float, 4>(8, m, nrhs);
     fails += run_case<float, 8>(16, m, nrhs);
     fails += run_case<float, 16>(32, m, nrhs);
+
+    /* the small-dimension cross product (small_dims): m x nrhs, the empty
+     * operand and the 1/2/3-column RHS blocks included, a padded group */
+    for (int mm : small_dims)
+        for (int nr : small_dims) {
+            fails += run_case<double, 4>(5, mm, nr);
+            fails += run_case<float, 8>(9, mm, nr);
+        }
 
     /* column-pivoted QR + back-permutation solve (salvaged cross-check) */
     fails += run_case_pivoted<double, 4>(8, m, nrhs);

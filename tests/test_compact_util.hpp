@@ -343,12 +343,18 @@ template <class T> void gen_tri(MatrixView<T> A, bool upper)
 // dimension ldp -- the one place the ng * gstride sizing is written. For a
 // buffer the kernel fills (tau, say), use it directly; for one packed from a
 // batch, the pack_compact/pack_tau overloads below return it filled.
+//
+// Never empty: an operand with a zero extent is still an argument the routine
+// may require present (Fortran semantics -- ?posv's bp at nrhs = 0, ?gels's A
+// at m = 0 -- asserted in cbk.cpp), so the buffer keeps one element, the
+// dummy a Fortran caller would pass.
 template <class T>
 std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
                               bool rowmajor = false)
 {
     const int ng = (nm + V - 1) / V;
-    return std::vector<T>((std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V));
+    return std::vector<T>(std::max<std::size_t>(
+        1, (std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V)));
 }
 
 template <class T>
@@ -437,6 +443,18 @@ template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
     assert(tau.cols() == 1);
     unpack_compact(tau, tp, tau.rows(), V);
 }
+
+// ----------------------- the small-dimension sweep -------------------
+// LAPACK's linear-equation suites take M and N from a list that starts
+// 0 1 2 3 5 (TESTING/dtest.in) and run every path over the full M x N cross
+// product, so the empty operand, the single row or column, and the orders
+// just below and above a register block are exercised in every routine, not
+// only where someone thought of them. The suites' sweeps take their extents
+// from this list and hand each shape to their own run_case: a zero extent is
+// the routine's quick return, and the case checks exactly that (info = 0 and
+// every error 0). The leading dimension of an empty operand is 1, as LAPACK's
+// ld >= max(1, m) requires; the sweeps spell it max(1, extent).
+constexpr int small_dims[] = {0, 1, 2, 3, 5};
 
 // ----------------------- shared checks and epilogues -----------------
 

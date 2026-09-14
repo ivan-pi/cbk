@@ -18,7 +18,10 @@
 //      ?posv_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?posv_compact still factors (LAPACK ?posv), bit-identical to
 //      ?potrf_compact, with a 1-element dummy bp (never referenced)
-// plus LAPACK-style argument validation of the three C APIs.
+// over the suite's orders and the small-dimension sweep (small_dims: every
+// order from 0 to 5 through the factorization checks, n x nrhs through the
+// solve pipeline, the empty operand included), plus LAPACK-style argument
+// validation of the three C APIs.
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
@@ -51,10 +54,11 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
-    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
-    int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    const int lda = std::max(1, n);
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    int info = compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
-    unpack_compact(Aout, ap.data(), n, V, rowmajor);
+    unpack_compact(Aout, ap.data(), lda, V, rowmajor);
 
     double e_fac = 0, e_rec = 0, e_untouched = 0;
     std::vector<T> Fs((size_t)n * n), Recs((size_t)n * n);
@@ -116,7 +120,7 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 {
     const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
-    const int ldb = rowmajor ? nrhs : n;
+    const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
 
     // known X, B = A X densely
     MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
@@ -127,15 +131,15 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
         matmul(A.view(idx), X, B.view(idx));
     }
 
-    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
     std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
     std::vector<T> ap2 = ap, bp2 = bp; // the fused call's copies
 
-    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm);
     int info_s =
-        compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), n, bp.data(), ldb, V, nm);
+        compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), lda, bp.data(), ldb, V, nm);
     int info_v =
-        compact<T>::posv(layout, uplo, n, nrhs, ap2.data(), n, bp2.data(), ldb, V, nm);
+        compact<T>::posv(layout, uplo, n, nrhs, ap2.data(), lda, bp2.data(), ldb, V, nm);
 
     MatrixBatch<T> Xhat(nm, n, nrhs);
     unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
@@ -304,6 +308,18 @@ int main()
             fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
+        }
+
+    // The small-dimension sweep (small_dims): every order over uplo x layout,
+    // then n x nrhs through the solve pipeline, a padded group each.
+    for (int n : small_dims)
+        for (char u : uplos)
+            for (char l : lays)
+                fails += run_case<double, 4>(5, n, u, l);
+    for (int n : small_dims)
+        for (int nrhs : small_dims) {
+            fails += run_solve<double, 4>(5, n, nrhs, 'L', 'C');
+            fails += run_solve<float, 8>(9, n, nrhs, 'U', 'R');
         }
 
     // nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to potrf,

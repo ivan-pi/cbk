@@ -18,7 +18,9 @@
  *   3. Q(:, 0:k-1) R = A with R = triu of the factorization (k > 0)
  *   4. padded lanes of a partial last group come out exactly identity
  * plus k < n (unit-seeded extra columns), k = 0 (Q = leading columns of I),
- * row-major, and the C API's LAPACK-style argument validation.
+ * row-major, the small-dimension sweep (small_dims: every m >= n from 0 to 5
+ * with k in {n, 0, 1, n/2}, LAPACK's K values, the empty operand included),
+ * and the C API's LAPACK-style argument validation.
  *
  * Assisted-by: Claude:claude-fable-5
  */
@@ -46,7 +48,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     const double tol_orth = 100.0 * eps * m; /* independent invariants */
     const double tol_rec = 100.0 * eps * m;
 
-    const int ld = rowmajor ? n : m;
+    const int ld = std::max(1, rowmajor ? n : m);
 
     /* factor a random m x k batch (empty at k = 0); stage its reflectors
      * into m x n */
@@ -191,6 +193,20 @@ int main()
 
     /* smallest size */
     fails += run_case<double, 2>(3, 1, 1, 1);
+
+    /* the small-dimension sweep (small_dims): every m >= n, k over LAPACK's
+     * {n, 0, 1, n/2} (each value once), a padded group, one layout each */
+    for (int mm : small_dims)
+        for (int nn : small_dims) {
+            if (nn > mm) continue;
+            const int ks[] = {nn, 0, 1, nn / 2};
+            for (int t = 0; t < 4; ++t) {
+                const int kk = ks[t];
+                if (kk > nn || std::find(ks, ks + t, kk) != ks + t) continue;
+                fails += run_case<double, 4>(5, mm, nn, kk);
+                fails += run_case<float, 8>(9, mm, nn, kk, true);
+            }
+        }
 
     /* row-major */
     fails += run_case<double, 4>(8, 43, 43, 43, true);

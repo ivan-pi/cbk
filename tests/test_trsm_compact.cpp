@@ -12,7 +12,9 @@
 //      interleave widths (column-major, the tuned path): forward error vs the
 //      library's solve, plus the solve's own residual ||op(A) X - alpha B||
 //      formed with the library's triangular multiply (so a bug shared by the
-//      reference and the kernel cannot pass unseen).
+//      reference and the kernel cannot pass unseen), over the suite's shapes
+//      and the small-dimension cross product (small_dims: m x n from 0 to 5,
+//      the empty operand and the 1/2/3-column route included).
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
@@ -61,14 +63,15 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     }
 
     // pack, solve with the routine under test, unpack
-    std::vector<T> ap = pack_compact(A, s, V);
-    std::vector<T> bp = pack_compact(B, m, V);
+    const int lda = std::max(1, s), ldb = std::max(1, m);
+    std::vector<T> ap = pack_compact(A, lda, V);
+    std::vector<T> bp = pack_compact(B, ldb, V);
 
-    int info = compact<T>::trsm('C', side, uplo, transa, diag, m, n, alpha, ap.data(), s,
-                                bp.data(), m, V, nm);
+    int info = compact<T>::trsm('C', side, uplo, transa, diag, m, n, alpha, ap.data(),
+                                lda, bp.data(), ldb, V, nm);
 
     MatrixBatch<T> Bout(nm, m, n);
-    unpack_compact(Bout, bp.data(), m, V);
+    unpack_compact(Bout, bp.data(), ldb, V);
 
     // Two gates: (1) forward error vs the library's solve, and (2) the
     // solve's own defining residual ||op(A) X - alpha B||, formed with the
@@ -176,6 +179,15 @@ int main()
         }
     fails += run_case<float, 8>('L', 'U', 'N', 'N', 16, 16, 1);
     fails += run_case<float, 16>('L', 'L', 'N', 'N', 32, 12, 2);
+
+    // the small-dimension cross product (small_dims): m x n for one flag
+    // combination per side, the empty operand and the 1/2/3-column route
+    // included, a padded group
+    for (int mm : small_dims)
+        for (int nn : small_dims) {
+            fails += run_case<double, 4>('L', 'U', 'N', 'N', 5, mm, nn);
+            fails += run_case<float, 8>('R', 'L', 'T', 'U', 9, mm, nn);
+        }
 
     return finish(fails);
 }

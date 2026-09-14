@@ -17,7 +17,10 @@
 //      ||Q^T Q - I||_1 <= 100 n eps, on dense, column-scaled, rank-deficient
 //      and near-collinear inputs; (H, tau) elementwise vs the blocked
 //      LAPACKE_?geqrf on the dense ones (relative, 100 n eps)
-// plus LAPACK-style argument validation of the C API.
+// over the suite's shapes and the small-dimension cross product (small_dims:
+// m x n from 0 to 5, so the empty operand and the single row or column run
+// through the same checks), plus LAPACK-style argument validation of the C
+// API.
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
@@ -49,13 +52,14 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     }
 
     // pack A, factor with the routine under test, unpack (H, tau)
-    std::vector<T> ap = pack_compact(A, m, V);
+    const int lda = std::max(1, m);
+    std::vector<T> ap = pack_compact(A, lda, V);
     std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V); /* the kernel fills it */
 
-    int info = compact<T>::geqrf('C', m, n, ap.data(), m, tp.data(), V, nm);
+    int info = compact<T>::geqrf('C', m, n, ap.data(), lda, tp.data(), V, nm);
 
     MatrixBatch<T> Aout(nm, m, n), tau_out(nm, k, 1);
-    unpack_compact(Aout, ap.data(), m, V);
+    unpack_compact(Aout, ap.data(), lda, V);
     unpack_tau(tau_out, tp.data(), V);
 
     // check 1: (H, tau) match the scalar reference elementwise
@@ -87,10 +91,11 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         MatrixBatch<T> B(nm, n, nrhs);
         for (int idx = 0; idx < nm; ++idx)
             matmul(A.view(idx), X, B.view(idx)); /* B = A X */
-        std::vector<T> bp = pack_compact(B, n, V);
-        compact<T>::ormqr('T', n, nrhs, k, ap.data(), n, tp.data(), bp.data(), n, V, nm);
+        std::vector<T> bp = pack_compact(B, lda, V);
+        compact<T>::ormqr('T', n, nrhs, k, ap.data(), lda, tp.data(), bp.data(), lda, V,
+                          nm);
         MatrixBatch<T> Bo(nm, n, nrhs);
-        unpack_compact(Bo, bp.data(), n, V);
+        unpack_compact(Bo, bp.data(), lda, V);
         e_solve = 0;
         for (int idx = 0; idx < nm; ++idx) {
             ref_trsm_upper(Aout.view(idx), Bo.view(idx));
@@ -355,6 +360,14 @@ int main()
     // float
     fails += run_case<float, 8>(16, 30, 30);
     fails += run_case<float, 16>(32, 43, 17);
+    // the small-dimension cross product (small_dims): the empty operand, a
+    // single row or column, and the orders around the register block, one
+    // full group plus a padded one
+    for (int m : small_dims)
+        for (int n : small_dims) {
+            fails += run_case<double, 4>(5, m, n);
+            fails += run_case<float, 8>(9, m, n);
+        }
     // numerical scope: an underflowing column reads as already triangular
     fails += test_underflow<double, 4>();
     fails += test_underflow<float, 8>();
