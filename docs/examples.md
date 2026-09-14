@@ -1,12 +1,13 @@
 # Examples and benchmarks
 
-All programs under `examples/` but one need the MKL build (`-DCBK_WITH_MKL=ON`,
-off by default), since they pack with MKL's compact routines and compare against
-MKL's compact kernels and LAPACKE. The exception is `bench_trsm_compact`, which
-measures the portable C API against a plain BLAS: `-DCBK_BUILD_BENCHMARKS=ON`
-builds it in a tree without MKL, against whatever `find_package(LAPACK)` finds
-(see [building.md](building.md)); the MKL build builds it too, with MKL's
-compact kernel added to the comparison.
+The worked example and the benchmarks of the MKL-style API need the MKL build
+(`-DCBK_WITH_MKL=ON`, off by default), since they pack with MKL's compact
+routines and compare against MKL's compact kernels and LAPACKE. The benchmarks
+of the portable C API (`bench_trsm_compact` so far) measure a `cbk.h` routine
+against a per-matrix BLAS/LAPACK: `-DCBK_BUILD_BENCHMARKS=ON` builds them in a
+tree without MKL, against the library `find_package(LAPACK)` finds
+(`-DBLA_VENDOR` selects it; see [building.md](building.md)); the MKL build
+builds them too, with MKL's compact kernel added to the comparison.
 
 ## Worked example
 

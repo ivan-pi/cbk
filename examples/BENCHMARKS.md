@@ -8,11 +8,12 @@ open compact kernels, MKL's own compact kernels, and the conventional
 one-matrix-at-a-time LAPACK path -- over pools of many small matrices,
 reporting per-size throughput and a geometric-mean speedup; `bench_sysvnp_compact`
 has no MKL yardstick (MKL ships no compact `sytrf`) and compares the fused compact
-solver with per-matrix LAPACK alone. `bench_trsm_compact` is the one that needs
-no MKL: it measures the portable C API against the BLAS of whatever LAPACK the
-build finds, and adds MKL's compact kernel when MKL is there. Each also
-cross-checks its result against per-matrix LAPACK or the known solution, so it
-doubles as an integration test (CTest-registered on a small pool).
+solver with per-matrix LAPACK alone. `bench_trsm_compact` measures the portable
+C API and needs no MKL: its baseline is the per-matrix routine of the
+BLAS/LAPACK the build was pointed at, and MKL's compact kernel joins when MKL
+is there. Each also cross-checks its result against per-matrix LAPACK or the
+known solution, so it doubles as an integration test (CTest-registered on a
+small pool).
 
 | Program | Measures | Compares |
 |---------|----------|----------|
@@ -41,14 +42,17 @@ cmake --build build -j
 ./build/bench_trsm_compact       # triangular solve
 ```
 
-`bench_trsm_compact` alone also builds without MKL, against any BLAS/LAPACK
-CMake's `find_package(LAPACK)` finds (reference LAPACK, OpenBLAS, ...;
-`-DBLA_VENDOR=...` picks one):
+The benchmarks of the portable C API (`bench_trsm_compact`) also build without
+MKL, `-DCBK_BUILD_BENCHMARKS=ON`, against the BLAS/LAPACK `find_package(LAPACK)`
+finds; select it with `-DBLA_VENDOR` (a tuned one -- OpenBLAS, sequential MKL
+as `Intel10_64lp_seq` -- makes the baseline worth reading; the reference BLAS
+works but is slow), and pin an internally threaded one to one thread, since
+the benchmark drives it from its own OpenMP loop:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON -DCMAKE_CXX_FLAGS="-O3 -march=native"
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON -DBLA_VENDOR=OpenBLAS -DCMAKE_CXX_FLAGS="-O3 -march=native"
 cmake --build build -j
-./build/bench_trsm_compact
+OPENBLAS_NUM_THREADS=1 ./build/bench_trsm_compact
 ```
 
 **Build with `-march=native` for a fair comparison.** This library sets no
@@ -221,19 +225,22 @@ factorization here, two or three ways:
 
 * **cbk-compact** -- `dtrsm_compact`, the portable C API of `cbk.h`: one call
   on the whole pool (the library threads the group loop).
-* **per-matrix** -- the BLAS `dtrsm` of the LAPACK the build found, one matrix
-  at a time from an OpenMP loop of the same thread count. In a tree without
-  MKL this is whatever `find_package(LAPACK)` located; in the MKL build it is
-  MKL's BLAS.
+* **per-matrix** -- the `dtrsm` of the BLAS/LAPACK the build linked, one
+  matrix at a time from an OpenMP loop of the same thread count: in a tree
+  without MKL the library `find_package(LAPACK)` located (`BLA_VENDOR`), in
+  the MKL build MKL's BLAS. Not this project's scalar reference kernels --
+  those exist only in the test suites.
 * **mkl-compact** -- `mkl_dtrsm_compact`, MKL's batched compact kernel, per
   group from the same OpenMP loop (MKL build only).
 
-It is the one benchmark that needs no MKL: it packs with the library-side
-`pack_compact` (`src/cbk_compact_pack.hpp`), and finds the host's interleave
-width at run time through the compiler's cpuid builtin (`host_simdlen`, the rule
-`mkl_get_format_compact` applies: 8 with AVX-512F, 4 with AVX, else 2) --
-`--simdlen` overrides it, and the header line also says which ISA the kernels
-were *compiled* for, so a build without `-march=native` shows. Every system is
+It needs no MKL: it packs with the library-side `pack_compact`
+(`src/cbk_compact_pack.hpp`), and finds the host's interleave width at run time
+(`host_simdlen`): on x86 through the compiler's cpuid builtin, the rule
+`mkl_get_format_compact` applies (8 with AVX-512F, 4 with AVX, else 2); on
+AArch64 Linux through the SVE vector length the kernel reports (512-bit SVE is
+8 doubles, 256-bit 4, NEON alone 2). `--simdlen` overrides it, and the header
+line also says which ISA the kernels were *compiled* for, so a build without
+`-march=native` (or, for SVE, without `-msve-vector-bits=N`) shows. Every system is
 solved on the same case, column-major with `alpha = 1`: by default the
 back-substitution of a QR solve (`side = 'L'`, upper, non-transposed, non-unit:
 `R X = Q^T B`), and `--side`, `--uplo`, `--transa`, `--diag` select any other.

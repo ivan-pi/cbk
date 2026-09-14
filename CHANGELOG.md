@@ -11,11 +11,12 @@ release may change the API.
 
 - `bench_trsm_compact`, a triangular-solve benchmark of the portable C API
   (`dtrsm_compact`) against a per-matrix BLAS `dtrsm`, with
-  `mkl_dtrsm_compact` as a third path in the MKL build. It is the first
-  benchmark that needs no MKL: `-DCBK_BUILD_BENCHMARKS=ON` builds it in the
-  default tree against whatever `find_package(LAPACK)` finds. The host's
-  interleave width is detected at run time (`--simdlen` overrides it);
-  `--side`, `--uplo`, `--transa`, `--diag` and `--nrhs` select the case.
+  `mkl_dtrsm_compact` as a third path in the MKL build. It needs no MKL:
+  `-DCBK_BUILD_BENCHMARKS=ON` builds the benchmarks of the portable C API in
+  the default tree against the BLAS/LAPACK `find_package(LAPACK)` finds
+  (`BLA_VENDOR` selects it). The host's interleave width is detected at run
+  time (`--simdlen` overrides it); `--side`, `--uplo`, `--transa`, `--diag`
+  and `--nrhs` select the case.
 
 ### Changed
 

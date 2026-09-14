@@ -36,20 +36,20 @@ jobs:
       # libmkl-dev supplies the Compact extension and MKL's LAPACK/LAPACKE, so
       # the MKL-backed suites validate against real MKL + LAPACK. The portable
       # (MKL OFF) build needs nothing beyond the C++17 toolchain the image
-      # ships; the reference LAPACK is only for bench_trsm_compact, the one
-      # benchmark that builds without MKL (-DCBK_BUILD_BENCHMARKS=ON), so that
-      # its integration test runs in this configuration too.
+      # ships; OpenBLAS is only the per-matrix baseline of the portable C
+      # API's benchmarks (-DCBK_BUILD_BENCHMARKS=ON), so that their
+      # integration tests run in this configuration too.
       - name: Install Intel MKL
         if: matrix.mkl == 'ON'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libmkl-dev
 
-      - name: Install reference LAPACK
+      - name: Install OpenBLAS
         if: matrix.mkl == 'OFF'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends liblapack-dev
+          sudo apt-get install -y --no-install-recommends libopenblas-dev
 
       - name: Configure
         run: >
@@ -57,10 +57,15 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCBK_WITH_MKL=${{ matrix.mkl }}
           -DCBK_BUILD_BENCHMARKS=ON
+          -DBLA_VENDOR=${{ matrix.mkl == 'OFF' && 'OpenBLAS' || 'All' }}
           -DMKLCompact_INTERFACE=${{ matrix.interface }}
 
       - name: Build
         run: cmake --build build -j
 
+      # OpenBLAS threads internally; the benchmarks drive it from their own
+      # OpenMP loop, so pin it to one thread as their header says to.
       - name: Test
+        env:
+          OPENBLAS_NUM_THREADS: 1
         run: ctest --test-dir build --output-on-failure

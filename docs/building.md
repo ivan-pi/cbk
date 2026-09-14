@@ -57,27 +57,30 @@ distro package or from Intel's oneAPI apt repository, and the remaining
 > `.claude/mkl-compact-behavior.md` records what MKL's compact routines were
 > measured to do with their arguments.
 
-## The benchmark without MKL (`-DCBK_BUILD_BENCHMARKS=ON`)
+## The benchmarks without MKL (`-DCBK_BUILD_BENCHMARKS=ON`)
 
-`bench_trsm_compact` measures the portable C API against a per-matrix BLAS
-`?trsm` and needs only a BLAS/LAPACK, not MKL: `-DCBK_BUILD_BENCHMARKS=ON`
-builds it in the default tree, taking its baseline from whatever
-`find_package(LAPACK REQUIRED)` locates (reference LAPACK, OpenBLAS, ...;
-`-DBLA_VENDOR=Generic`, say, chooses, and `-DBLA_SIZEOF_INTEGER=8` selects an
-ILP64 one). The MKL build builds every benchmark, this one included, and takes
-its LAPACK from MKL itself -- the one MKL link line `MKL::Compact` carries --
-so a second `find_package(LAPACK)` cannot pull in a different threading layer
-of the same MKL.
+The benchmarks of the portable C API (`bench_trsm_compact` so far) measure a
+`cbk.h` routine against the per-matrix BLAS/LAPACK routine of the same math,
+so they need a BLAS/LAPACK, not MKL: `-DCBK_BUILD_BENCHMARKS=ON` builds them
+in the default tree against whatever `find_package(LAPACK REQUIRED)` locates.
+Select the library with `-DBLA_VENDOR` (`OpenBLAS`, `Intel10_64lp_seq` for
+sequential MKL, `Generic` for the reference library, ...;
+`-DBLA_SIZEOF_INTEGER=8` selects an ILP64 one) -- a baseline is only as
+meaningful as the BLAS behind it, so prefer a tuned one; the reference BLAS
+builds and passes but is slow. The MKL build builds every benchmark, these
+included, and takes their BLAS/LAPACK from MKL itself, the one MKL link line
+`MKL::Compact` carries, so a second `find_package(LAPACK)` cannot pull in a
+different threading layer of the same MKL.
 
 ```sh
-sudo apt-get install liblapack-dev            # Debian/Ubuntu: reference BLAS/LAPACK
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON
+sudo apt-get install libopenblas-dev          # Debian/Ubuntu
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCBK_BUILD_BENCHMARKS=ON -DBLA_VENDOR=OpenBLAS
 cmake --build build -j
-./build/bench_trsm_compact
+OPENBLAS_NUM_THREADS=1 ./build/bench_trsm_compact   # the benchmark threads its own loop
 ```
 
-The other benchmarks pack with MKL's compact routines and compare against its
-compact kernels, so they stay with the MKL build
+The benchmarks of the MKL-style API pack with MKL's compact routines and
+compare against its compact kernels, so they stay with the MKL build
 ([`examples/BENCHMARKS.md`](../examples/BENCHMARKS.md)).
 
 ## Performance builds
@@ -127,7 +130,7 @@ CI builds against a fresh install for every MKL / static / shared combination
 | `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CBK_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
 | `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest. |
-| `CBK_BUILD_BENCHMARKS` | `OFF` | Build the benchmark that needs only a BLAS/LAPACK (`bench_trsm_compact`) in a tree without MKL, through `find_package(LAPACK)`; implied by `CBK_WITH_MKL`. |
+| `CBK_BUILD_BENCHMARKS` | `OFF` | Build the benchmarks of the portable C API in a tree without MKL, against the BLAS/LAPACK `find_package(LAPACK)` finds (`BLA_VENDOR` selects it); implied by `CBK_WITH_MKL`. |
 | `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcbk` shared instead of static. |
 | `CBK_INSTALL` | `ON` when top-level | Generate the install rules; off by default under a parent project's `add_subdirectory`. |
 | `MKLCompact_ROOT` | -- | A oneAPI MKL prefix, when `MKLROOT` is not set (MKL build only). |

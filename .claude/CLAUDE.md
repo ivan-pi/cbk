@@ -22,12 +22,12 @@ against MKL's compact kernels and LAPACK/LAPACKE), the example and the
 benchmarks; it needs Intel MKL (`sudo apt-get install libmkl-dev` on
 Debian/Ubuntu). Run that build too before pushing changes to the kernels or
 the wrappers: it is the one that cross-checks against MKL.
-`-DCBK_BUILD_BENCHMARKS=ON` builds the one benchmark that needs no MKL,
-`bench_trsm_compact` (the portable C API vs a per-matrix BLAS `?trsm`),
-against whatever `find_package(LAPACK)` finds (`liblapack-dev` for the
-reference one); the MKL build builds it too, with MKL as its BLAS. On a
-machine with MKL installed, `find_package(LAPACK)` prefers MKL's *threaded*
-layer; `-DBLA_VENDOR=Generic` selects the reference library instead.
+`-DCBK_BUILD_BENCHMARKS=ON` builds the benchmarks of the portable C API
+(`bench_trsm_compact` so far), whose per-matrix baseline is the BLAS/LAPACK
+`find_package(LAPACK)` finds: select it with `-DBLA_VENDOR` (`OpenBLAS`,
+`Intel10_64lp_seq`, ...; the reference library works but is slow, and on a
+machine with MKL installed the default choice is MKL's *threaded* layer). The
+MKL build builds every benchmark and takes its BLAS/LAPACK from MKL.
 
 Both APIs are one library target, `cbk` (`cbk::cbk`); `-DBUILD_SHARED_LIBS=ON`
 builds it shared. `cmake --install build --prefix <p>` installs it, the

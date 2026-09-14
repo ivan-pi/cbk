@@ -9,7 +9,7 @@
  * benchmarks form with cblas_dgemm, and CmdArgs, the shared command line with
  * --simdlen resolved to an MKL_COMPACT_PACK. Needs the MKL headers, and
  * PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs using it
- * link MKL (every benchmark but bench_trsm_compact does).
+ * link MKL (the benchmarks of the MKL-style API do).
  *
  * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */

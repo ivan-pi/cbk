@@ -12,10 +12,10 @@
  * benchmarks' shared command line (BenchArgs: --size-sweep, --simdlen, --nrhs,
  * [nmat] [reps]).
  *
- * Needs only the library and its internal headers, so a benchmark whose
- * baseline is a plain BLAS/LAPACK builds on it without MKL
- * (bench_trsm_compact); bench_util.hpp adds the MKL-side pieces the other
- * benchmarks use (MKL's pack/unpack in mkl_malloc storage, the
+ * Needs only the library and its internal headers, so the benchmarks of the
+ * portable C API, whose baseline is a per-matrix BLAS/LAPACK, build on it
+ * without MKL; bench_util.hpp adds the MKL-side pieces the benchmarks of the
+ * MKL-style API use (MKL's pack/unpack in mkl_malloc storage, the
  * MKL_COMPACT_PACK resolution of --simdlen, cblas right-hand sides).
  *
  * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
@@ -42,6 +42,13 @@
 
 #ifdef _OPENMP
 #include <omp.h>
+#endif
+
+/* The SVE vector-length query of host_simdlen (AArch64 Linux only). */
+#if defined(__aarch64__) && defined(__linux__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
 #endif
 
 namespace cbk::bench {
@@ -167,13 +174,19 @@ inline double chol_gflop(int n)
 }
 
 /* The interleave width for double that maps onto one of the host's widest
- * vector registers -- the rule mkl_get_format_compact applies (AVX-512F: 8,
- * AVX: 4, else 2), asked of the CPU at run time through the compiler's cpuid
- * builtin, so the portable build needs no MKL to pick the same default as the
- * MKL benchmarks. Off x86 there is no such query; the width this build was
- * compiled for (compiled_simdlen) stands in. Any width runs on any host -- the
- * kernels lower a pack wider than the ISA to several instructions -- so this
- * is a default for --simdlen, not a limit; a narrower width is always valid. */
+ * vector registers -- the rule mkl_get_format_compact applies on x86 (AVX-512F:
+ * 8, AVX: 4, else 2), asked of the CPU at run time so the portable build needs
+ * no MKL to pick the same default as the MKL benchmarks: through the
+ * compiler's cpuid builtin on x86, and on AArch64 Linux through the SVE vector
+ * length the kernel reports (prctl(PR_SVE_GET_VL): 512-bit SVE is 8 doubles,
+ * 256-bit 4; without SVE, NEON's 128 bits are 2). Elsewhere the width this
+ * build was compiled for (compiled_simdlen) stands in. Any width runs on any
+ * host -- the kernels lower a pack wider than the ISA to several instructions,
+ * and a pack narrower than it to part of a register -- so this is a default
+ * for --simdlen, not a limit; the header line prints it next to the ISA the
+ * kernels were compiled for (SVE only maps onto one register when compiled
+ * with -msve-vector-bits=N, which the compiler reports as
+ * __ARM_FEATURE_SVE_BITS; see the note in src/cbk_common.hpp). */
 #if defined(__AVX512F__)
 inline constexpr int compiled_simdlen = 8;
 inline constexpr const char *compiled_isa = "AVX-512";
@@ -183,6 +196,16 @@ inline constexpr const char *compiled_isa = "AVX";
 #elif defined(__SSE2__) || defined(__x86_64__)
 inline constexpr int compiled_simdlen = 2;
 inline constexpr const char *compiled_isa = "SSE";
+#elif defined(__ARM_FEATURE_SVE_BITS) && (__ARM_FEATURE_SVE_BITS >= 128)
+inline constexpr int compiled_simdlen = __ARM_FEATURE_SVE_BITS >= 512   ? 8
+                                        : __ARM_FEATURE_SVE_BITS >= 256 ? 4
+                                                                        : 2;
+inline constexpr const char *compiled_isa = __ARM_FEATURE_SVE_BITS >= 512   ? "SVE-512"
+                                            : __ARM_FEATURE_SVE_BITS >= 256 ? "SVE-256"
+                                                                            : "SVE-128";
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+inline constexpr int compiled_simdlen = 2;
+inline constexpr const char *compiled_isa = "NEON";
 #else
 inline constexpr int compiled_simdlen = 2;
 inline constexpr const char *compiled_isa = "128-bit";
@@ -191,7 +214,11 @@ inline constexpr const char *compiled_isa = "128-bit";
 /* The ISA name of an interleave width for double, for the header lines. */
 inline const char *simdlen_name(int V)
 {
+#if defined(__aarch64__)
+    return V == 8 ? "SVE-512" : V == 4 ? "SVE-256" : "NEON";
+#else
     return V == 8 ? "AVX-512" : V == 4 ? "AVX" : "SSE";
+#endif
 }
 
 inline int host_simdlen()
@@ -202,6 +229,16 @@ inline int host_simdlen()
     if (__builtin_cpu_supports("avx512f")) return 8;
     if (__builtin_cpu_supports("avx")) return 4;
     return 2;
+#elif defined(__aarch64__) && defined(__linux__) && defined(HWCAP_SVE) &&                \
+    defined(PR_SVE_GET_VL)
+    if (getauxval(AT_HWCAP) & HWCAP_SVE) {
+        const long vl = prctl(PR_SVE_GET_VL); /* bytes, or -1 */
+        if (vl > 0) {
+            const long doubles = (vl & PR_SVE_VL_LEN_MASK) / (long)sizeof(double);
+            return doubles >= 8 ? 8 : doubles >= 4 ? 4 : 2;
+        }
+    }
+    return 2; /* NEON */
 #else
     return compiled_simdlen;
 #endif

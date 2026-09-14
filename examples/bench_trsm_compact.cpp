@@ -9,17 +9,19 @@
  *
  *   cbk-compact  dtrsm_compact      (the portable C API of cbk.h: this
  *                                    project's batched SIMD kernel)
- *   per-matrix   dtrsm              (the BLAS ?trsm of the LAPACK the build
- *                                    found, one matrix at a time)
+ *   per-matrix   dtrsm              (the ?trsm of the BLAS/LAPACK library the
+ *                                    build linked, one matrix at a time)
  *   mkl-compact  mkl_dtrsm_compact  (Intel MKL's batched compact kernel;
  *                                    MKL build only)
  *
- * The one benchmark that needs no MKL: it measures the portable C API, packs
- * with the library-side pack (src/cbk_compact_pack.hpp), and takes its
- * baseline from whatever BLAS/LAPACK CMake's find_package(LAPACK) finds --
- * reference LAPACK, OpenBLAS, ... -- so `-DCBK_BUILD_BENCHMARKS=ON` builds it
- * in a tree without the MKL extension. In the MKL build (-DCBK_WITH_MKL=ON)
- * MKL is that BLAS, and MKL's own compact kernel is the third path.
+ * A benchmark of the portable C API, so it needs no MKL: it packs with the
+ * library-side pack (src/cbk_compact_pack.hpp) and takes its baseline from
+ * the BLAS/LAPACK CMake's find_package(LAPACK) finds (BLA_VENDOR selects:
+ * OpenBLAS, sequential MKL, ...), so `-DCBK_BUILD_BENCHMARKS=ON` builds it in
+ * a tree without the MKL extension. In the MKL build (-DCBK_WITH_MKL=ON) MKL
+ * is that BLAS, and MKL's own compact kernel is the third path. The baseline
+ * is always a library's ?trsm, never the scalar reference kernels of the test
+ * suites, which are correctness oracles, not competitors.
  *
  * Every system is solved on the same case, column-major with `alpha = 1`;
  * the default is the back-substitution that closes a batched QR solve
@@ -32,11 +34,11 @@
  * rather than data movement the pool is packed once, up front; only the
  * solve is timed, and the overwritten right-hand sides are restored (untimed)
  * before each pass. The cbk path is one call on the whole pool -- the routine
- * threads its own loop over groups. The per-matrix BLAS path (and MKL's
- * compact kernel, which is not threaded in this build) is driven from an
- * OpenMP loop of the same thread count; a BLAS that threads internally should
- * be pinned to one thread through its own knob (OPENBLAS_NUM_THREADS=1, ...;
- * the MKL build pins MKL itself).
+ * threads its own loop over groups. The per-matrix path (and MKL's compact
+ * kernel, which is not threaded in this build) is driven from an OpenMP loop
+ * of the same thread count; a BLAS that threads internally must be pinned to
+ * one thread through its own knob (OPENBLAS_NUM_THREADS=1, ...; the MKL build
+ * pins MKL itself).
  *
  * Usage:  bench_trsm_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8]
  *         [--nrhs=k] [--side=L|R] [--uplo=U|L] [--transa=N|T] [--diag=N|U]
@@ -47,9 +49,10 @@
  * interleave width (2/4/8) instead of the host's widest, which is detected at
  * run time (host_simdlen, bench_common.hpp).
  *
- * Build: `-DCBK_BUILD_BENCHMARKS=ON` (needs a BLAS/LAPACK) or `-DCBK_WITH_MKL=ON`
- * (needs Intel MKL); wired up by CMakeLists.txt as the `bench_trsm_compact`
- * target. OpenMP is used when available. Build with host-tuned flags (e.g.
+ * Build: `-DCBK_BUILD_BENCHMARKS=ON` (needs a BLAS/LAPACK; `-DBLA_VENDOR`
+ * selects it) or `-DCBK_WITH_MKL=ON` (needs Intel MKL); wired up by
+ * CMakeLists.txt as the `bench_trsm_compact` target. OpenMP is used when
+ * available. Build with host-tuned flags (e.g.
  * `-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the open compact kernel emits
  * the full vector width -- the header line says what it was compiled for.
  *
@@ -98,15 +101,16 @@ struct TrsmCase {
     double gflop() const { return (double)s * s * nrhs * 1e-9; }
 };
 
-/* The per-matrix baseline: the BLAS ?trsm of the LAPACK this benchmark was
- * linked against. The MKL build calls MKL's CBLAS (MKL_INT, so the ilp64
- * interface works too); the LAPACK build calls the Fortran symbol directly,
- * which is the one interface every BLAS ships (the CBLAS header is not part
- * of find_package(LAPACK)), with the integer width FindBLAS was asked for
- * (CBK_BENCH_BLAS_INT, int unless BLA_SIZEOF_INTEGER=8) and the hidden
- * character-length arguments gfortran expects (harmless to a BLAS without). */
+/* The per-matrix baseline: the ?trsm of the BLAS/LAPACK library this
+ * benchmark was linked against. The MKL build calls MKL's CBLAS (MKL_INT, so
+ * the ilp64 interface works too); the LAPACK build calls the Fortran symbol
+ * directly, which is the one interface every BLAS ships (the CBLAS header is
+ * not part of find_package(LAPACK)), with the integer width FindBLAS was
+ * asked for (CBK_BENCH_BLAS_INT, int unless BLA_SIZEOF_INTEGER=8) and the
+ * hidden character-length arguments gfortran expects (harmless to a BLAS
+ * without). */
 #ifdef CBK_BENCH_WITH_MKL
-void ref_dtrsm(const TrsmCase &c, const double *a, double *b)
+void blas_dtrsm(const TrsmCase &c, const double *a, double *b)
 {
     cblas_dtrsm(CblasColMajor, c.side == 'L' ? CblasLeft : CblasRight,
                 c.uplo == 'U' ? CblasUpper : CblasLower,
@@ -125,7 +129,7 @@ extern "C" void dtrsm_(const char *side, const char *uplo, const char *transa,
                        double *b, const blas_int *ldb, std::size_t, std::size_t,
                        std::size_t, std::size_t);
 
-void ref_dtrsm(const TrsmCase &c, const double *a, double *b)
+void blas_dtrsm(const TrsmCase &c, const double *a, double *b)
 {
     const blas_int m = c.m(), n = c.n(), lda = c.s, ldb = c.m();
     const double alpha = 1.0;
@@ -218,14 +222,15 @@ void solve_mkl(const TrsmCase &c, const double *ap, double *bp, int V,
 }
 #endif
 
-/* Per-matrix BLAS solve of a standard-layout copy of the right-hand sides in
- * place, from an OpenMP loop of the benchmark's thread count. */
+/* Per-matrix solve of a standard-layout copy of the right-hand sides in place
+ * with the linked library's dtrsm, from an OpenMP loop of the benchmark's
+ * thread count. */
 void solve_unbatched(const TrsmCase &c, const MatrixPool &A, double *b)
 {
     const size_t stride = (size_t)c.m() * c.n();
 #pragma omp parallel for schedule(static)
     for (int v = 0; v < A.count(); ++v)
-        ref_dtrsm(c, A[v], b + (size_t)v * stride);
+        blas_dtrsm(c, A[v], b + (size_t)v * stride);
 }
 
 /* The forward error of a compact solve, read from the buffer its last pass
