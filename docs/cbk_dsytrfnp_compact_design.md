@@ -334,9 +334,7 @@ the operation the public `trsm` API does not offer).
 `cbk_?sysvnp_compact` is the `?sysv` of the pair, and it exists for
 throughput, not for arithmetic. Called separately, `sytrfnp` streams the whole
 batch once and `sytrsnp` streams it again, so for batches that exceed the cache
-every factor is written out and read back; the project's solve benchmark
-measured a 15-55% penalty for exactly this kind of whole-pool pipeline against
-a cache-resident per-group one (`PLANS.md`). The fused driver runs, for each
+every factor is written out and read back. The fused driver runs, for each
 group of `V` matrices, the factorization group kernel immediately followed by
 the solve group kernel, while the group's factor is still in cache, and threads
 the whole solve as one `for_each_group` loop with the combined flop estimate.

@@ -381,12 +381,12 @@ solution rather than reporting an error.
 `cbk_?posv_compact` is the `?posv` of the pair, and it exists for
 throughput, not for arithmetic: called separately, `potrf` streams the whole
 batch once and `potrs` streams it again, so for batches that exceed the cache
-every factor is written out and read back -- the 15-55% whole-pool penalty the
-project's solve benchmark measured (`PLANS.md`). The fused driver runs, for
-each group of `V` matrices, the factorization group kernel immediately followed
-by the solve group kernel, while the group's factor is still in cache, and
-threads the whole solve as one `for_each_group` loop with the combined flop
-estimate. Because it calls the *same* group kernels in the *same* order on the
+every factor is written out and read back -- the whole-pool penalty the
+project's solve benchmark (`bench_posv_compact`) measures. The fused driver
+runs, for each group of `V` matrices, the factorization group kernel
+immediately followed by the solve group kernel, while the group's factor is
+still in cache, and threads the whole solve as one `for_each_group` loop with
+the combined flop estimate. Because it calls the *same* group kernels in the *same* order on the
 *same* data, its factor and its `X` are bit-identical to the two separate calls
 -- a property the test suites gate (section 7.5). The design (and its
 rationale) is `cbk_?sysvnp_compact`'s, applied to the Cholesky pair; see
