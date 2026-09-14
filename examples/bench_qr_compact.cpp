@@ -263,10 +263,9 @@ int main(int argc, char **argv)
     const int nthreads = omp_threads();
 
     /* The one benchmark with a list of its own: five paths run at every order
-     * here, so it is the costliest per size and stays on a narrow 10..100 --
-     * bench_sizes (bench_util.hpp) is the wider default the others share, and
-     * max_bench_size is the ceiling over both. */
-    const int sizes[] = {10, 20, 30, 40, 50, 60, 80, 100};
+     * here, so it is the costliest per size and stays on a narrow range --
+     * bench_sizes (bench_util.hpp) is the wider default the others share. */
+    const int sizes[] = {10, 20, 30, 40, 50, 60, 80, 100, 120};
     const int nsizes = (int)(sizeof(sizes) / sizeof(sizes[0]));
     const int nrhs = 1; /* single RHS per system (see Systems / run_batched) */
     const double eps = std::numeric_limits<double>::epsilon();

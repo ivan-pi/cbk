@@ -8,11 +8,10 @@
  * and the known-solution right-hand sides / forward error the Cholesky and
  * LDL^T benchmarks share, the Cholesky flop count, best-of-N timing,
  * the OpenMP thread count, the default square size list every benchmark but
- * bench_qr_compact runs (bench_sizes) with the order ceiling that binds them
- * all (max_bench_size), and the factorization / solve benchmarks' command
- * line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]). Needs the MKL
- * headers, and PackedPool calls mkl_malloc / mkl_dgepack_compact, so programs
- * using it link MKL (all benchmarks do).
+ * bench_qr_compact runs (bench_sizes), and the factorization / solve
+ * benchmarks' command line (--size-sweep, --simdlen, --nrhs, [nmat] [reps]).
+ * Needs the MKL headers, and PackedPool calls mkl_malloc /
+ * mkl_dgepack_compact, so programs using it link MKL (all benchmarks do).
  *
  * Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
  */
@@ -56,25 +55,13 @@ using cbk::detail::vlen_for_format; /* pack format -> interleave width */
  * the two harness trees share no header, hence the twin definition. */
 constexpr double norm_floor = 1e-300;
 
-/* Ceiling on the matrix order any benchmark runs, for the default size list
- * below and for --size-sweep alike. Past ~128 (and certainly past 256) the
- * compact kernels have nothing left to win: blocked, cache-tuned LAPACK owns
- * that regime and the crossover is already visible well below it, so the larger
- * points bought runtime and no information. The gains this library is about live
- * below 128, most of them below 64. Do not raise it. */
-constexpr int max_bench_size = 256;
-
-/* The square orders the factorization and solve benchmarks run by default --
- * one list, shared, so the set moves in one place (bench_qr_compact is the
- * exception, and says why). It spans the target range (order 3..256, emphasis
- * below 128) and deliberately mixes orders that are *not* multiples of the SIMD
- * width V -- 30, 45, 60, 105, 168, from 2-D/3-D RBF-FD stencils -- with the
- * round powers, so the remainder handling (the staircase SIMD effect) stays
- * visible; the last few resolve the crossover with per-matrix LAPACK.
- * --size-sweep is the finer cbk-only scan.
- *
- * Keep it ascending (the largest order is read off the back) and keep its last
- * entry at or below max_bench_size. */
+/* The square orders the factorization and solve benchmarks run by default: one
+ * shared list, so the set moves in one place (bench_qr_compact keeps its own).
+ * It mixes orders that are not multiples of the SIMD width V -- 30, 45, 60, 105,
+ * 168, from 2-D/3-D RBF-FD stencils -- with the round powers, so the remainder
+ * handling (the staircase SIMD effect) stays visible, and stops at 256: a longer
+ * run buys little, the gains live below 128. Ascending, so back() is the largest.
+ * --size-sweep, which is not capped, is the finer cbk-only scan. */
 inline constexpr std::array bench_sizes = {8,  16, 24,  30,  32,  45,  48, 60,
                                            64, 96, 105, 128, 168, 170, 256};
 
@@ -274,11 +261,11 @@ inline int omp_threads()
 }
 
 /* Command line of the factorization and solve benchmarks: positional [nmat]
- * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan, nmax capped at
- * max_bench_size), --simdlen=2|4|8 (force the interleave width instead of the
- * host default) and --nrhs=k (right-hand sides; the factorization benchmarks
- * ignore it). The constructor parses and validates and resolves the pack
- * format; hold the object const. */
+ * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan, any nmax),
+ * --simdlen=2|4|8 (force the interleave width instead of the host default) and
+ * --nrhs=k (right-hand sides; the factorization benchmarks ignore it). The
+ * constructor parses and validates and resolves the pack format; hold the
+ * object const. */
 struct CmdArgs {
     int nmat = 512;
     int reps = 3;
@@ -317,8 +304,6 @@ struct CmdArgs {
         }
         check(!sweep || (sweep_min > 0 && sweep_max >= sweep_min && sweep_step > 0),
               "usage: --size-sweep needs 0 < nmin <= nmax and stride > 0");
-        check(!sweep || sweep_max <= max_bench_size,
-              "usage: --size-sweep nmax is capped at 256 (see max_bench_size)");
         /* Double compact widths are 2/4/8 (SSE/AVX/AVX512); 16 is float's AVX512
          * width and has no double format. */
         check(simdlen == 0 || simdlen == 2 || simdlen == 4 || simdlen == 8,

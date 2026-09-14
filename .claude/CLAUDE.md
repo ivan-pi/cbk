@@ -235,13 +235,12 @@ workspace contract, or the benchmarks' threading.
   avoid cache-line splits -- `mkl_malloc(bytes, 64)`, which is what
   `mkl_alloc_bytes` does by default, or `std::aligned_alloc(64, ...)`. Only
   performance, not correctness, rides on it (up to ~40% on small sizes).
-- **Benchmark sizes stop at 256.** `bench_sizes` (`examples/bench_util.hpp`) is
-  the one square size list the benchmarks run -- change the set there, not per
-  program (`bench_qr_compact` is the exception and says why) -- and
-  `max_bench_size` next to it is the ceiling on the order any of them reaches,
-  which does not move up; `--size-sweep` rejects a larger `nmax`. Above the
-  crossover near `128-168` blocked LAPACK simply wins, so the old `384` and `500`
-  points cost runtime and taught nothing; the gains these kernels are about are
-  below `128`, most of them below `64`.
+- **Default benchmark sizes stop at 256.** `bench_sizes`
+  (`examples/bench_util.hpp`) is the one square size list the benchmarks run --
+  change the set there, not per program (`bench_qr_compact` keeps its own). It
+  ends at `256`: the larger orders made a run take ten minutes, and the batched
+  gains are not there to be had anyway -- they live below `128`, most of them
+  below `64`. `--size-sweep` is deliberately uncapped, so a scan can still go as
+  large as the caller wants.
 - **Scope.** Real precisions (`s`/`d`) only; no column pivoting; no overflow/
   underflow-safe reflector rescaling (see the design documents).
