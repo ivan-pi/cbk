@@ -31,7 +31,7 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_lapack_util.hpp" // compact<T>, ref_geqr2, ref_org2r, MatrixBatch, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_geqr2, ref_orgqr, MatrixBatch, pack/unpack
 
 using namespace cbk::test;
 
@@ -63,7 +63,7 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
                 H(i, j) = (j < k) ? Afac(kk, i, j) : frand<T>(); /* garbage cols */
 
         std::copy(Hn[kk], Hn[kk] + Hn.stride(), Qref[kk]);
-        ref_org2r(k, Qref.view(kk), tau[kk]);
+        ref_orgqr(k, Qref.view(kk), tau[kk]);
     }
 
     std::vector<T> ap = pack_compact(Hn, ld, V, rowmajor);

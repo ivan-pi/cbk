@@ -441,7 +441,7 @@ with the rest of the compact toolkit.
 ### 7.4 Portable self-test
 
 `tests/test_potrf_compact.cpp` validates the templated kernels directly
-against `LAPACKE_?potrf` (through `ref_potf2`; the unique SPD factor,
+against `LAPACKE_?potrf` (through `ref_potrf`; the unique SPD factor,
 relative to its norm at `20 n eps`) across `(T, V)` combinations, both
 `uplo`, both layouts, the `cond` knob, and partial (padded) final packs, with
 the 7.1 invariants (reconstruction by `?trmm`, the untouched triangle) and

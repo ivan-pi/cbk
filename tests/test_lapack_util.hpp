@@ -3,8 +3,8 @@
 // The dense references of every test suite, on a real LAPACKE + CBLAS stack
 // (issue #27): lapack<T>, a struct of static forwarders to the LAPACKE_?* and
 // cblas_?* entry points specialized for double (d) and float (s), and over it
-// the reference procedures the suites call by name -- ref_geqr2, ref_orm2r,
-// ref_potf2, ref_trsm, ref_gels, ..., matmul, tri_apply, solve_errors -- each
+// the reference procedures the suites call by name -- ref_geqr2, ref_ormqr,
+// ref_potrf, ref_trsm, ref_gels, ..., matmul, tri_apply, solve_errors -- each
 // taking the project's MatrixView operands and forwarding their `.data` and
 // leading dimensions to the library. The only reference the suites still
 // hand-roll is the unpivoted LDL^T of test_sytrfnp_compact.cpp (LAPACK has no
@@ -222,7 +222,7 @@ template <class T> void ref_geqrf(MatrixView<T> A, T *tau)
 // ?ormqr, side='L': B := Q^T B (trans 'T') or Q B ('N') from (H, tau), with
 // k reflectors read from A (m x k or wider) and applied to B (m x nrhs).
 template <class T, class Av>
-void ref_orm2r(char trans, int k, Av A, const T *tau, MatrixView<T> B)
+void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
     assert(A.rows == B.rows && k <= std::min(A.rows, A.cols));
     const Staged<T> Bs(B, is_rowmajor(A));
@@ -232,7 +232,7 @@ void ref_orm2r(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 
 // ?orgqr: generate the first n columns of Q = H(0)..H(k-1) in place over the
 // reflectors in columns 0..k-1 of A (m x n, m >= n >= k).
-template <class T> void ref_org2r(int k, MatrixView<T> A, const T *tau)
+template <class T> void ref_orgqr(int k, MatrixView<T> A, const T *tau)
 {
     assert(k <= A.cols && A.cols <= A.rows);
     lapack<T>::orgqr(lapack_layout(A), A.rows, A.cols, k, A.data, lapack_ld(A), tau);
@@ -254,7 +254,7 @@ template <class T> void ref_geqp3(MatrixView<T> A, lapack_int *jpvt, T *tau)
 // ?potrf on a dense n x n matrix, in place. Lower: A = L L^T, factor in the
 // lower triangle. Upper: A = U^T U, factor in the upper triangle. Only the
 // named triangle is read or written. Returns LAPACK's info (> 0: not SPD).
-template <class T> lapack_int ref_potf2(char uplo, MatrixView<T> A)
+template <class T> lapack_int ref_potrf(char uplo, MatrixView<T> A)
 {
     assert(A.rows == A.cols);
     return lapack<T>::potrf(lapack_layout(A), uplo, A.rows, A.data, lapack_ld(A));

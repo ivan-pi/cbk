@@ -141,7 +141,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
             matmul(Aop, Aop.transposed(), G);
             copy_matrix(Bin, Z);
             ref_geqr2(G, tg.data());
-            ref_orm2r('T', rows_op, G, tg.data(), Z);
+            ref_ormqr('T', rows_op, G, tg.data(), Z);
             ref_trsm_upper(G, Z);
             matmul(Aop.transposed(), Z, Xmn);
             for (int j = 0; j < nrhs; ++j)

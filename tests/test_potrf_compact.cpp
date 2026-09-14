@@ -28,7 +28,7 @@
 #include <limits>
 #include <algorithm>
 
-#include "test_lapack_util.hpp" // compact<T>, ref_potf2, tri_apply, gen_spd, pack/unpack
+#include "test_lapack_util.hpp" // compact<T>, ref_potrf, tri_apply, gen_spd, pack/unpack
 
 using namespace cbk::test;
 
@@ -47,7 +47,7 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
     for (int idx = 0; idx < nm; ++idx) {
         gen_spd(A.view(idx), cond);
         std::copy(A[idx], A[idx] + (size_t)n * n, Aref[idx]);
-        ref_potf2(uplo, Aref.view(idx));
+        ref_potrf(uplo, Aref.view(idx));
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
@@ -213,7 +213,7 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
         else {
             gen_spd(A.view(idx));
             std::copy(A[idx], A[idx] + (size_t)n * n, Aref[idx]);
-            ref_potf2(uplo, Aref.view(idx));
+            ref_potrf(uplo, Aref.view(idx));
         }
     }
 

@@ -219,7 +219,7 @@ workspace contract, or the benchmarks' threading.
   A routine that takes views (or batches) `assert`s what its contract
   assumes: dimension compatibility across operands (`matmul`, `tri_apply`,
   `solve_errors`, the `ref_*` procedures), squareness where required
-  (`gen_spd`, `gen_tri`, `ref_potf2`, ...), and index ranges
+  (`gen_spd`, `gen_tri`, `ref_potrf`, ...), and index ranges
   (`MatrixView::operator()`, `MatrixBatch::operator[]`). Costs nothing in
   Release, and the Debug suite run is what exercises it. `BatchView` is the
   exception by construction -- it carries strides, not extents, so a kernel

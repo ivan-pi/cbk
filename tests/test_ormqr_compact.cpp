@@ -53,7 +53,7 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
         std::copy(A[kk], A[kk] + (size_t)m * m, Afac[kk]);
         ref_geqr2(Afac.view(kk), tau[kk]);
         std::copy(B[kk], B[kk] + (size_t)m * nrhs, Bref[kk]);
-        ref_orm2r('T', k, Afac.view(kk), tau[kk], Bref.view(kk));
+        ref_ormqr('T', k, Afac.view(kk), tau[kk], Bref.view(kk));
     }
 
     std::vector<T> ap = pack_compact(Afac, m, V);

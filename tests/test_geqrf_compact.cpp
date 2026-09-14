@@ -73,7 +73,7 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, k - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
-        ref_orm2r('N', k, Aout.view(idx), tau_out[idx], Rec);
+        ref_ormqr('N', k, Aout.view(idx), tau_out[idx], Rec);
         e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
     }
 
@@ -174,7 +174,7 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
         // Q = the first k columns of H(0)..H(k-1), from the reflectors in the
         // first k columns of H
         copy_matrix(leading(Hm, m, k), Q);
-        ref_org2r(k, Q, tau[idx]);
+        ref_orgqr(k, Q, tau[idx]);
 
         // residual R - Q^T A, R = triu(H) (k x n)
         matmul(Q.transposed(), Am, QtA);
@@ -292,7 +292,7 @@ template <class T, int V> static int test_underflow()
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, n - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
-        ref_orm2r('N', n, Aout.view(idx), tau[idx], Rec);
+        ref_ormqr('N', n, Aout.view(idx), tau[idx], Rec);
         e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
     }
     const double tol_rec = 200.0 * eps * m;
