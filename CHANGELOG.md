@@ -9,10 +9,10 @@ release may change the API.
 
 ### Added
 
-- `examples/qr_reconstruct_compact.cpp`, a standalone example of the portable
-  C API built in every configuration: a batch QR-factored with
+- `examples/qr_reconstruct_compact.c`, a standalone C99 example of the
+  portable C API built in every configuration: a batch QR-factored with
   `dgeqrf_compact` and rebuilt as `Q R` with `dormqr_compact`, packed and
-  unpacked by hand, each phase timed and every matrix checked -- the
+  unpacked by hand, each phase timed with OpenMP and every matrix checked -- the
   interleave-batch QR example of Arm Performance Libraries on this library's
   routines. Registered with CTest.
 

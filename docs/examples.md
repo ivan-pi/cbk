@@ -11,13 +11,16 @@ MKL's compact kernels and LAPACKE.
   `m x n` matrices (`m >= n`) QR-factored and rebuilt from the factors on the
   C API of `cbk.h`: pack into the compact layout with interleave width `V`,
   `dgeqrf_compact`, extract `R`, `dormqr_compact` to form `Q R`, unpack, and
-  check `||A - QR||_1 <= 5 eps m n ||A||_1` for every matrix, each phase timed.
+  check `||A - QR||_1 <= 5 eps m n ||A||_1` for every matrix, each phase timed
+  with `omp_get_wtime` (the pack, extract and unpack loops are OpenMP loops
+  over groups).
   A transcription of the interleave-batch QR example Arm ships with Arm
   Performance Libraries (their `ninter` is `V`, their `nbatch` the number of
   groups); the defaults reproduce its 32768-matrix batch at `10 x 10`. The
-  source (`examples/qr_reconstruct_compact.cpp`) is the shortest complete
-  walk through the compact layout formula, the padded last group, and the
-  `(ldap, k)` reflector batch `dormqr_compact` reads. No MKL, no BLAS.
+  source (`examples/qr_reconstruct_compact.c`, plain C99 on `cbk.h` alone,
+  none of the internal helpers) is the shortest complete walk through the
+  compact layout formula, the padded last group, and the `(ldap, k)`
+  reflector batch `dormqr_compact` reads. No MKL, no BLAS.
 
 ## Worked example
 

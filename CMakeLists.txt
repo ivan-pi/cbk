@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 project(cbk
   VERSION 0.1.0
   DESCRIPTION "Compact Batch Kernels: batched QR, Cholesky and LDL^T for small matrices in the compact (interleaved) format"
-  LANGUAGES CXX)
+  LANGUAGES C CXX) # C only for the portable example, examples/qr_reconstruct_compact.c
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -72,14 +72,18 @@ set_target_properties(cbk PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 add_library(cbk::cbk ALIAS cbk)
 
-# The portable example: the QR round trip of examples/qr_reconstruct_compact.cpp
-# (pack, dgeqrf_compact, dormqr_compact, unpack, check) on the C API alone, so
-# it builds in the default configure. src/ is on its include path for the
-# dense MatrixBatch the examples share with the tests; the public API stays
-# include/.
-add_executable(qr_reconstruct_compact examples/qr_reconstruct_compact.cpp)
+# The portable example: the QR round trip of examples/qr_reconstruct_compact.c
+# (pack, dgeqrf_compact, dormqr_compact, unpack, check) in plain C99 on the C
+# API alone, so it builds in the default configure -- a downstream C caller in
+# miniature. OpenMP times it and threads its own loops over groups; without
+# OpenMP it falls back to clock().
+add_executable(qr_reconstruct_compact examples/qr_reconstruct_compact.c)
+target_compile_features(qr_reconstruct_compact PRIVATE c_std_99)
+set_target_properties(qr_reconstruct_compact PROPERTIES C_EXTENSIONS OFF)
 target_link_libraries(qr_reconstruct_compact PRIVATE cbk)
-target_include_directories(qr_reconstruct_compact PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(CBK_WITH_OPENMP AND OpenMP_C_FOUND)
+  target_link_libraries(qr_reconstruct_compact PRIVATE OpenMP::OpenMP_C)
+endif()
 
 # ---------------------------------------------------------------------------
 # Optional Intel MKL compact extension (-DCBK_WITH_MKL=ON): cbk_?{geqrf,
