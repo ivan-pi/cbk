@@ -12,9 +12,9 @@ The default configure builds the portable library and its tests. The library
 needs nothing but CMake and a C++17 compiler; the tests validate against a
 real LAPACKE + CBLAS (`cmake/FindLAPACKE.cmake`: OpenBLAS or Netlib without
 MKL, `libopenblas-dev liblapacke-dev` / `liblapacke-dev liblapack-dev` on
-Debian, MKL's own with the extension; `-DCBK_TEST_LAPACK=openblas|netlib|mkl`
-pins one -- do that, since Debian's alternatives symlinks let either stand in
-for the other):
+Debian, MKL's own with the extension; `-DBLA_VENDOR=OpenBLAS|Generic` picks
+one through CMake's FindLAPACK -- do that, since Debian's alternatives
+symlinks let either stand in for the other):
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -188,7 +188,7 @@ workspace contract, or the benchmarks' threading.
   compilers, and Accelerate on macOS through `.github/workflows/macos.yml`):
 
   ```sh
-  CXX=clang++ cmake -S . -B build-clang -DCBK_TEST_LAPACK=openblas && cmake --build build-clang && ctest --test-dir build-clang
+  CXX=clang++ cmake -S . -B build-clang -DBLA_VENDOR=OpenBLAS && cmake --build build-clang && ctest --test-dir build-clang
   ```
 
 - **Threading over groups.** Every all-groups driver is a call to

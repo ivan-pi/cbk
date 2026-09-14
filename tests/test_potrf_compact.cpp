@@ -90,11 +90,11 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
                                     std::max(norm1(Ain), norm_floor));
     }
 
-    const double scale = std::max(1, n);
-    const double tol_fac = 20.0 * eps * scale; // design 7.1: unique factor, n eps
-    const double tol_rec = 20.0 * eps * scale; // ||L L^T - A|| / ||A||: backward stable
-    bool ok_f = e_fac <= tol_fac;
-    bool ok_r = e_rec <= tol_rec;
+    // design 7.1: the unique factor vs LAPACK's, and ||L L^T - A|| / ||A||,
+    // both backward-stable quantities at n eps
+    const double tol = 20.0 * eps * std::max(1, n);
+    bool ok_f = e_fac <= tol;
+    bool ok_r = e_rec <= tol;
     bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
     bool ok_i = (info == 0);
 
@@ -233,12 +233,11 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
                 if (!named) continue;
                 const T x = Aout(idx, i, j);
                 if (idx == badlane) {
-                    if (!std::isfinite((double)x)) bad_poisoned = true;
+                    bad_poisoned = bad_poisoned || !std::isfinite((double)x);
+                    continue;
                 }
-                else {
-                    if (!std::isfinite((double)x)) spd_finite = false;
-                    el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
-                }
+                spd_finite = spd_finite && std::isfinite((double)x);
+                el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
             }
         if (idx != badlane) // vs LAPACKE_?potrf, relative to its factor's norm
             e_spd = std::max(e_spd, el / std::max(norm1(Aref.view(idx)), norm_floor));

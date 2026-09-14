@@ -36,10 +36,8 @@
 // LAPACK 3.9.1 interface), CBLAS from Accelerate's vecLib sub-framework
 // directly -- not through the <Accelerate/Accelerate.h> umbrella, whose LAPACK
 // prototypes would collide with the ones lapacke.h pulls in. The framework
-// search path for <vecLib/...> is on the LAPACKE::LAPACKE target.
-#ifndef ACCELERATE_NEW_LAPACK
-#define ACCELERATE_NEW_LAPACK
-#endif
+// search path for <vecLib/...> and ACCELERATE_NEW_LAPACK (the LAPACK 3.9.1
+// interface the shim is built for) are on the LAPACKE::LAPACKE target.
 #include <lapacke.h>
 #include <vecLib/cblas.h>
 #else
@@ -50,14 +48,13 @@
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
-#include <type_traits>
 #include <vector>
 
 namespace cbk::test {
 
 // ----------------------- LAPACKE / CBLAS, by scalar type -------------
-// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / gels /
-// larfg forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
+// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / gels
+// forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
 // generates both specializations so the two cannot drift apart.
 
 template <class T> struct lapack;
@@ -66,8 +63,6 @@ template <class T> struct lapack;
 // NOLINTBEGIN(bugprone-macro-parentheses): T is a type name, p a token to paste
 #define CBK_TEST_LAPACK_DISPATCH(T, p)                                                     \
 template <> struct lapack<T> {                                                             \
-    static lapack_int larfg(lapack_int n, T *alpha, T *x, lapack_int incx, T *tau)        \
-    { return LAPACKE_##p##larfg(n, alpha, x, incx, tau); }                                 \
     static lapack_int geqr2(int layout, lapack_int m, lapack_int n, T *a, lapack_int lda, \
                             T *tau)                                                        \
     { return LAPACKE_##p##geqr2(layout, m, n, a, lda, tau); }                              \
@@ -131,7 +126,7 @@ template <class Mv> bool is_rowmajor(const Mv &M)
 
 template <class Mv> lapack_int lapack_ld(const Mv &M)
 {
-    return std::max<lapack_int>(is_rowmajor(M) ? M.si : M.sj, 1);
+    return std::max<lapack_int>(M.ld(), 1);
 }
 
 template <class Mv> int lapack_layout(const Mv &M)
@@ -170,31 +165,25 @@ inline CBLAS_DIAG cblas_diag(char d)
     return (d == 'U' || d == 'u') ? CblasUnit : CblasNonUnit;
 }
 
-// An operand of a call whose layout is fixed by another operand: the view
-// itself when its layout already matches, else a contiguous staging copy in
-// the call's layout -- copied back on destruction when the operand is
-// writable (T non-const). Only the LAPACKE routines without a transpose flag
-// for the operand need it (ormqr's reflectors, gels's right-hand side); the
-// BLAS-3 calls read a mismatched operand as its transpose instead.
+// The writable operand of a call whose layout another operand fixes: the
+// view itself when its layout already matches, else a contiguous staging
+// copy in the call's layout, copied back on destruction. Only the LAPACKE
+// routines without a transpose flag need it (ormqr's and gels's right-hand
+// sides, staged into the layout of the factor); the BLAS-3 calls read a
+// mismatched operand as its transpose instead.
 template <class T> class Staged {
   public:
-    Staged(MatrixView<T> M, bool rowmajor) : orig_(M), copied_(is_rowmajor(M) != rowmajor)
+    Staged(MatrixView<T> M, bool rowmajor) : orig_(M), use_(M)
     {
-        if (!copied_) {
-            use_ = M;
-            return;
-        }
+        if (is_rowmajor(M) == rowmajor) return;
         buf_.resize((std::size_t)M.rows * M.cols);
-        const auto w =
+        use_ =
             mat_view(buf_.data(), M.rows, M.cols, rowmajor ? M.cols : M.rows, rowmajor);
-        copy_matrix(M, w);
-        use_ = MatrixView<T>{w.data, w.si, w.sj, w.rows, w.cols};
+        copy_matrix(M, use_);
     }
     ~Staged()
     {
-        if constexpr (!std::is_const_v<T>) {
-            if (copied_) copy_matrix(use_, orig_);
-        }
+        if (!buf_.empty()) copy_matrix(use_, orig_);
     }
     Staged(const Staged &) = delete;
     Staged &operator=(const Staged &) = delete;
@@ -203,18 +192,9 @@ template <class T> class Staged {
     lapack_int ld() const { return lapack_ld(use_); }
 
   private:
-    MatrixView<T> orig_;
-    bool copied_;
-    std::vector<std::remove_const_t<T>> buf_;
-    MatrixView<T> use_{};
+    MatrixView<T> orig_, use_;
+    std::vector<T> buf_;
 };
-
-// A read-only view of the same storage, whatever the constness of the view
-// handed in (distinct MatrixView instantiations do not convert).
-template <class Mv> ConstMatrixView<elem_t<Mv>> as_const_view(const Mv &M)
-{
-    return {M.data, M.si, M.sj, M.rows, M.cols};
-}
 
 // ----------------------- reference procedures ------------------------
 // The names the suites call, each forwarded to the library. LAPACK's blocked
@@ -224,14 +204,8 @@ template <class Mv> ConstMatrixView<elem_t<Mv>> as_const_view(const Mv &M)
 // comparison against them is a comparison of two backward-stable
 // implementations of the same factorization, not of the same operation
 // sequence: the suites gate such comparisons relative to the operand norms,
-// at a multiple of n * eps. Only ?geqr2 and ?larfg are unblocked by
-// definition, and only those two are compared elementwise at ~eps.
-
-// ?larfg: reflector from (alpha, x[0..m-2]); alpha := beta on exit.
-template <class T> void ref_larfg(int m, T *alpha, T *x, T *tau)
-{
-    lapack<T>::larfg(m, alpha, x, 1, tau);
-}
+// at a multiple of n * eps. Only ?geqr2 is unblocked by definition, and only
+// it is compared elementwise at ~eps.
 
 // ?geqr2: unblocked Householder QR, (H, tau) in the LAPACK convention.
 template <class T> void ref_geqr2(MatrixView<T> A, T *tau)
@@ -251,10 +225,9 @@ template <class T, class Av>
 void ref_orm2r(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
     assert(A.rows == B.rows && k <= std::min(A.rows, A.cols));
-    const bool row = is_rowmajor(B);
-    const Staged<const elem_t<Av>> As(as_const_view(A), row);
-    lapack<T>::ormqr(lapack_layout(B), 'L', trans, B.rows, B.cols, k, As.data(), As.ld(),
-                     tau, B.data, lapack_ld(B));
+    const Staged<T> Bs(B, is_rowmajor(A));
+    lapack<T>::ormqr(lapack_layout(A), 'L', trans, B.rows, B.cols, k, A.data,
+                     lapack_ld(A), tau, Bs.data(), Bs.ld());
 }
 
 // ?orgqr: generate the first n columns of Q = H(0)..H(k-1) in place over the
@@ -331,9 +304,8 @@ template <class T, class Rv> void ref_trsm_upper(Rv R, MatrixView<T> B)
 // On exit B holds X (least squares: rows n..m-1 keep the residual), A the
 // factorization of the tall orientation -- the QR of A (m >= n) or its LQ in
 // ?gelqf storage (m < n) -- and tau its min(m,n) reflector scalars. LAPACK's
-// ?gels leaves that factorization in A but keeps tau in its workspace, so
-// (A, tau) are taken from ?geqrf / ?gelqf on a copy of the input, which is
-// the same call ?gels makes.
+// ?gels keeps tau in its workspace, so it runs on a copy of A for X, and
+// (A, tau) come from ?geqrf / ?gelqf on A itself, the same call ?gels makes.
 template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T *tau)
 {
     const int m = A.rows, n = A.cols, nrhs = B.cols;
@@ -343,17 +315,14 @@ template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T
     std::vector<T> A0s((std::size_t)m * n);
     const auto A0 = mat_view(A0s.data(), m, n, row ? n : m, row);
     copy_matrix(A, A0);
+    const Staged<T> Bs(B, row);
+    lapack<T>::gels(lapack_layout(A0), trans, m, n, nrhs, A0.data, lapack_ld(A0),
+                    Bs.data(), Bs.ld());
 
-    {
-        const Staged<T> Bs(B, row);
-        lapack<T>::gels(lapack_layout(A), trans, m, n, nrhs, A.data, lapack_ld(A),
-                        Bs.data(), Bs.ld());
-    }
     if (m >= n)
-        lapack<T>::geqrf(lapack_layout(A0), m, n, A0.data, lapack_ld(A0), tau);
+        lapack<T>::geqrf(lapack_layout(A), m, n, A.data, lapack_ld(A), tau);
     else
-        lapack<T>::gelqf(lapack_layout(A0), m, n, A0.data, lapack_ld(A0), tau);
-    copy_matrix(A0, A);
+        lapack<T>::gelqf(lapack_layout(A), m, n, A.data, lapack_ld(A), tau);
 }
 
 // C (m x n) := A (m x k) * B (k x n) by ?gemm, for forming right-hand sides
@@ -389,10 +358,9 @@ template <class Av, class Xv, class Rv>
 void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 {
     using T = elem_t<Rv>;
-    const bool left = (side == 'L' || side == 'l');
-    const int s = left ? R.rows : R.cols;
-    assert(A.rows == s && A.cols == s && X.rows == R.rows && X.cols == R.cols);
-    (void)s;
+    assert(A.rows == A.cols &&
+           A.rows == ((side == 'L' || side == 'l') ? R.rows : R.cols) &&
+           X.rows == R.rows && X.cols == R.cols);
     copy_matrix(X, R);
     const bool row = is_rowmajor(R);
     CBLAS_TRANSPOSE ta = cblas_trans(transa);

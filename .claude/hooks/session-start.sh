@@ -11,8 +11,8 @@
 #   libopenblas-dev, liblapacke-dev, liblapack-dev
 #                  the two non-MKL LAPACKE stacks the test suites validate
 #                  against (cmake/FindLAPACKE.cmake), so a session can run
-#                  the tests with -DCBK_TEST_LAPACK=openblas and =netlib as
-#                  CI does.
+#                  the tests with -DBLA_VENDOR=OpenBLAS and =Generic as CI
+#                  does.
 #   libomp-dev     clang's OpenMP runtime and its omp.h, which clang-tidy
 #                  needs (.pre-commit-config.yaml explains).
 #   pre-commit     the formatting and linting driver, with its hook
@@ -76,6 +76,6 @@ else
 fi
 
 echo "session-start: build with 'cmake -S . -B build -DCBK_WITH_MKL=ON && cmake --build build && ctest --test-dir build' (MKL is off by default)"
-echo "session-start: the tests validate against LAPACKE; without MKL pick the stack with -DCBK_TEST_LAPACK=openblas|netlib (default: the first found)"
+echo "session-start: the tests validate against LAPACKE; without MKL pick the stack with -DBLA_VENDOR=OpenBLAS|Generic (default: the first found)"
 echo "session-start: 'pre-commit run --all-files' checks the style; see .claude/CLAUDE.md"
 echo "session-start: for clang-tidy, 'CXX=clang++ cmake -S . -B build-tidy' then 'pre-commit run --hook-stage manual clang-tidy --all-files'"

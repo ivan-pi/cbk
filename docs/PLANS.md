@@ -100,8 +100,8 @@ listed in `examples.md`.
   LDL^T (`ref_sytf2np`, which LAPACK lacks) is the one hand-rolled reference
   left, validated against `cblas_?trmm` in its suite.
   `cmake/FindLAPACKE.cmake` takes MKL's LAPACKE with the MKL extension and
-  OpenBLAS, Netlib or any `lapacke` + `find_package(LAPACK)` pair without
-  (`-DCBK_TEST_LAPACK`); CI runs OpenBLAS and Netlib under gcc and clang, and
+  otherwise `find_package(LAPACK)`'s pick under `BLA_VENDOR` plus its
+  LAPACKE; CI runs OpenBLAS and Netlib under gcc and clang, and
   Accelerate + accelerate-lapacke on the macOS runners
   (`.github/workflows/macos.yml`, written without a macOS machine at hand).
   The dense cross-checks of the `geqrf` and `potrf` MKL suites (design 7.1)

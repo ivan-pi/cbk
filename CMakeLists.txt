@@ -16,13 +16,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(CBK_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" OFF)
 option(CBK_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
 option(CBK_BUILD_TESTS "Build tests and register them with CTest"                     ON)
-# The tests validate against a real LAPACKE + CBLAS (the library itself needs
-# none): which stack, as cmake/FindLAPACKE.cmake's LAPACKE_VENDOR. `auto`
-# takes MKL's with the MKL extension and otherwise the first of OpenBLAS,
-# Netlib, any `lapacke` + find_package(LAPACK) pair; the other values pin one.
-set(CBK_TEST_LAPACK "auto" CACHE STRING
-  "LAPACKE/CBLAS stack the tests validate against: auto | mkl | openblas | netlib | accelerate")
-set_property(CACHE CBK_TEST_LAPACK PROPERTY STRINGS auto mkl openblas netlib accelerate)
 # The install rules belong to cbk's own build, not to a project that
 # add_subdirectory()s it.
 option(CBK_INSTALL     "Generate the install target"                     ${PROJECT_IS_TOP_LEVEL})
@@ -34,10 +27,16 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # C++17, no GNU extensions (the kernels' vector_size attribute compiles under
-# strict -std=c++17). Optimization flags are the caller's to choose; for a
-# performance build pass them through CMAKE_CXX_FLAGS, e.g.
+# strict -std=c++17), for every target here: the library's own requirement
+# below is PRIVATE (its headers are C), so nothing would pass it to the
+# tests, examples and benchmarks, and AppleClang's default standard is older
+# than gcc's and clang's on Linux. Optimization flags are the caller's to
+# choose; for a performance build pass them through CMAKE_CXX_FLAGS, e.g.
 #   cmake -S . -B build -DCMAKE_CXX_FLAGS="-O3 -march=native"
 # so the SIMD kernels target the host's widest vectors.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # OpenMP threads the group loop inside every routine (see the threading note
 # in src/cbk_common.hpp); the benchmarks use it for their outer loops.
@@ -101,7 +100,6 @@ if(CBK_WITH_MKL)
                bench_posv_compact bench_sysvnp_compact)
     add_executable(${prog} examples/${prog}.cpp)
     target_link_libraries(${prog} PRIVATE cbk MKL::Compact)
-    target_compile_features(${prog} PRIVATE cxx_std_17)
     # src/ for the internal header-only helpers the examples share with the
     # tests (cbk_matrix_view.hpp); the public API stays include/.
     target_include_directories(${prog} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -112,35 +110,15 @@ if(CBK_WITH_MKL)
 endif()
 
 # ---------------------------------------------------------------------------
-# Tests. Like the examples above, each executable asks for C++17 itself: the
-# library's cxx_std_17 is PRIVATE (a build requirement of the kernels, not of
-# its C headers), so nothing propagates it, and AppleClang's default standard
-# is older than gcc's and clang's on Linux.
+# Tests
 # ---------------------------------------------------------------------------
 if(CBK_BUILD_TESTS)
   enable_testing()
 
   # The dense references of every suite come from a real LAPACKE + CBLAS
-  # (tests/test_lapack_util.hpp): with the MKL extension it must be MKL's own
-  # (one LAPACK stack per binary), otherwise any of OpenBLAS, Netlib, ...
-  if(CBK_WITH_MKL)
-    if(NOT CBK_TEST_LAPACK MATCHES "^(auto|mkl)$")
-      message(FATAL_ERROR "CBK_TEST_LAPACK=${CBK_TEST_LAPACK} cannot be combined with CBK_WITH_MKL=ON: the MKL-backed suites link MKL, so the dense references must be MKL's LAPACKE too")
-    endif()
-    set(LAPACKE_VENDOR MKL)
-  elseif(CBK_TEST_LAPACK STREQUAL "mkl")
-    set(LAPACKE_VENDOR MKL)
-  elseif(CBK_TEST_LAPACK STREQUAL "openblas")
-    set(LAPACKE_VENDOR OpenBLAS)
-  elseif(CBK_TEST_LAPACK STREQUAL "netlib")
-    set(LAPACKE_VENDOR Netlib)
-  elseif(CBK_TEST_LAPACK STREQUAL "accelerate")
-    set(LAPACKE_VENDOR Accelerate)
-  elseif(CBK_TEST_LAPACK STREQUAL "auto")
-    set(LAPACKE_VENDOR Any)
-  else()
-    message(FATAL_ERROR "CBK_TEST_LAPACK must be auto, mkl, openblas, netlib or accelerate (got '${CBK_TEST_LAPACK}')")
-  endif()
+  # (tests/test_lapack_util.hpp): MKL's own with the MKL extension, otherwise
+  # whatever CMake's FindLAPACK picks under BLA_VENDOR (OpenBLAS, Generic for
+  # Netlib, Apple) plus its LAPACKE (cmake/FindLAPACKE.cmake).
   find_package(LAPACKE REQUIRED)
 
   # The portable C API's suites: each kernel vs LAPACKE/CBLAS (its unblocked
@@ -149,7 +127,6 @@ if(CBK_BUILD_TESTS)
   foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
     target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
-    target_compile_features(test_${routine}_compact PRIVATE cxx_std_17)
     target_include_directories(test_${routine}_compact
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
@@ -162,7 +139,6 @@ if(CBK_BUILD_TESTS)
     foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_${routine}_mkl tests/test_${routine}_mkl.cpp)
       target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact LAPACKE::LAPACKE)
-      target_compile_features(test_${routine}_mkl PRIVATE cxx_std_17)
       target_include_directories(test_${routine}_mkl
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
       add_test(NAME mkl_${routine}_suites COMMAND test_${routine}_mkl)

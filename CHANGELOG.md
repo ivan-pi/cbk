@@ -11,7 +11,8 @@ release may change the API.
 
 - Tests: every suite validates against a real LAPACKE + CBLAS stack
   (OpenBLAS, Netlib, or MKL's own with the MKL extension;
-  `cmake/FindLAPACKE.cmake`, `-DCBK_TEST_LAPACK`) instead of hand-rolled
+  `cmake/FindLAPACKE.cmake` over `find_package(LAPACK)` and `BLA_VENDOR`)
+  instead of hand-rolled
   scalar references (issue #27). The dense-LAPACK cross-checks of the MKL
   suites run in the portable suites, on any stack; the unpivoted LDL^T keeps
   its scalar reference, itself validated against CBLAS. Building the tests

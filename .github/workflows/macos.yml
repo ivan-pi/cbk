@@ -5,8 +5,9 @@ name: macOS
 # accelerate-lapacke (https://github.com/lepus2589/accelerate-lapacke, Netlib's
 # LAPACKE over Accelerate's LAPACK interface; its configure needs a Fortran
 # compiler, which Homebrew's gcc supplies) into its own prefix, then
-# configures cbk with -DCBK_TEST_LAPACK=accelerate (cmake/FindLAPACKE.cmake:
-# the `lapacke` package plus <vecLib/cblas.h> from the SDK). macOS runners
+# configures cbk with -DBLA_VENDOR=Apple (cmake/FindLAPACKE.cmake: Accelerate
+# from CMake's FindLAPACK, lapacke.h and liblapacke from that prefix,
+# <vecLib/cblas.h> from the SDK). macOS runners
 # cost several times a Linux minute, so this is one job, not a matrix, and
 # the LAPACKE build (several minutes, most of it configuring Netlib LAPACK's
 # Fortran tree) is cached: the install prefix is restored by actions/cache
@@ -39,9 +40,10 @@ jobs:
       - name: Identify the SDK
         id: sdk
         run: |
+          sdk=$(xcrun --show-sdk-version)
           echo "path=$(xcrun --show-sdk-path)" >> "$GITHUB_OUTPUT"
-          echo "version=$(xcrun --show-sdk-version)" >> "$GITHUB_OUTPUT"
-          echo "macOS $(sw_vers -productVersion), SDK $(xcrun --show-sdk-version)"
+          echo "version=$sdk" >> "$GITHUB_OUTPUT"
+          echo "macOS $(sw_vers -productVersion), SDK $sdk"
 
       - name: Cache accelerate-lapacke
         id: lapacke-cache
@@ -74,7 +76,7 @@ jobs:
         run: >
           cmake -S . -B build
           -DCMAKE_BUILD_TYPE=Release
-          -DCBK_TEST_LAPACK=accelerate
+          -DBLA_VENDOR=Apple
           -DCMAKE_PREFIX_PATH="$ACCELERATE_LAPACKE_PREFIX"
 
       - name: Build

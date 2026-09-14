@@ -151,16 +151,15 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
         }
     }
 
-    // vs LAPACK: two backward-stable implementations (LAPACK's blocked above
-    // its crossover) of a well-conditioned op(A)'s factorization and solve,
-    // relative to the operand norms (design 7.1)
-    const double tol_ref = 100.0 * eps * p;
-    const double tol_x = 100.0 * eps * p;
-    const double tol_prop = 100.0 * eps * p; // backward-stable quantities
-    // the Gram-formed minimum-norm solution carries cond(G) = cond(op(A))^2
-    const double tol_prop2 = overdet ? tol_prop : 1e4 * eps * p;
-    const bool ok_x = e_x <= tol_x, ok_h = e_h <= tol_ref, ok_t = e_t <= tol_ref;
-    const bool ok_p = e_prop <= tol_prop, ok_p2 = e_prop2 <= tol_prop2;
+    // One gate for X, the factorization and the defining properties: two
+    // backward-stable implementations (LAPACK's blocked above its crossover)
+    // of a well-conditioned op(A)'s factorization and solve, relative to the
+    // operand norms (design 7.1). The Gram-formed minimum-norm solution
+    // carries cond(G) = cond(op(A))^2, so its gate gets that headroom.
+    const double tol = 100.0 * eps * p;
+    const double tol_prop2 = overdet ? tol : 1e4 * eps * p;
+    const bool ok_x = e_x <= tol, ok_h = e_h <= tol, ok_t = e_t <= tol;
+    const bool ok_p = e_prop <= tol, ok_p2 = e_prop2 <= tol_prop2;
 
     std::printf(
         "T=%-6s V=%-2d %s trans=%c nm=%-2d m=%-3d n=%-3d nrhs=%d %-6s | X:%.1e %s "

@@ -122,20 +122,16 @@ template <class T, int V> static int run_case(int nm, int m, int n)
 // columns included -- exactly as they do for dense LAPACK.
 enum Structure { DENSE, RANK_DEFICIENT, NEAR_COLLINEAR };
 
-// A random m x n matrix. For DENSE, a diagonal boost tames the conditioning
-// and cond applies the competition's column scaling (columns *=
-// logspace(0,-cond,n)). The structured variants make the last column a
-// (near-)copy of the first, so the trailing reflector sees a (near-)zero
-// sub-diagonal norm -- the branch the masked larfg must get right.
+// A random m x n matrix: gen_boosted's, with the diagonal boost taming the
+// conditioning for DENSE only, where cond applies the competition's column
+// scaling (columns *= logspace(0,-cond,n)). The structured variants make the
+// last column a (near-)copy of the first, so the trailing reflector sees a
+// (near-)zero sub-diagonal norm -- the branch the masked larfg must get right.
 template <class T> static void gen_matrix(MatrixView<T> A, double cond, Structure s)
 {
     const int m = A.rows, n = A.cols;
-    for (int j = 0; j < n; ++j)
-        for (int i = 0; i < m; ++i)
-            A(i, j) = frand<T>();
+    gen_boosted(A, s == DENSE ? T(2) : T(0));
     if (s == DENSE) {
-        for (int d = 0; d < std::min(m, n); ++d)
-            A(d, d) += T(2);
         if (cond > 0.0)
             for (int j = 0; j < n; ++j) {
                 double sc = std::pow(10.0, -cond * (n > 1 ? (double)j / (n - 1) : 0.0));
@@ -195,22 +191,23 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
             QtQ(d, d) -= T(1);
         worst_orth = std::max(worst_orth, norm1(QtQ));
 
-        // elementwise vs the blocked LAPACKE_?geqrf
-        copy_matrix(Am, Href);
-        ref_geqrf(Href, tauref.data());
-        const double el = std::max(max_abs_diff(H[idx], Hrefs.data(), A.stride()),
-                                   max_abs_diff(tau[idx], tauref.data(), (size_t)k));
-        worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
+        // elementwise vs the blocked LAPACKE_?geqrf, on the dense inputs only,
+        // where the reflectors are essentially unique: it catches a
+        // sign-convention regression the residual gates cannot see (observed
+        // ~n*eps). Rank-deficient and near-collinear inputs have no unique
+        // reflectors (el ~ 1e-2 there), so the comparison is skipped (design
+        // doc 7.1).
+        if (structure == DENSE) {
+            copy_matrix(Am, Href);
+            ref_geqrf(Href, tauref.data());
+            const double el = std::max(max_abs_diff(H[idx], Hrefs.data(), A.stride()),
+                                       max_abs_diff(tau[idx], tauref.data(), (size_t)k));
+            worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
+        }
     }
 
-    // The elementwise difference vs LAPACKE_?geqrf is gated on the dense
-    // inputs only, where the reflectors are essentially unique: it catches a
-    // sign-convention regression the residual gates cannot see (observed
-    // ~n*eps). Rank-deficient and near-collinear inputs stay ungated (their
-    // reflectors are not unique; el ~ 1e-2 is expected) and it is printed as a
-    // diagnostic there (design doc 7.1).
     const double rtol_res = 20.0 * n * eps, rtol_orth = 100.0 * n * eps;
-    const double rtol_el = (structure == DENSE) ? 100.0 * n * eps : HUGE_VAL;
+    const double rtol_el = 100.0 * n * eps;
     const bool ok = (info == 0) && (worst_res <= rtol_res) && (worst_orth <= rtol_orth) &&
                     (worst_el <= rtol_el);
     const char *sname = structure == DENSE            ? "dense"
@@ -221,6 +218,25 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
                 compact<T>::name, V, nm, m, n, cond, sname, worst_res, rtol_res,
                 worst_orth, rtol_orth, worst_el, info, ok ? "OK" : "FAIL");
     return !ok;
+}
+
+// The invariants cases, in one precision and width.
+template <class T, int V> static int run_invariant_set()
+{
+    int fails = 0;
+    fails += run_invariants<T, V>(8, 30, 30, 0.0);
+    fails += run_invariants<T, V>(16, 60, 60, 0.0);
+    fails += run_invariants<T, V>(11, 43, 43, 0.0); // padded partial group
+    fails += run_invariants<T, V>(8, 64, 20, 0.0);  // tall
+    fails += run_invariants<T, V>(8, 20, 64, 0.0);  // wide
+    fails += run_invariants<T, V>(8, 30, 30, 4.0);  // column-scaled (dynamic range)
+    fails += run_invariants<T, V>(8, 128, 128, 0.0);
+    // conditioning-robustness stress: backward-stable gates must still hold
+    fails += run_invariants<T, V>(8, 40, 40, 0.0, RANK_DEFICIENT);
+    fails += run_invariants<T, V>(8, 40, 40, 0.0, NEAR_COLLINEAR);
+    fails +=
+        run_invariants<T, V>(11, 60, 24, 0.0, RANK_DEFICIENT); // wide-ish, padded group
+    return fails;
 }
 
 // ------------------------ underflow scope (design 6.6) ---------------
@@ -345,23 +361,8 @@ int main()
 
     // the dense-LAPACK contract (design 7.1): residual and orthogonality of
     // the materialized Q, over conditioning and structure, in both precisions
-    for (int prec = 0; prec < 2; ++prec) {
-        auto inv = [&](int nm, int m, int n, double cond, Structure st = DENSE) {
-            return prec ? run_invariants<float, 8>(nm, m, n, cond, st)
-                        : run_invariants<double, 4>(nm, m, n, cond, st);
-        };
-        fails += inv(8, 30, 30, 0.0);
-        fails += inv(16, 60, 60, 0.0);
-        fails += inv(11, 43, 43, 0.0); // padded partial group
-        fails += inv(8, 64, 20, 0.0);  // tall
-        fails += inv(8, 20, 64, 0.0);  // wide
-        fails += inv(8, 30, 30, 4.0);  // column-scaled (dynamic range)
-        fails += inv(8, 128, 128, 0.0);
-        // conditioning-robustness stress: backward-stable gates must still hold
-        fails += inv(8, 40, 40, 0.0, RANK_DEFICIENT);
-        fails += inv(8, 40, 40, 0.0, NEAR_COLLINEAR);
-        fails += inv(11, 60, 24, 0.0, RANK_DEFICIENT); // wide-ish, padded group
-    }
+    fails += run_invariant_set<double, 4>();
+    fails += run_invariant_set<float, 8>();
 
     return finish(fails);
 }
