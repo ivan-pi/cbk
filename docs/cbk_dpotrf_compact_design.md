@@ -188,12 +188,11 @@ cache-resident sizes. `mkl_malloc(bytes, 64)` (the default of this project's
 
 ### 6.1 The algorithm: vectorized Cholesky, recursively blocked
 
-The batch is factored with the right-looking LAPACK algorithm (`dpotf2`),
-executed `V` matrices at a time. Because Compact format interleaves the `V`
-matrices so that element `(i,j)` of all `V` is contiguous, the scalar algorithm
-lifts almost verbatim with `double -> V`-wide vector: every `+`, `-`, `*`, `/`,
-and `sqrt` becomes a lane-wise SIMD operation over `V` independent matrices.
-For the lower triangle the sweep is, per pivot column `j`:
+The batch is factored with the right-looking LAPACK algorithm (`dpotf2`), `V`
+matrices at a time. Compact format stores element `(i,j)` of the `V` matrices
+contiguously, so the scalar algorithm lifts verbatim with `double -> V`-wide
+vector, every `+`, `-`, `*`, `/` and `sqrt` lane-wise over `V` independent
+matrices. Per pivot column `j` (lower):
 
 ```
 d       = sqrt(A(j,j))                          // pivot (vector sqrt)
@@ -203,22 +202,20 @@ A(i,j) *= invd            for i > j             // scale the pivot column
 A(i,jj)-= A(i,j)*A(jj,j)  for jj > j, i >= jj   // symmetric rank-1 trailing update
 ```
 
-Only the lower trapezoid is ever touched, so the strictly-upper triangle passes
+Only the lower trapezoid is touched, so the strictly-upper triangle passes
 through untouched as `?potrf` requires. `vsqrt<T,V>` (one vector `vsqrt*`
-instruction; see the `-fno-math-errno` note in `docs/building.md`) is the only
-special function needed; it runs once per column.
+instruction given `-fno-math-errno`; `docs/building.md`) is the only special
+function, once per column.
 
-The plain sweep, however, is bound by memory traffic rather than by the FMA
-units. Its rank-1 trailing update performs one FMA per pack loaded *and
-stored*, and the L1 store port lets that through at a fraction of the FMA rate.
-Once a group outgrows the L1 (64 KB at `n = 32` for FP64 AVX-512), every pivot
-also streams the whole trailing matrix through the L2. Measured as the first
-implementation, the sweep peaked at the orders where a group still fits the L1
-and fell to a fraction of `mkl_?potrf_compact`'s throughput beyond them.
-
-The kernel therefore blocks the sweep, recursively. The columns are split in
-halves at `NB`-column panel boundaries down to panels of at most `NB` pivots
-(`potrf_nb`, default 8; `-DCBK_POTRF_NB` overrides):
+This plain sweep is bound by memory traffic, not by the FMA units: its rank-1
+update is one FMA per pack loaded *and stored*, throttled by the L1 store port,
+and once a group outgrows the L1 (64 KB at `n = 32` for FP64 AVX-512) every
+pivot streams the whole trailing matrix through the L2. The first
+implementation peaked where a group still fit the L1 and fell to a fraction of
+`mkl_?potrf_compact`'s throughput beyond. The kernel therefore blocks the sweep
+recursively, splitting the columns in halves at `NB`-column boundaries down to
+panels of at most `NB` pivots (`potrf_nb`, default 8; `-DCBK_POTRF_NB`
+overrides):
 
 ```
 factor(j0, j1):
@@ -229,54 +226,54 @@ factor(j0, j1):
                        factor(mid, j1)
 ```
 
-The rank-`K` update (`K = mid - j0`) is register-tiled. A tile of `IB x JB`
-trailing elements accumulates its `K` subtractions in registers, `IB*JB` FMAs
-per `IB + JB` loads, and is stored once. The tile is `4 x 4`: 16 accumulators,
-4 weights and one loaded pack fit the 32 registers of AVX-512. On a
-16-register target it would spill, which degrades the update toward the plain
-sweep's rate and no further. Dimensions that are not multiples of the tile are
-finished by narrower tiles. Chunking the `K` range to keep a strip in L1 was
-tried and measured to buy nothing over the size range the library targets, so
-it is not done.
+The rank-`K` update (`K = mid - j0`) is register-tiled: a `4 x 4` tile of
+trailing elements accumulates its `K` subtractions in registers, 16 FMAs per 8
+loads, and is stored once; its 16 accumulators, 4 weights and one loaded pack
+fit the 32 AVX-512 registers (a 16-register target would spill, degrading
+toward the sweep's rate and no further). Narrower tiles finish dimensions that
+are not multiples of four. Each trailing element thus takes its updates once
+per split level, `log2(n/NB)` times, instead of once per pivot, and in the same
+pivot order, so the tiled update is arithmetically the sweep's without the
+store and reload between subtractions. The in-panel update stays at the rank-1
+rate, about `1.5 NB/n` of the flops. Chunking the `K` range for the L1 was
+measured to buy nothing over the sizes the library targets and is not done.
 
-Each trailing element thus takes its updates once per split level,
-`log2(n/NB)` times, instead of once per pivot. The subtractions arrive in the
-same pivot order as in the plain sweep, so the tiled update is arithmetically
-the sweep's without the store and reload between them. What remains at the
-rank-1 rate is the in-panel update, about `1.5 NB/n` of the flops.
+Two details serve the compilers, not the algorithm: the view goes by value
+through the recursion, since the packs are `may_alias` and a view held by
+reference would be reloaded, strides included, after every store; and the
+tile's accumulator loops carry unroll pragmas, since GCC's scalar replacement
+runs before it unrolls them and would otherwise stage the tile through the
+stack.
 
-Two details of the kernel are there for the compilers rather than for the
-algorithm. The view goes by value through the recursion: the packs are
-`may_alias`, so a view held by reference would be reloaded, strides included,
-after every store through it. And the tile's accumulator loops carry unroll
-pragmas, because GCC's scalar replacement runs before it unrolls those loops
-and would otherwise stage the tile through the stack on entry and exit.
-
-The effect, measured single-threaded against `mkl_?potrf_compact` and
-per-matrix `LAPACKE_?potrf` (`examples/BENCHMARKS.md`): the blocked kernel
-outruns MKL's compact routine from small orders up, by a margin that grows as
-the trailing update comes to dominate, and stays ahead of per-matrix LAPACK
-across the size range the benchmarks cover. At the smallest orders both
-implementations are bound by the pivot instead (section 6.2).
+Measured single-threaded (`examples/BENCHMARKS.md`), the blocked kernel outruns
+`mkl_?potrf_compact` from small orders up, by a margin that grows as the
+trailing update comes to dominate, and stays ahead of per-matrix
+`LAPACKE_?potrf` across the benchmarked range. At the smallest orders both are
+bound by the pivot instead (section 6.2).
 
 ### 6.2 The pivot: `sqrt`, and no positive-definiteness check
 
 Cholesky needs no branch-free trickery: unlike QR's `larfg`, its math has no
-data-dependent branch. Scalar `dpotf2` has exactly one test -- `if (ajj <= 0 ||
-isnan(ajj))` set `info = j` and stop, flagging a non-SPD leading minor -- and that
+data-dependent branch. Scalar `dpotf2` has exactly one test, `if (ajj <= 0 ||
+isnan(ajj))` set `info = j` and stop, flagging a non-SPD leading minor, and that
 is the only thing that would diverge per lane across a pack. Both vendors'
 interleave-batch Cholesky drop it: MKL leaves `info` "reserved for future use"
 (its compact routines "skip error checking for performance reasons"), and ArmPL
-"does not check that the input matrices are SPD; no error will be returned if any
-`A_i` are not SPD." This routine does the same: it computes `d = sqrt(A(j,j))`
-unconditionally.
+"does not check that the input matrices are SPD; no error will be returned if
+any `A_i` are not SPD." This routine does the same, computing `sqrt(A(j,j))`
+unconditionally. The consequence is graceful garbage in, garbage out: a
+non-SPD lane has some pivot `A(j,j) <= 0`, its `sqrt` yields `NaN` (or the
+reciprocal `Inf`), and the poison propagates through that lane's factor; the
+caller detects it on the unpacked diagonal, exactly as with MKL's compact
+`potrf`. An `info = j` early exit is intentionally absent: it is precisely the
+per-lane branch that does not vectorize across a pack.
 
-Within a panel the pivot's operations are reordered for latency. The plain
-sweep's chain from one pivot to the next is `sqrt`, divide, scale, update --
-two long-latency operations on the one divider port, some 50 cycles per column
-on AVX-512, which at `n <= 16` *is* the running time (the FMA work is a tenth
-of it). The kernel instead runs each pivot's rank-1 update on the
-still-unscaled column with the weights scaled by `1/a`,
+Within a panel the pivot is reordered for latency. The plain sweep's chain from
+one pivot to the next is `sqrt`, divide, scale, update: two long-latency
+operations on the one divider port, which at the smallest orders *is* the
+running time. The kernel instead runs each pivot's rank-1 update on the
+still-unscaled column with the weights scaled by `1/a`, and the square root and
+the scaling after it:
 
 ```
 inva    = 1 / A(j,j)
@@ -285,25 +282,15 @@ d       = sqrt(A(j,j));  A(j,j) = d
 A(i,j) *= d * inva                    for i > j       // 1/sqrt(a) = sqrt(a)/a
 ```
 
-so the next pivot waits on one divide, a multiply and an FMA; the square root
-and the column scaling follow off that chain, and `1/sqrt(a)` costs a multiply
-rather than a second divide. This is the LDL^T update of the same SPD matrix
-(`d = a`, `l = A(:,j)/a`, exactly `cbk_?sytrfnp_compact`'s step -- the panel
-calls `sytrfnp_update_block` with `1/a` parked at `A(j,j)`), scaled to
-the Cholesky factor once the column is done: as backward stable as `potf2`,
-and the unique factor agrees with `LAPACKE_?potrf` to a few `n eps` (the
-suites' `20 n eps` gate, section 7). The gain shows at the orders where the
-pivot chain dominates, the smallest of the range; above them the factorization
-is bound by the trailing update, and the remaining per-column cost is the
-divide and the square root sharing the one divider port, which bounds MKL's
-kernel the same way.
-
-The consequence is graceful "garbage in, garbage out": a genuinely non-SPD lane
-has some pivot `A(j,j) <= 0`, so `sqrt` yields `NaN` (or the following `1/d`
-yields `Inf`), and the poison propagates through that lane's factor. The caller
-detects it by inspecting the unpacked diagonal, exactly as with MKL's compact
-`potrf`. Early-exit with `info = j` is intentionally not provided -- it is
-precisely the per-lane branch that does not vectorize across a pack.
+The next pivot then waits on one divide, a multiply and an FMA, and `1/sqrt(a)`
+is a multiply rather than a second divide. The update is the LDL^T step of the
+same SPD matrix (`d = a`, `l = A(:,j)/a`: `cbk_?sytrfnp_compact`'s, and the
+panel calls `sytrfnp_update_block` with `1/a` parked at `A(j,j)`), scaled to
+the Cholesky factor once the column is done -- as backward stable as `potf2`,
+the unique factor agreeing with `LAPACKE_?potrf` to a few `n eps` (the suites'
+`20 n eps` gate, section 7). Above the smallest orders the trailing update
+dominates; the per-column cost that remains, the divide and the square root on
+the shared divider port, bounds MKL's kernel the same way.
 
 ### 6.3 Layouts and triangles: one kernel over transposed views
 
