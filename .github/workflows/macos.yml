@@ -36,11 +36,16 @@ jobs:
           echo "FC=$fc" >> "$GITHUB_ENV"
           "$fc" --version | head -n 1
 
+      # accelerate-lapack (its dependency) insists on an explicit SDK
+      # (CMAKE_OSX_SYSROOT) to match Accelerate's text-based stubs to the
+      # system; the workflow preset takes no cache variables, so configure
+      # and build are two calls.
       - name: Build accelerate-lapacke
         run: |
           git clone --depth 1 https://github.com/lepus2589/accelerate-lapacke.git "$RUNNER_TEMP/accelerate-lapacke"
           cd "$RUNNER_TEMP/accelerate-lapacke"
-          cmake --workflow --preset accelerate-lapacke32-install
+          cmake --preset accelerate-lapacke32 -DCMAKE_OSX_SYSROOT="$(xcrun --show-sdk-path)"
+          cmake --build --preset accelerate-lapacke32-install
           ls "$HOME/.local/include/lapacke.h" "$HOME/.local/lib/"
 
       - name: Configure
