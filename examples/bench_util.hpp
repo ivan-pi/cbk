@@ -53,6 +53,14 @@ using cbk::detail::vlen_for_format; /* pack format -> interleave width */
  * the two harness trees share no header, hence the twin definition. */
 constexpr double norm_floor = 1e-300;
 
+/* Ceiling on the matrix order any benchmark runs, for the fixed size lists and
+ * for --size-sweep alike. Past ~128 (and certainly past 256) the compact kernels
+ * have nothing left to win: blocked, cache-tuned LAPACK owns that regime and the
+ * crossover is already visible well below it, so the larger points bought runtime
+ * and no information. The gains this library is about live below 128, most of them
+ * below 64. Do not raise it. */
+constexpr int max_bench_size = 256;
+
 /* Report and abort on the spot if cond is false. */
 inline void check(bool cond, const char *what)
 {
@@ -249,10 +257,11 @@ inline int omp_threads()
 }
 
 /* Command line of the factorization and solve benchmarks: positional [nmat]
- * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan), --simdlen=2|4|8
- * (force the interleave width instead of the host default) and --nrhs=k (right-
- * hand sides; the factorization benchmarks ignore it). The constructor parses
- * and validates and resolves the pack format; hold the object const. */
+ * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan, nmax capped at
+ * max_bench_size), --simdlen=2|4|8 (force the interleave width instead of the
+ * host default) and --nrhs=k (right-hand sides; the factorization benchmarks
+ * ignore it). The constructor parses and validates and resolves the pack
+ * format; hold the object const. */
 struct CmdArgs {
     int nmat = 512;
     int reps = 3;
@@ -291,6 +300,8 @@ struct CmdArgs {
         }
         check(!sweep || (sweep_min > 0 && sweep_max >= sweep_min && sweep_step > 0),
               "usage: --size-sweep needs 0 < nmin <= nmax and stride > 0");
+        check(!sweep || sweep_max <= max_bench_size,
+              "usage: --size-sweep nmax is capped at 256 (see max_bench_size)");
         /* Double compact widths are 2/4/8 (SSE/AVX/AVX512); 16 is float's AVX512
          * width and has no double format. */
         check(simdlen == 0 || simdlen == 2 || simdlen == 4 || simdlen == 8,

@@ -150,14 +150,15 @@ Indicative run (4-core AVX-512 container, gcc `-O3 -march=native`, 512
 matrices, one RHS): the fused compact solve matched MKL's compact pipeline
 (geometric mean `0.90x`, `0.84-1.2x` per size) and outran per-matrix
 `LAPACKE_dposv` by `3-4x` at orders `8-48` and `1.3-2.1x` at `60-105`, with the
-crossover near `128-168` and LAPACK ahead from there (`0.17x` at `500`) -- a
-geometric mean of `1.27x` over the default size list. fused-vs-2-step was
-`~1.0x` throughout: at 512 matrices the pools are cache-resident up to
-`n ~ 90`, and past the crossover the solve is a small fraction of the
-factorization at one RHS. On out-of-cache pools the fusion showed directly:
-`1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64` (8192), `1.14x` at
-`n = 96` (4096), each with `nrhs = 8`. Every path recovered the known solution
-to `~5e-15`.
+crossover near `128-168` and LAPACK ahead from there. That run predates the
+`256` ceiling and still reached `500` (`0.17x` there), so its geometric mean of
+`1.27x` is over the longer list; the mean over today's list is higher.
+fused-vs-2-step was `~1.0x` throughout: at 512 matrices the pools are
+cache-resident up to `n ~ 90`, and past the crossover the solve is a small
+fraction of the factorization at one RHS. On out-of-cache pools the fusion
+showed directly: `1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64`
+(8192), `1.14x` at `n = 96` (4096), each with `nrhs = 8`. Every path recovered
+the known solution to `~5e-15`.
 
 ## `bench_sysvnp_compact`
 
@@ -193,9 +194,10 @@ and ignore it.
 
 Indicative run (4-core AVX-512 container, gcc `-O2 -march=native`, 512 matrices,
 one RHS): the fused compact solve outran per-matrix `LAPACKE_dsysv` by `7-9x` at
-orders `8-32`, `3-5x` at `45-64`, `1.1-2x` at `96-256`, and fell behind at
-`384` and `500` (`0.6x`, `0.35x`), where LAPACK's blocked, pivoted factorization
-is the better tool -- a geometric mean of `2.7x` over the default size list.
+orders `8-32`, `3-5x` at `45-64`, and `1.1-2x` at `96-256`. That run predates the
+`256` ceiling and still reached `384` and `500` (`0.6x`, `0.35x`), where LAPACK's
+blocked, pivoted factorization is the better tool; its geometric mean of `2.7x`
+is over the longer list, and the mean over today's list is higher.
 Both paths recovered the known solution to `~6e-15`.
 
 ## Notes
@@ -210,6 +212,12 @@ Both paths recovered the known solution to `~6e-15`.
 * **Size list.** The default deliberately mixes sizes that are *not* multiples of
   the interleave width `V` (30, 45, 60, 105, 168) with round powers, so the SIMD
   remainder handling stays visible across the target small-to-medium range.
+* **Order `256` is the ceiling.** No benchmark runs a larger matrix, by the size
+  list or by `--size-sweep` (`max_bench_size` in `bench_util.hpp` caps both, and
+  an `nmax` above it is rejected). There is nothing to learn above it: blocked,
+  cache-tuned LAPACK owns that regime, the crossover is already visible near
+  `128-168`, and the compact kernels' gains are below `128` -- most of them below
+  `64`. The larger points only made a run take longer.
 * **`gels` vs the three-step chain.** With the benchmark's single right-hand
   side the two are equal (`1.00x` geometric mean over `n = 10..100`): the
   `O(n^3)` factorization dominates and fusing the apply-`Q^T` into it saves an

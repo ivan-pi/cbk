@@ -235,5 +235,11 @@ workspace contract, or the benchmarks' threading.
   avoid cache-line splits -- `mkl_malloc(bytes, 64)`, which is what
   `mkl_alloc_bytes` does by default, or `std::aligned_alloc(64, ...)`. Only
   performance, not correctness, rides on it (up to ~40% on small sizes).
+- **Benchmark sizes stop at 256.** `max_bench_size` (`examples/bench_util.hpp`)
+  is the ceiling on the order any benchmark runs, and it does not move up: the
+  fixed size lists `static_assert` against it and `--size-sweep` rejects a larger
+  `nmax`. Above the crossover near `128-168` blocked LAPACK simply wins, so the
+  old `384` and `500` points cost runtime and taught nothing; the gains these
+  kernels are about are below `128`, most of them below `64`.
 - **Scope.** Real precisions (`s`/`d`) only; no column pivoting; no overflow/
   underflow-safe reflector rescaling (see the design documents).

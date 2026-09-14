@@ -54,6 +54,7 @@
 
 #include "bench_util.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -188,11 +189,13 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Square sizes spanning the target range (order 3..500, emphasis below 170),
+    /* Square sizes spanning the target range (order 3..256, emphasis below 128),
      * mixing sizes that are not multiples of the SIMD width V with the round
      * powers, as in the factorization benchmarks. */
-    constexpr std::array sizes = {8,  16,  24,  30,  32,  45,  48,  60, 64,
-                                  96, 105, 128, 168, 170, 256, 384, 500};
+    constexpr std::array sizes = {8,  16, 24,  30,  32,  45,  48, 60,
+                                  64, 96, 105, 128, 168, 170, 256};
+    static_assert(*std::max_element(sizes.begin(), sizes.end()) <= max_bench_size,
+                  "benchmark size lists stop at max_bench_size");
 
     std::printf("SPD solve throughput: cbk_dposv_compact (fused Cholesky factor + "
                 "solve) vs cbk two-step vs MKL compact pipeline vs per-matrix "

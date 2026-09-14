@@ -229,8 +229,10 @@ int main(int argc, char **argv)
      * from 2-D/3-D RBF-FD stencils -- with the round powers, so the remainder
      * handling (the staircase SIMD effect) is visible; then a few larger sizes for
      * the crossover. Use --size-sweep for a finer cbk-only scan. */
-    constexpr std::array sizes = {8,  16,  24,  30,  32,  45,  48,  60, 64,
-                                  96, 105, 128, 168, 170, 256, 384, 500};
+    constexpr std::array sizes = {8,  16, 24,  30,  32,  45,  48, 60,
+                                  64, 96, 105, 128, 168, 170, 256};
+    static_assert(*std::max_element(sizes.begin(), sizes.end()) <= max_bench_size,
+                  "benchmark size lists stop at max_bench_size");
 
     std::printf("QR factorization throughput: cbk_dgeqrf_compact vs "
                 "mkl_dgeqrf_compact vs per-matrix LAPACKE_dgeqrf\n");
