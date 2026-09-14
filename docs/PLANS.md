@@ -83,27 +83,28 @@ compact `potrs` or `posv`.
   the factor vs `LAPACKE_dpotrf` (`20 n eps`), the cross-check vs
   `mkl_dpotrf_compact` (bit-exact), the SPD solve through `mkl_?trsm_compact`
   and through `potrs` (`100 n eps`), and the fused driver's bit-identity.
-- **Benchmarked:** `bench_potrf_compact` (the factorization) and
+- **Benchmarked:** `bench_potrf_compact` (the factorization, against
+  `mkl_?potrf_compact` and per-matrix `LAPACKE_?potrf`) and
   `bench_posv_compact` (the end-to-end solve: fused vs its own two-step calls
   vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv`).
-  The fusion measurement design 6.8 called for: `~1.0x` on cache-resident
-  pools (512 matrices, one RHS), `1.1-1.3x` on out-of-cache pools (orders
-  32-96, 134-300 MB) -- see `examples/BENCHMARKS.md` for the indicative run.
-- **Performance vs `mkl_?potrf_compact`** (single thread, AVX-512, 1000
-  matrices, gcc and clang): `0.7-0.9x` at `n = 8-16`, where the pivot's
-  divide and sqrt on the one divider port bound both, `1.0-1.3x` at `24-32`,
-  `1.3-1.9x` at `45-64`, `1.8-2.5x` at `96-256`; `9-51 GFLOP/s` (the plain
-  sweep it replaced: `0.5-0.9x`, `11-18 GFLOP/s`). Ahead of per-matrix
-  `LAPACKE_?potrf` at every size of the list (`examples/BENCHMARKS.md`).
+  The latter is the fusion measurement design 6.8 called for: the fused
+  driver gains over its own two calls only once the pool is out of cache,
+  and modestly there (`examples/BENCHMARKS.md`).
+- **Performance vs `mkl_?potrf_compact`:** the blocked kernel is behind MKL
+  at the smallest orders, where the pivot's divide and sqrt on the one
+  divider port bound both, level with it in the low tens, and ahead from
+  there on by a margin that grows with the order (the plain sweep it replaced
+  was behind at every order). Ahead of per-matrix `LAPACKE_?potrf` at every
+  size of the benchmark list.
 - **Scoped out (design 6.6):** positive-definiteness is assumed (a non-SPD lane
   poisons itself with `NaN`/`Inf`, and propagates through a `potrs` solve with
   that factor).
-- **Open:** `n <= 16` (`0.7-0.9x` of MKL; the divider port, so only an
+- **Open:** the smallest orders (behind MKL; the divider port, so only an
   approximate reciprocal off the pivot chain would move it, and that is
   AVX-512-specific and not bit-reproducible against the divide); the rows
   below a panel's diagonal block are a triangular solve done as the rank-1
   sweep, store-bound -- solving them against the finished block in registers
-  measured another `10-20%` at `n >= 24` but changes the rounding order
+  measured a further gain at `n >= 24` but changes the rounding order
   (LAPACK's potf2 + trsm), so it waits on a numerics decision; the strided
   (column-major upper / row-major lower) cases run the same blocked code but
   were not tuned or measured separately.
@@ -155,11 +156,12 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Validated (design 7):** BLAS-free test vs a scalar `?trsm` (forward error
   and `||op(A) X - alpha B||`); MKL cross-check vs `mkl_?trsm_compact` over the
   full feature matrix plus the end-to-end solve.
-- **Performance vs `mkl_?trsm_compact`** (single thread, AVX-512, orders
-  10-148, measured before the view-based routing): `nrhs = 1` ~`1.0x`, `nrhs`
-  a multiple of 4 ~`1.3-1.5x`, mixed ~`1.0-1.3x`. Open: small-`n` per-group
-  overhead (~`0.6-0.9x` at `n ~ 10`), reciprocal-multiplying the diagonal in
-  the blocked paths, tuning the strided kernel.
+- **Performance vs `mkl_?trsm_compact`** (measured before the view-based
+  routing): level at `nrhs = 1`, ahead when `nrhs` is a multiple of the
+  4-column block, in between for other counts; behind at the smallest orders,
+  where the per-group overhead shows. Open: that small-`n` overhead,
+  reciprocal-multiplying the diagonal in the blocked paths, tuning the strided
+  kernel.
 - **Scoped out:** no singularity check (a zero non-unit diagonal divides to
   `Inf`/`NaN`, as in BLAS).
 
@@ -185,17 +187,18 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   a cross-check vs the `mkl_?geqrf_compact -> cbk_?ormqr_compact ->
   mkl_?trsm_compact` pipeline on the same packed input.
 - **Benchmarked:** the `cbk-gels` path of `bench_qr_compact` vs per-matrix
-  `LAPACKE_dgels`: `3.2x` geometric mean over `n = 10..100` (4 threads,
-  AVX-512; `8.5x` at `n = 10`, `1.9x` at `n = 100`, with the retired fused
-  kernel). It runs the chain's group kernels, so gels-vs-cbk-batch there is
-  the driver's overhead alone (BENCHMARKS.md).
+  `LAPACKE_dgels`: ahead at every order of the list, by the most at the
+  smallest, where the dense routine's per-call overhead dominates. It runs the
+  chain's group kernels, so gels-vs-cbk-batch there is the driver's overhead
+  alone (BENCHMARKS.md).
 - **Scoped out (design 6.6):** no rank-deficiency test (a zero diagonal of `R`
   divides to `Inf`/`NaN` in that lane), no `?lascl` rescaling, no pivoting.
 - **Open:** row-major runs through the strided kernels. A whole-batch,
   library-threaded `gels` call has not been benchmarked against the
   caller-threaded per-group loop. The unblocked factorization is
-  bandwidth-bound across the target range (~`10 GF/s` per AVX-512 core, flat
-  from `n = 40` to `120`; it streams the trailing block per reflector), so a
+  bandwidth-bound across the target range (its throughput is flat over the
+  middle of the size list, where a compute-bound kernel's would still rise;
+  it streams the trailing block per reflector), so a
   blocked (compact-WY) factorization is the next lever for `gels` and `geqrf`
   and the one that would make multiple right-hand sides pay.
 
@@ -223,7 +226,7 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   serial unless nesting is enabled (`OMP_NUM_THREADS=8,2`). The factorization
   benchmarks hand the whole pool to one cbk call and drive the sequential MKL
   and LAPACK references from an equivalent outer loop; the solve benchmark
-  keeps its pipeline per group (whole-pool passes measured 15-55% slower).
+  keeps its pipeline per group (whole-pool passes measured slower).
   `gels`, `posv` and `sysvnp` are the fused per-group drivers that give
   library-side threading of a whole solve.
 - **MKL Compact contract.** `.claude/mkl-compact-behavior.md` records what

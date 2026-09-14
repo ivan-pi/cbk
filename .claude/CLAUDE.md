@@ -163,8 +163,8 @@ workspace contract, or the benchmarks' threading.
   (icpx included) legalizes vector operations to its *preferred* width, which
   its tuning for AVX-512 CPUs sets to 256 bits: a V=8 double pack becomes two
   ymm halves, half the FMA rate and twice the register pressure, so the
-  register-tiled updates spill (measured: the blocked potrf ran at ~15 GFLOP/s
-  under clang against ~28 under gcc from the same source; icpx defaults its
+  register-tiled updates spill (measured: the blocked potrf ran at about half
+  its gcc throughput under clang from the same source; icpx defaults its
   zmm usage the same way, `-qopt-zmm-usage=low`, on pre-Sapphire-Rapids
   targets). Every kernel header therefore wraps its body in
   `CBK_KERNEL_BEGIN` / `CBK_KERNEL_END` (`cbk_common.hpp`), which under clang
@@ -262,5 +262,18 @@ workspace contract, or the benchmarks' threading.
   gains are not there to be had anyway -- they live below `128`, most of them
   below `64`. `--size-sweep` is deliberately uncapped, so a scan can still go as
   large as the caller wants.
+- **No absolute performance numbers in the project files.** GFLOP/s, run
+  times, speedups over MKL or LAPACK at given orders, thread counts, pool
+  sizes in MB: each is a property of one CPU, one compiler and one day, and
+  is stale as soon as any of them changes, with nothing in the tree to say
+  so. The benchmarks report them; `docs/PLANS.md`, the design documents,
+  `BENCHMARKS.md`, the source comments and the commit messages do not. State
+  *where* a kernel stands and *why* (behind MKL at the smallest orders because
+  the divider port bounds both, ahead from the low tens on) and name the
+  benchmark that measures it. A relative statement is fine, sparingly, when
+  it records the reason for a decision ("the register-tiled update measured
+  faster than the rank-1 sweep, so the sweep stays confined to the panel"):
+  the direction and at most a rough magnitude, never a table of ratios per
+  order.
 - **Scope.** Real precisions (`s`/`d`) only; no column pivoting; no overflow/
   underflow-safe reflector rescaling (see the design documents).
