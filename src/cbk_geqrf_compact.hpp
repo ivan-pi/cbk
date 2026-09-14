@@ -35,6 +35,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* Same-width signed integer for a floating type: the lane type of the masks the
@@ -182,5 +184,7 @@ void geqrf_compact(bool rowmajor, Int m, Int n, T *ap, Int ldap, T *taup, Int nm
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_GEQRF_COMPACT_HPP */

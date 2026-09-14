@@ -40,6 +40,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* One group of V interleaved matrices, through the layout-agnostic view:
@@ -114,5 +116,7 @@ void orgqr_compact(bool rowmajor, Int m, Int n, Int k, T *ap, Int ldap, const T 
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_ORGQR_COMPACT_HPP */

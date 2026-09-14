@@ -29,6 +29,8 @@
 #include <cstddef>
 #include <cassert>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* All groups, any layout / uplo: per group, factor then solve. */
@@ -62,5 +64,7 @@ void posv_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap, T
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_POSV_COMPACT_HPP */

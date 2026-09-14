@@ -53,6 +53,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* Reflector sweep order: Forward applies kk = 0..k-1, Backward k-1..0. */
@@ -154,5 +156,7 @@ void ormqr_compact(bool left, bool rowmajor, char trans, Int m, Int n, Int k, co
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_ORMQR_COMPACT_HPP */

@@ -85,6 +85,19 @@ without an `O(n^3)` `M^T M`).
 bench_potrf_compact [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
 ```
 
+What to expect (design section 6.1 has the measured numbers): the
+recursively blocked kernel outruns `mkl_dpotrf_compact` from about `n = 24`
+up, by a growing margin as the trailing update dominates, and only trails it
+at the smallest orders, where the pivot's divide and square root on the one
+divider port bound both implementations; against per-matrix `LAPACKE_dpotrf`
+it is ahead across the whole size list, by an order of magnitude at the small
+end and narrowing to level at the top. The plain rank-1 sweep it replaced
+fell behind MKL from `n = 48`, where a group outgrows the L1. Note the three
+codegen prerequisites in `docs/building.md`: `-march` for the vector width,
+`-fno-math-errno` for the vector square root (set by the library's own
+CMake), and full-width vectors under clang and icpx (set by the kernel
+headers) -- a build missing any of them measures a different kernel.
+
 ## `bench_qr_compact`
 
 Throughput of the end-to-end solve of many systems `A_v X_v = B_v` via QR
@@ -157,7 +170,9 @@ past the crossover the solve is a small fraction of the factorization at one
 RHS. On out-of-cache pools the fusion
 showed directly: `1.26x` at `n = 32` (16384 matrices), `1.12x` at `n = 64`
 (8192), `1.14x` at `n = 96` (4096), each with `nrhs = 8`. Every path recovered
-the known solution to `~5e-15`.
+the known solution to `~5e-15`. With the blocked `potrf` the fused solve pulls ahead of
+the MKL pipeline from about `n = 32` and stays ahead of `LAPACKE_dposv`
+through the whole size list.
 
 ## `bench_sysvnp_compact`
 

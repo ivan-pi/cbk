@@ -59,8 +59,12 @@ The Cholesky factorization, its solve, and the fused `?posv`-style driver
 (`docs/cbk_dpotrf_compact_design.md`); MKL has a compact `potrf` but no
 compact `potrs` or `posv`.
 
-- **Implemented (design 6-8):** vectorized unblocked `potf2`, unconditional
-  `sqrt` pivot, `JB = 4` register-blocked rank-1 update. The four
+- **Implemented (design 6-8):** vectorized `potf2`, recursively blocked
+  (design 6.1): 8-column leaf panels with the `JB = 4` rank-1 update confined
+  to the panel, and a `4 x 4` register-tiled rank-K update of the trailing
+  columns at every split, so a trailing element is stored and reloaded once
+  per split level rather than once per pivot; the pivot's unconditional
+  `sqrt` moved off the pivot-to-pivot chain (design 6.2). The four
   `(layout, uplo)` cases are one kernel over transposed views (design 6.3).
   The solve as two non-unit `trsm` group sweeps (`?sytrsnp` minus the diagonal
   step); `posv` factoring and solving each group while its factor is
@@ -79,9 +83,24 @@ compact `potrs` or `posv`.
   The fusion measurement design 6.8 called for: `~1.0x` on cache-resident
   pools (512 matrices, one RHS), `1.1-1.3x` on out-of-cache pools (orders
   32-96, 134-300 MB) -- see `examples/BENCHMARKS.md` for the indicative run.
+- **Performance vs `mkl_?potrf_compact`** (single thread, AVX-512, 1000
+  matrices, gcc and clang): `0.7-0.9x` at `n = 8-16`, where the pivot's
+  divide and sqrt on the one divider port bound both, `1.0-1.3x` at `24-32`,
+  `1.3-1.9x` at `45-64`, `1.8-2.5x` at `96-256`; `9-51 GFLOP/s` (the plain
+  sweep it replaced: `0.5-0.9x`, `11-18 GFLOP/s`). Ahead of per-matrix
+  `LAPACKE_?potrf` at every size of the list (`examples/BENCHMARKS.md`).
 - **Scoped out (design 6.6):** positive-definiteness is assumed (a non-SPD lane
   poisons itself with `NaN`/`Inf`, and propagates through a `potrs` solve with
-  that factor); no blocked factorization.
+  that factor).
+- **Open:** `n <= 16` (`0.7-0.9x` of MKL; the divider port, so only an
+  approximate reciprocal off the pivot chain would move it, and that is
+  AVX-512-specific and not bit-reproducible against the divide); the rows
+  below a panel's diagonal block are a triangular solve done as the rank-1
+  sweep, store-bound -- solving them against the finished block in registers
+  measured another `10-20%` at `n >= 24` but changes the rounding order
+  (LAPACK's potf2 + trsm), so it waits on a numerics decision; the strided
+  (column-major upper / row-major lower) cases run the same blocked code but
+  were not tuned or measured separately.
 
 ## sytrfnp / sytrsnp / sysvnp
 
@@ -108,7 +127,12 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
 - **Scoped out (design 6.2, 6.7):** no pivoting (a singular leading minor
   poisons its lane; Bunch-Kaufman does not vectorize per lane); no complex
   Hermitian variants; the strided sweep is correctness-first.
-- **Open:** no factorization-only benchmark (the potrf harness would port);
+- **Open:** the factorization is still the plain rank-1 sweep that potrf
+  replaced -- same structure, same `JB = 4` block helper -- so potrf's
+  recursive blocking and tiled rank-K update (design 6.1) port directly and
+  should bring the same `2-3x` from `n = 48` up; potrf's pivot reordering is
+  already sytrfnp's own form. No factorization-only benchmark (the potrf
+  harness would port);
   no `sysvnp` vs `sytrfnp + sytrsnp` measurement on out-of-cache pools, the
   comparison that would quantify the fusion (design 6.8) -- the
   `bench_posv_compact` harness, which carries exactly that column for the

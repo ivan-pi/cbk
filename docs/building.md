@@ -72,6 +72,28 @@ Correctness is independent of these flags; only throughput changes. The
 benchmarks in particular need them for a fair comparison against MKL (see
 [`examples/BENCHMARKS.md`](../examples/BENCHMARKS.md)).
 
+Two codegen settings the library does fix itself, because without them the
+kernels compile to something much slower than their source says, on any
+`-march`:
+
+* **`-fno-math-errno`**, set on the `cbk` target (PRIVATE; consumers are not
+  bound to it). The pivots' lane-wise square root becomes one vector
+  instruction only when the compiler need not set `errno` on a negative
+  input; with math errno on (GCC's and clang's default on Linux) each lane is a
+  guarded scalar square root plus a libm call, under both compilers. The
+  kernels never read `errno`; a non-SPD lane gets its NaN either way. If you
+  build the sources with your own build system, pass the flag.
+* **Full-width vectors under clang and icpx.** On x86 both legalize vector
+  operations to their *preferred* width, which their tuning for AVX-512 CPUs
+  sets to 256 bits, so a 512-bit pack (`V = 8` doubles, the AVX-512 compact
+  format) would be split into two ymm halves: half the FMA rate and twice the
+  register pressure. The kernel headers mark their functions
+  `min_vector_width(512)` (`CBK_KERNEL_BEGIN` in `src/cbk_common.hpp`), which
+  restores full-width codegen for them alone; the equivalent whole-build
+  flags are `-mprefer-vector-width=512` (clang) and `-qopt-zmm-usage=high`
+  (icpx). GCC lowers explicit vector types at their natural width and needs
+  neither. `objdump -d libcbk.a | grep -c zmm` shows whether a build got it.
+
 ## Installing
 
 ```sh

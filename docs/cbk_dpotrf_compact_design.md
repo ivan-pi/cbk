@@ -186,15 +186,14 @@ cache-resident sizes. `mkl_malloc(bytes, 64)` (the default of this project's
 
 ## 6. Design Considerations & Compatibility
 
-### 6.1 The algorithm: vectorized unblocked Cholesky (`potf2`)
+### 6.1 The algorithm: vectorized Cholesky, recursively blocked
 
-The batch is factored with the unblocked LAPACK algorithm (`dpotf2`), executed
-`V` matrices at a time. Because Compact format interleaves the `V` matrices so
-that element `(i,j)` of all `V` is contiguous, the scalar algorithm lifts almost
-verbatim with `double -> V`-wide vector: every `+`, `-`, `*`, `/`, and `sqrt`
-becomes a lane-wise SIMD operation over `V` independent matrices. The
-right-looking form is used, which for the lower triangle is, per pivot column
-`j`:
+The batch is factored with the right-looking LAPACK algorithm (`dpotf2`),
+executed `V` matrices at a time. Because Compact format interleaves the `V`
+matrices so that element `(i,j)` of all `V` is contiguous, the scalar algorithm
+lifts almost verbatim with `double -> V`-wide vector: every `+`, `-`, `*`, `/`,
+and `sqrt` becomes a lane-wise SIMD operation over `V` independent matrices.
+For the lower triangle the sweep is, per pivot column `j`:
 
 ```
 d       = sqrt(A(j,j))                          // pivot (vector sqrt)
@@ -205,15 +204,51 @@ A(i,jj)-= A(i,j)*A(jj,j)  for jj > j, i >= jj   // symmetric rank-1 trailing upd
 ```
 
 Only the lower trapezoid is ever touched, so the strictly-upper triangle passes
-through untouched as `?potrf` requires. The trailing update -- the `O(n^3)` bulk
-of the work -- is register-blocked `JB = 4` trailing columns at a time so each
-pivot-column entry `A(i,j)` load is reused across four columns, exactly as the
-`geqrf` trailing update. Blocked (`potrf`) factorization with `syrk`/`trsm`
-panels is deliberately *not* used: for the target sizes the panels are short, and
-the interleaved batch is already likely to saturate the vector units without the
-extra blocking bookkeeping. `vsqrt<T,V>` (a short lane loop that GCC and Clang
-lower to a single `vsqrt*`) is the only special function needed; it runs once per
-column, negligible next to the `O(n^2)` scaling and `O(n^3)` update.
+through untouched as `?potrf` requires. `vsqrt<T,V>` (one vector `vsqrt*`
+instruction; see the `-fno-math-errno` note in `docs/building.md`) is the only
+special function needed; it runs once per column.
+
+The plain sweep, however, is bound by memory traffic, not by the FMA units: its
+rank-1 trailing update is one FMA per pack loaded *and stored*, which the L1
+store port throttles to a fraction of the FMA rate, and once a group outgrows
+the L1 (64 KB at `n = 32` for FP64 AVX-512) every pivot streams the whole
+trailing matrix through the L2. Measured as the first implementation, it
+peaked near `n = 32-45` and fell to `0.5-0.6x` of `mkl_?potrf_compact` from
+`n = 64` up. The kernel therefore blocks the sweep, recursively: the columns
+are split in halves at `NB`-column panel boundaries down to panels of at most
+`NB` pivots (`potrf_nb`, default 8; `-DCBK_POTRF_NB` overrides):
+
+```
+factor(j0, j1):
+    if j1 - j0 <= NB:  potf2 on columns j0..j1-1, each pivot's rank-1 update
+                       confined to the panel's remaining columns
+    else:              factor(j0, mid)
+                       A(mid:n, mid:j1) -= A(mid:n, j0:mid) A(mid:j1, j0:mid)^T
+                       factor(mid, j1)
+```
+
+The rank-`K` update (`K = mid - j0`) is register-tiled: a tile of `IB x JB`
+trailing elements (`4 x 4`, 16 accumulators, in the 32 AVX-512 registers)
+accumulates its `K` subtractions in registers, `IB*JB` FMAs per `IB + JB`
+loads, and is stored once (chunking the `K` range for the L1 was measured to
+buy nothing up to `n = 256` and is not done; the tile is sized for the 32
+registers of AVX-512 and would spill on a 16-register target, degrading toward
+the plain sweep, no further). Each trailing element thus takes its updates once per
+split level -- `log2(n/NB)` times -- instead of once per pivot, and in the same
+pivot order as the plain sweep, so the tiled update is arithmetically the
+sweep's without the store and reload between subtractions. (Two codegen
+details the kernel spells out: the view goes by value through the recursion,
+since a view held by reference is reloaded after every store through the
+`may_alias` packs; and the tile's accumulator loops carry unroll pragmas, since
+GCC's scalar replacement runs before it unrolls them and would otherwise stage
+the tile through the stack.) What remains at the
+rank-1 rate is the in-panel update, about `1.5 NB/n` of the flops. Dimensions
+that are not multiples of the tile are finished by `3/2/1`-wide tiles.
+Measured single-threaded on a 4-core AVX-512 (Sapphire Rapids class) box,
+1000 matrices, the blocked kernel runs at `9-51 GFLOP/s` against the plain
+sweep's `5-18`, and against `mkl_?potrf_compact` `0.7-0.9x` at `n = 8-16`,
+`1.0-1.3x` at `24-32`, `1.3-1.9x` at `45-64` and `1.8-2.5x` at `96-256`
+(`examples/BENCHMARKS.md`).
 
 ### 6.2 The pivot: `sqrt`, and no positive-definiteness check
 
@@ -226,6 +261,30 @@ interleave-batch Cholesky drop it: MKL leaves `info` "reserved for future use"
 "does not check that the input matrices are SPD; no error will be returned if any
 `A_i` are not SPD." This routine does the same: it computes `d = sqrt(A(j,j))`
 unconditionally.
+
+Within a panel the pivot's operations are reordered for latency. The plain
+sweep's chain from one pivot to the next is `sqrt`, divide, scale, update --
+two long-latency operations on the one divider port, some 50 cycles per column
+on AVX-512, which at `n <= 16` *is* the running time (the FMA work is a tenth
+of it). The kernel instead runs each pivot's rank-1 update on the
+still-unscaled column with the weights scaled by `1/a`,
+
+```
+inva    = 1 / A(j,j)
+A(i,jj)-= A(i,j) * (A(jj,j) * inva)   for jj > j (in the panel), i >= jj
+d       = sqrt(A(j,j));  A(j,j) = d
+A(i,j) *= d * inva                    for i > j       // 1/sqrt(a) = sqrt(a)/a
+```
+
+so the next pivot waits on one divide, a multiply and an FMA; the square root
+and the column scaling follow off that chain, and `1/sqrt(a)` costs a multiply
+rather than a second divide. This is the LDL^T update of the same SPD matrix
+(`d = a`, `l = A(:,j)/a`, exactly `cbk_?sytrfnp_compact`'s step -- the panel
+calls `sytrfnp_update_block` with `1/a` parked at `A(j,j)`), scaled to
+the Cholesky factor once the column is done: as backward stable as `potf2`,
+and the unique factor agrees with `LAPACKE_?potrf` to a few `n eps` (the
+suites' `20 n eps` gate, section 7). Measured: `10-25%` at orders `16-32`,
+where the pivot chain dominates.
 
 The consequence is graceful "garbage in, garbage out": a genuinely non-SPD lane
 has some pivot `A(j,j) <= 0`, so `sqrt` yields `NaN` (or the following `1/d`

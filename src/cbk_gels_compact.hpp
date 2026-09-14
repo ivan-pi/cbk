@@ -63,6 +63,8 @@
 #include <cassert>
 #include <type_traits>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* The tau buffer: q = min(m, n) reflector scalars per matrix, one slot per
@@ -146,5 +148,7 @@ void gels_compact(bool rowmajor, char trans, Int m, Int n, Int nrhs, T *ap, Int 
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_GELS_COMPACT_HPP */

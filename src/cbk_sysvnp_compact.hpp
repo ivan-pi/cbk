@@ -30,6 +30,8 @@
 #include <cstddef>
 #include <cassert>
 
+CBK_KERNEL_BEGIN
+
 namespace cbk::detail {
 
 /* All groups, any layout / uplo: per group, factor then solve. */
@@ -63,5 +65,7 @@ void sysvnp_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap,
 }
 
 } /* namespace cbk::detail */
+
+CBK_KERNEL_END
 
 #endif /* CBK_SYSVNP_COMPACT_HPP */
