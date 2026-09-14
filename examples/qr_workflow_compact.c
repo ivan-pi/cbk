@@ -83,17 +83,17 @@ static size_t compact_at(int i, int j, int v, int ldap, int V)
 static void pack_compact(int nm, int V, int m, int n, const double *A_lpk_p, int lda,
                          double *ap, int ldap)
 {
-    const int ngroups = (nm + V - 1) / V;
+    const size_t ngroups = ((size_t)nm + V - 1) / V;
 #pragma omp parallel for
-    for (int g = 0; g < ngroups; g++) {
-        double *A_g = &ap[(size_t)g * ldap * n * V];
+    for (size_t g = 0; g < ngroups; g++) {
+        double *A_g = &ap[g * ldap * n * V];
         for (int v = 0; v < V; v++) {
-            const int idx = g * V + v;
-            const double *A_lpk = &A_lpk_p[(size_t)idx * lda * n];
+            const size_t idx = g * V + v;
+            const double *A_lpk = &A_lpk_p[idx * lda * n];
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < m; i++) {
                     A_g[compact_at(i, j, v, ldap, V)] =
-                        idx < nm ? A_lpk[lda * j + i] : (i == j ? 1.0 : 0.0);
+                        idx < (size_t)nm ? A_lpk[lda * j + i] : (i == j ? 1.0 : 0.0);
                 }
             }
         }
@@ -103,14 +103,14 @@ static void pack_compact(int nm, int V, int m, int n, const double *A_lpk_p, int
 static void unpack_compact(int nm, int V, int m, int n, const double *ap, int ldap,
                            double *A_lpk_p, int lda)
 {
-    const int ngroups = (nm + V - 1) / V;
+    const size_t ngroups = ((size_t)nm + V - 1) / V;
 #pragma omp parallel for
-    for (int g = 0; g < ngroups; g++) {
-        const double *A_g = &ap[(size_t)g * ldap * n * V];
+    for (size_t g = 0; g < ngroups; g++) {
+        const double *A_g = &ap[g * ldap * n * V];
         for (int v = 0; v < V; v++) {
-            const int idx = g * V + v;
-            if (idx >= nm) continue;
-            double *A_lpk = &A_lpk_p[(size_t)idx * lda * n];
+            const size_t idx = g * V + v;
+            if (idx >= (size_t)nm) continue; /* skip empty matrices (the padding) */
+            double *A_lpk = &A_lpk_p[idx * lda * n];
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < m; i++) {
                     A_lpk[lda * j + i] = A_g[compact_at(i, j, v, ldap, V)];
@@ -132,7 +132,8 @@ static void unpack_compact(int nm, int V, int m, int n, const double *ap, int ld
 double run_ib_version(int nm, int V, int m, int n, int check_result)
 {
     int min_mn = MIN(m, n);
-    int ngroups = (nm + V - 1) / V; /* the last one padded if V does not divide nm */
+    size_t ngroups =
+        ((size_t)nm + V - 1) / V; /* the last one padded if V does not divide nm */
 
     /*
        Compact-batch setup: A is m by n, stored with leading dimension m, so a
@@ -140,8 +141,8 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
        batch of min_mn x 1 vectors.
     */
     int ldap = m;
-    size_t total_size_A = (size_t)ngroups * ldap * n * V;
-    size_t total_size_tau = (size_t)ngroups * min_mn * V;
+    size_t total_size_A = ngroups * ldap * n * V;
+    size_t total_size_tau = ngroups * min_mn * V;
 
     int info;
 
@@ -199,8 +200,8 @@ double run_ib_version(int nm, int V, int m, int n, int check_result)
 
     /* Zero lower-triangular part of R, padded slots included */
 #pragma omp parallel for
-    for (int g = 0; g < ngroups; g++) {
-        double *R_g = &rp[(size_t)g * ldap * n * V];
+    for (size_t g = 0; g < ngroups; g++) {
+        double *R_g = &rp[g * ldap * n * V];
         for (int j = 0; j < n; j++) {
             for (int i = j + 1; i < m; i++) {
                 for (int v = 0; v < V; v++) {
