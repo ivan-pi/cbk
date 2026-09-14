@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.28)
 project(cbk
   VERSION 0.1.0
   DESCRIPTION "Compact Batch Kernels: batched QR, Cholesky and LDL^T for small matrices in the compact (interleaved) format"
-  LANGUAGES C CXX) # C only for the portable example, examples/qr_reconstruct_compact.c
+  LANGUAGES C CXX) # C only for the portable example, examples/qr_workflow_compact.c
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -72,17 +72,18 @@ set_target_properties(cbk PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 add_library(cbk::cbk ALIAS cbk)
 
-# The portable example: the QR round trip of examples/qr_reconstruct_compact.c
-# (pack, dgeqrf_compact, dormqr_compact, unpack, check) in plain C99 on the C
-# API alone, so it builds in the default configure -- a downstream C caller in
-# miniature. OpenMP times it and threads its own loops over groups; without
-# OpenMP it falls back to clock().
-add_executable(qr_reconstruct_compact examples/qr_reconstruct_compact.c)
-target_compile_features(qr_reconstruct_compact PRIVATE c_std_99)
-set_target_properties(qr_reconstruct_compact PROPERTIES C_EXTENSIONS OFF)
-target_link_libraries(qr_reconstruct_compact PRIVATE cbk)
+# The portable example: the interleave-batch QR workflow example of Arm
+# Performance Libraries (examples/qr_workflow_compact.c) on the C API alone --
+# pack, dgeqrf_compact, extract R, dormqr_compact, unpack, check -- in plain
+# C99, so it builds in the default configure: a downstream C caller in
+# miniature. It needs OpenMP (omp_get_wtime, and its loops over groups).
 if(CBK_WITH_OPENMP AND OpenMP_C_FOUND)
-  target_link_libraries(qr_reconstruct_compact PRIVATE OpenMP::OpenMP_C)
+  add_executable(qr_workflow_compact examples/qr_workflow_compact.c)
+  target_compile_features(qr_workflow_compact PRIVATE c_std_99)
+  set_target_properties(qr_workflow_compact PROPERTIES C_EXTENSIONS OFF)
+  target_link_libraries(qr_workflow_compact PRIVATE cbk OpenMP::OpenMP_C)
+else()
+  message(STATUS "OpenMP not found for C: skipping the example qr_workflow_compact")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -134,9 +135,11 @@ if(CBK_BUILD_TESTS)
 
   # The portable example self-validates (A = Q R rebuilt from the factors), so
   # it doubles as an integration test of the C API: a small batch of square
-  # and of tall matrices, 33 of them so the padded last group is exercised too.
-  add_test(NAME example_qr_reconstruct_square COMMAND qr_reconstruct_compact 33 4 5 5)
-  add_test(NAME example_qr_reconstruct_tall COMMAND qr_reconstruct_compact 33 2 7 5)
+  # and of tall matrices (nbatch groups of ninter, then m and n).
+  if(TARGET qr_workflow_compact)
+    add_test(NAME example_qr_workflow_square COMMAND qr_workflow_compact 9 4 5 5)
+    add_test(NAME example_qr_workflow_tall COMMAND qr_workflow_compact 17 2 7 5)
+  endif()
 
   if(CBK_WITH_MKL)
     # MKL + dense-LAPACK validation of each cbk_?*_compact routine (the

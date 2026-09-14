@@ -9,12 +9,11 @@ release may change the API.
 
 ### Added
 
-- `examples/qr_reconstruct_compact.c`, a standalone C99 example of the
-  portable C API built in every configuration: a batch QR-factored with
-  `dgeqrf_compact` and rebuilt as `Q R` with `dormqr_compact`, packed and
-  unpacked by hand, each phase timed with OpenMP and every matrix checked -- the
-  interleave-batch QR example of Arm Performance Libraries on this library's
-  routines. Registered with CTest.
+- `examples/qr_workflow_compact.c`, a standalone C99 example of the portable
+  C API built in the default configure (OpenMP required): the interleave-batch
+  QR workflow example of Arm Performance Libraries, transcribed step for step
+  onto `dgeqrf_compact` and `dormqr_compact` -- pack, factor, extract `R`,
+  form `Q R`, unpack, check, each phase timed. Registered with CTest.
 
 ## [0.1.0] - 2026-09-13
 

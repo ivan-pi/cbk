@@ -1,26 +1,28 @@
 # Examples and benchmarks
 
 One program under `examples/` builds in the default configure, on the portable
-C API alone; the rest need the MKL build (`-DCBK_WITH_MKL=ON`, off by
+C API alone (it needs OpenMP); the rest need the MKL build (`-DCBK_WITH_MKL=ON`, off by
 default), since they pack with MKL's compact routines and compare against
 MKL's compact kernels and LAPACKE.
 
 ## Portable example
 
-* `qr_reconstruct_compact [nm] [V] [m] [n]` - a batch of `nm` square or tall
-  `m x n` matrices (`m >= n`) QR-factored and rebuilt from the factors on the
-  C API of `cbk.h`: pack into the compact layout with interleave width `V`,
-  `dgeqrf_compact`, extract `R`, `dormqr_compact` to form `Q R`, unpack, and
-  check `||A - QR||_1 <= 5 eps m n ||A||_1` for every matrix, each phase timed
-  with `omp_get_wtime` (the pack, extract and unpack loops are OpenMP loops
-  over groups).
-  A transcription of the interleave-batch QR example Arm ships with Arm
-  Performance Libraries (their `ninter` is `V`, their `nbatch` the number of
-  groups); the defaults reproduce its 32768-matrix batch at `10 x 10`. The
-  source (`examples/qr_reconstruct_compact.c`, plain C99 on `cbk.h` alone,
-  none of the internal helpers) is the shortest complete walk through the
-  compact layout formula, the padded last group, and the `(ldap, k)`
-  reflector batch `dormqr_compact` reads. No MKL, no BLAS.
+* `qr_workflow_compact <nbatch> <ninter> <nrows> <ncols>` - the
+  interleave-batch QR workflow example Arm ships with Arm Performance
+  Libraries, transcribed onto the C API of `cbk.h` in plain C99 with no
+  internal helpers: a batch of `nbatch` groups of `ninter` (= `V`, so 2, 4, 8
+  or 16) square or tall `m x n` matrices is packed into the compact layout,
+  QR-factored with `dgeqrf_compact`, its `R` extracted, rebuilt as `Q R` with
+  `dormqr_compact`, unpacked, and checked, `norm1(A - QR) <= 5 eps m n norm1(A)`
+  for every matrix, after three warm-up runs; each phase is timed with
+  `omp_get_wtime` and the pack, extract and unpack loops are OpenMP loops over
+  the groups, as in the original. The ArmPL strides map one to one onto the
+  compact layout (`istrd = ninter`, `jstrd = ninter*m`, `bstrd = jstrd*n`), so
+  the source (`examples/qr_workflow_compact.c`) keeps the original's setup
+  and indexing verbatim; the LAPACK comparison is left out (the portable build
+  links no LAPACK) and ArmPL's column pivoting has no counterpart. Arm's
+  32768-matrix runs are `1024 32`, `2048 16` and `4096 8` there; here
+  `4096 8 <n> <n>` or `8192 4 <n> <n>`. Needs OpenMP for C; skipped without.
 
 ## Worked example
 
@@ -77,8 +79,8 @@ results are documented in detail in
 ## CTest registration
 
 All programs are registered with CTest, on a small pool, so they double as
-integration tests: `example_qr_reconstruct_square` and
-`example_qr_reconstruct_tall` in every build, and with the MKL build
+integration tests: `example_qr_workflow_square` and
+`example_qr_workflow_tall` in every build with OpenMP, and with the MKL build
 `example_solve_qr_compact`, `bench_qr_compact_integration`,
 `bench_geqrf_compact_integration`, `bench_potrf_compact_integration`,
 `bench_posv_compact_integration`, `bench_sysvnp_compact_integration`.
