@@ -9,7 +9,8 @@
 //   1. C API argument validation -- exercises the LAPACK/BLAS-style info = -j
 //      contract of the portable entry points.
 //   2. Numerical correctness over side / uplo / transa / diag, precisions and
-//      interleave widths (column-major, the tuned path): forward error vs the
+//      interleave widths (column-major, the tuned path), as test ratios
+//      against THRESH (test_compact_util.hpp): dget04's forward error vs the
 //      library's solve, plus the solve's own residual ||op(A) X - alpha B||
 //      formed with the library's triangular multiply (so a bug shared by the
 //      reference and the kernel cannot pass unseen), over the suite's shapes
@@ -43,7 +44,6 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
 {
     const bool left = (side == 'L');
     const int s = left ? m : n;
-    const T eps = std::numeric_limits<T>::epsilon();
     const T alpha = T(0.5) + frand<T>(); // a non-trivial, non-zero scalar
 
     // triangular A (s x s), column-major: random in the referenced triangle,
@@ -73,35 +73,40 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     MatrixBatch<T> Bout(nm, m, n);
     unpack_compact(Bout, bp.data(), ldb, V);
 
-    // Two gates: (1) forward error vs the library's solve, and (2) the
-    // solve's own defining residual ||op(A) X - alpha B||, formed with the
-    // library's triangular multiply -- so a bug shared by ref_trsm and the
-    // kernel cannot slip through (the ?trsm analogue of the reconstruction /
-    // round-trip identities the geqrf/potrf/ormqr self-tests check).
-    double worst_fwd = 0, worst_res = 0;
-    std::vector<T> Rs((size_t)m * n), aBs((size_t)m * n);
+    // Two gates: (1) the forward error vs the library's solve -- dget04's,
+    // discounted by rcond of the operator actually applied, op(A) with the
+    // unit diagonal honored (E, formed by the library's triangular multiply
+    // of the identity) -- and (2) the solve's own defining residual
+    // ||op(A) X - alpha B|| / (s ||op(A)|| ||X|| eps), dtrt02's, formed with
+    // the same multiply -- so a bug shared by ref_trsm and the kernel cannot
+    // slip through (the ?trsm analogue of the reconstruction / round-trip
+    // identities the geqrf/potrf/ormqr self-tests check).
+    double r_fwd = 0, r_res = 0;
+    std::vector<T> Rs((size_t)m * n), aBs((size_t)m * n), Is((size_t)s * s, T(0)),
+        Es((size_t)s * s);
     const auto R = mat_view(Rs.data(), m, n), aB = mat_view(aBs.data(), m, n);
+    const auto I = mat_view(Is.data(), s, s), E = mat_view(Es.data(), s, s);
+    for (int d = 0; d < s; ++d)
+        I(d, d) = T(1);
     for (int idx = 0; idx < nm; ++idx) {
-        worst_fwd =
-            std::max(worst_fwd, max_abs_diff(Bout[idx], Xref[idx], (size_t)m * n) /
-                                    std::max(norm1(Xref.view(idx)), norm_floor));
+        tri_apply('L', uplo, transa, diag, A.view(idx), I, E); // E = op(A)
+        r_fwd = std::max(
+            r_fwd, forward_ratio<T>(max_abs_diff(Bout[idx], Xref[idx], (size_t)m * n),
+                                    norm1(Xref.view(idx)), rcond1(E)));
         tri_apply(side, uplo, transa, diag, A.view(idx), Bout.view(idx), R);
         for (size_t e = 0; e < (size_t)m * n; ++e)
             aBs[e] = alpha * B[idx][e];
-        worst_res =
-            std::max(worst_res, max_abs_diff(Rs.data(), aBs.data(), (size_t)m * n) /
-                                    std::max(norm1(aB), norm_floor));
+        r_res = std::max(r_res,
+                         test_ratio<T>(max_abs_diff(Rs.data(), aBs.data(), (size_t)m * n),
+                                       s, norm1(E) * norm1(Bout.view(idx))));
     }
-    const double worst = std::max(worst_fwd, worst_res);
 
-    // Backward-stable triangular solve on a diagonal-boosted A: both the forward
-    // error and the residual stay near working precision.
-    const double rtol = 1e3 * s * (double)eps;
-    const bool ok = (worst <= rtol);
+    const bool ok = passes(r_fwd) && passes(r_res);
     std::printf("  T=%-6s V=%-2d side=%c uplo=%c tr=%c diag=%c nm=%-2d m=%-3d n=%-3d | "
-                "fwd %.1e res %.1e (rtol %.1e) info=%d %s\n",
-                compact<T>::name, V, side, uplo, transa, diag, nm, m, n, worst_fwd,
-                worst_res, rtol, info, (ok && info == 0) ? "OK" : "FAIL");
+                "fwd %-5.2g %s res %-5.2g %s info=%d %s\n",
+                compact<T>::name, V, side, uplo, transa, diag, nm, m, n, r_fwd,
+                verdict(r_fwd), r_res, verdict(r_res), info,
+                (ok && info == 0) ? "OK" : "FAIL");
 
     return (info != 0) + !ok;
 }

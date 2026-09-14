@@ -7,11 +7,13 @@
 // (recursive / blocked, so its rounding differs from the kernel's
 // right-looking sweep, but the SPD factor is unique).
 //
-// Checks per (T, V, uplo, layout):
+// Checks per (T, V, uplo, layout), each a test ratio against THRESH
+// (test_compact_util.hpp):
 //   1. named-triangle factor  ==  LAPACKE_?potrf factor, relative to the
-//      reference factor's L1 norm at 20 n eps (design 7.1: the unique factor
-//      agrees to a few n eps between backward-stable implementations)
+//      reference factor's L1 norm (design 7.1: the unique factor agrees to a
+//      few n eps between backward-stable implementations)
 //   2. reconstruction  L L^T == A  (lower) / U^T U == A  (upper), by ?trmm
+//      (dpot01's residual)
 //   3. the strictly-opposite triangle of the compact buffer is bit-for-bit
 //      unchanged from the input (the routine must not reference or write it)
 //   4. end-to-end solve: factor + ?potrs_compact recovers a known X, and
@@ -40,7 +42,6 @@ using namespace cbk::test;
 template <class T, int V>
 static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const bool upper = (uplo == 'U' || uplo == 'u');
 
@@ -60,7 +61,7 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), lda, V, rowmajor);
 
-    double e_fac = 0, e_rec = 0, e_untouched = 0;
+    double r_fac = 0, r_rec = 0, e_untouched = 0;
     std::vector<T> Fs((size_t)n * n), Recs((size_t)n * n);
     const auto F = mat_view(Fs.data(), n, n), Rec = mat_view(Recs.data(), n, n);
     for (int idx = 0; idx < nm; ++idx) {
@@ -78,11 +79,12 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
                     e_untouched =
                         std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
             }
-        e_fac = std::max(e_fac, el / std::max(norm1(Ref), norm_floor));
+        r_fac = std::max(r_fac, test_ratio<T>(el, n, norm1(Ref)));
 
         // check 2: reconstruction of A from the named triangle's factor, by
         // ?trmm: F is the factor with the other triangle zeroed, so
-        // L L^T = F L^T (side 'R') and U^T U = U^T F (side 'L')
+        // L L^T = F L^T (side 'R') and U^T U = U^T F (side 'L') -- dpot01's
+        // ||L L^T - A|| / (n ||A|| eps)
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i)
                 F(i, j) = (upper ? (i <= j) : (i >= j)) ? Fac(i, j) : T(0);
@@ -90,23 +92,19 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
             tri_apply('R', 'L', 'T', 'N', Fac, F, Rec);
         else
             tri_apply('L', 'U', 'T', 'N', Fac, F, Rec);
-        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)n * n) /
-                                    std::max(norm1(Ain), norm_floor));
+        r_rec = std::max(r_rec,
+                         test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)n * n),
+                                       n, norm1(Ain)));
     }
 
-    // design 7.1: the unique factor vs LAPACK's, and ||L L^T - A|| / ||A||,
-    // both backward-stable quantities at n eps
-    const double tol = 20.0 * eps * std::max(1, n);
-    bool ok_f = e_fac <= tol;
-    bool ok_r = e_rec <= tol;
-    bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
-    bool ok_i = (info == 0);
+    const bool ok_f = passes(r_fac), ok_r = passes(r_rec);
+    const bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
+    const bool ok_i = (info == 0);
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d cond=%.0f | fac:%.1e %s "
-                "rec:%.1e %s untouched:%s | info=%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, cond, e_fac,
-                ok_f ? "OK" : "FAIL", e_rec, ok_r ? "OK" : "FAIL", ok_u ? "OK" : "FAIL",
-                info, ok_i ? "OK" : "FAIL");
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d cond=%.0f | fac:%-5.2g %s "
+                "rec:%-5.2g %s untouched:%s | info=%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, cond, r_fac, verdict(r_fac),
+                r_rec, verdict(r_rec), ok_u ? "OK" : "FAIL", info, ok_i ? "OK" : "FAIL");
     return (!ok_f) + (!ok_r) + (!ok_u) + (!ok_i);
 }
 
@@ -118,7 +116,6 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
 template <class T, int V>
 static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
 
@@ -144,19 +141,19 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
     MatrixBatch<T> Xhat(nm, n, nrhs);
     unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
 
-    const auto [e_fwd, e_res] = solve_errors(A, B, Xhat, X);
+    // dget02's residual and dget04's forward error
+    const auto [r_res, r_fwd] = solve_ratios(A, B, Xhat, X);
     // fused vs two-step, on the raw compact buffers (padded lanes included)
     const bool fused_same = (ap2 == ap) && (bp2 == bp);
 
-    // The tame SPD batches keep cond(A) modest, so residual and forward error
-    // share one backward-stability-sized gate.
-    const double rtol = 100.0 * std::max(1, n) * eps;
-    bool ok = (e_fwd <= rtol) && (e_res <= rtol) && fused_same && (info_f == 0) &&
-              (info_s == 0) && (info_v == 0);
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | fwd:%.1e "
-                "res:%.1e (%.1e) posv==trf+trs:%s info=%d/%d/%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, nrhs, e_fwd, e_res, rtol,
-                fused_same ? "yes" : "NO", info_f, info_s, info_v, ok ? "OK" : "FAIL");
+    const bool ok = passes(r_res) && passes(r_fwd) && fused_same && (info_f == 0) &&
+                    (info_s == 0) && (info_v == 0);
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | res:%-5.2g %s "
+        "fwd:%-5.2g %s posv==trf+trs:%s info=%d/%d/%d %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, nrhs, r_res, verdict(r_res), r_fwd,
+        verdict(r_fwd), fused_same ? "yes" : "NO", info_f, info_s, info_v,
+        ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -226,7 +223,7 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
-    double e_spd = 0; // worst relative error over the SPD sibling lanes
+    double r_spd = 0; // worst ratio over the SPD sibling lanes
     bool spd_finite = true;
     bool bad_poisoned = false; // the non-SPD lane must carry NaN/Inf
     for (int idx = 0; idx < nm; ++idx) {
@@ -244,17 +241,16 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
                 el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
             }
         if (idx != badlane) // vs LAPACKE_?potrf, relative to its factor's norm
-            e_spd = std::max(e_spd, el / std::max(norm1(Aref.view(idx)), norm_floor));
+            r_spd = std::max(r_spd, test_ratio<T>(el, n, norm1(Aref.view(idx))));
     }
 
-    const double tol = 20.0 * std::numeric_limits<T>::epsilon() * std::max(1, n);
-    bool ok_spd = spd_finite && (e_spd <= tol); // siblings uncontaminated & correct
-    bool ok_bad = bad_poisoned;                 // poison confined but present
-    bool ok_info = (info == 0);                 // GIGO: no early-exit, no error
+    const bool ok_spd = spd_finite && passes(r_spd); // siblings uncontaminated & correct
+    const bool ok_bad = bad_poisoned;                // poison confined but present
+    const bool ok_info = (info == 0);                // GIGO: no early-exit, no error
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c n=%-3d non-SPD lane | siblings:%.1e %s "
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c n=%-3d non-SPD lane | siblings:%-5.2g %s "
                 "poison:%s info=%d %s\n",
-                compact<T>::name, V, uplo, layout, n, e_spd, ok_spd ? "OK" : "FAIL",
+                compact<T>::name, V, uplo, layout, n, r_spd, ok_spd ? "OK" : "FAIL",
                 ok_bad ? "OK" : "FAIL", info, ok_info ? "OK" : "FAIL");
     return (!ok_spd) + (!ok_bad) + (!ok_info);
 }

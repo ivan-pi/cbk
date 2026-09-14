@@ -251,6 +251,18 @@ workspace contract, or the benchmarks' threading.
   own kernel. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
+- **Test ratios, one threshold.** The portable suites gate every numerical
+  check the way LAPACK's TESTING suites do: a dimensionless test ratio -- the
+  error over what backward stability allows, `(order) * (operand norm) * eps`
+  (`test_ratio<T>` in `tests/test_compact_util.hpp`; `forward_ratio<T>` is
+  dget04's, a forward error discounted by `rcond` from `rcond1`, LAPACKE's
+  `?getrf` + `?gecon` on the dense, unpacked input) -- compared against the
+  single `THRESH = 30` of LAPACK's `dtest.in`. A correct kernel's ratios are
+  O(1) (observed ≤ 2.2 across the suites) in either precision; each case prints
+  them, so a near miss is visible. Add a check as a ratio, never as a hand-picked
+  `k * eps * n` tolerance; only structural contracts (bit-for-bit reproduction,
+  untouched storage, identity padding lanes) are exact. The MKL suites still
+  carry their own relative gates.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cbk.h`) validates LAPACK-style, returning `-j` for a bad j-th

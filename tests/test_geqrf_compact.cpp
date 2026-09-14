@@ -6,17 +6,16 @@
 // vectorized kernel executes V lanes at a time, so a correct kernel matches it
 // to working precision.
 //
-// Checks per (T, V):
-//   1. compact (H, tau)  ==  LAPACKE_?geqr2 (H, tau)  (elementwise, ~eps*scale)
-//   2. reconstruction  Q * triu(H) == A  by ?ormqr    (valid factorization)
+// Checks per (T, V), each a test ratio against THRESH (test_compact_util.hpp):
+//   1. compact (H, tau)  ==  LAPACKE_?geqr2 (H, tau)  (elementwise, ~eps)
+//   2. reconstruction  Q * triu(H) == A  by ?ormqr    (dqrt01's R - Q^T A)
 //   3. reflectors are usable: ormqr_compact('T') then ?trsm recovers a known
-//      X from B = A X                                 (in-situ with ormqr)
+//      X from B = A X                                 (dget04's forward error)
 // and, per (T, structure, cond) on the dense-LAPACK contract (design 7.1):
-//   4. Q = ?orgqr(H, tau), R = triu(H): the factorization residual
-//      ||R - Q^T A||_1 / ||A||_1 <= 20 n eps and the orthogonality
-//      ||Q^T Q - I||_1 <= 100 n eps, on dense, column-scaled, rank-deficient
-//      and near-collinear inputs; (H, tau) elementwise vs the blocked
-//      LAPACKE_?geqrf on the dense ones (relative, 100 n eps)
+//   4. Q = ?orgqr(H, tau), R = triu(H): dqrt01's factorization residual
+//      ||R - Q^T A|| / (m ||A|| eps) and orthogonality ||Q^T Q - I|| / (m eps),
+//      on dense, column-scaled, rank-deficient and near-collinear inputs;
+//      (H, tau) elementwise vs the blocked LAPACKE_?geqrf on the dense ones
 // over the suite's shapes and the small-dimension cross product (small_dims:
 // m x n from 0 to 5, so the empty operand and the single row or column run
 // through the same checks), plus LAPACK-style argument validation of the C
@@ -41,7 +40,6 @@ using namespace cbk::test;
 template <class T, int V> static int run_case(int nm, int m, int n)
 {
     const int k = std::min(m, n);
-    const T eps = std::numeric_limits<T>::epsilon();
 
     // random A batch, diagonal-boosted so the columns stay well conditioned
     MatrixBatch<T> A(nm, m, n), Aref(nm, m, n), tau_ref(nm, k, 1);
@@ -62,28 +60,33 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     unpack_compact(Aout, ap.data(), lda, V);
     unpack_tau(tau_out, tp.data(), V);
 
-    // check 1: (H, tau) match the scalar reference elementwise
-    double e_h = 0, e_t = 0;
+    // check 1: (H, tau) match the scalar reference elementwise -- the same
+    // operation sequence, so at ~eps; H relative to ||A||, tau (O(1)
+    // reflector scalars) to 1
+    // check 2: reconstruction Q * triu(H) == A (dqrt01's R - Q^T A, by ?ormqr)
+    double r_h = 0, r_t = 0, r_rec = 0;
     for (int idx = 0; idx < nm; ++idx) {
-        e_h = std::max(e_h, max_abs_diff(Aout[idx], Aref[idx], (size_t)m * n));
-        e_t = std::max(e_t, max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)k));
-    }
+        const double na = norm1(A.view(idx));
+        r_h = std::max(
+            r_h, test_ratio<T>(max_abs_diff(Aout[idx], Aref[idx], (size_t)m * n), m, na));
+        r_t = std::max(
+            r_t, test_ratio<T>(max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)k), m));
 
-    // check 2: reconstruction Q * triu(H) == A (valid factorization)
-    double e_rec = 0;
-    for (int idx = 0; idx < nm; ++idx) {
         std::vector<T> Recs((size_t)m * n, T(0)); // start from R
         const auto Rec = mat_view(Recs.data(), m, n);
         for (int j = 0; j < n; ++j)
             for (int i = 0; i <= std::min(j, k - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
         ref_ormqr('N', k, Aout.view(idx), tau_out[idx], Rec);
-        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
+        r_rec = std::max(
+            r_rec,
+            test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)m * n), m, na));
     }
 
     // check 3: solve A X = B with the produced reflectors (square only), using
-    // the project's ormqr kernel + a triangular solve. X(:,j) = j+1.
-    double e_solve = -1;
+    // the project's ormqr kernel + a triangular solve. X(:,j) = j+1; dget04's
+    // forward error, discounted by rcond(A).
+    double r_solve = -1;
     if (m == n) {
         const int nrhs = 3;
         const std::vector<T> Xs = known_solution<T>(n, nrhs);
@@ -96,25 +99,23 @@ template <class T, int V> static int run_case(int nm, int m, int n)
                           nm);
         MatrixBatch<T> Bo(nm, n, nrhs);
         unpack_compact(Bo, bp.data(), lda, V);
-        e_solve = 0;
+        r_solve = 0;
         for (int idx = 0; idx < nm; ++idx) {
             ref_trsm_upper(Aout.view(idx), Bo.view(idx));
-            e_solve =
-                std::max(e_solve, max_abs_diff(Bo[idx], Xs.data(), (size_t)n * nrhs));
+            r_solve = std::max(r_solve, forward_ratio<T>(max_abs_diff(Bo[idx], Xs.data(),
+                                                                      (size_t)n * nrhs),
+                                                         norm1(X), rcond1(A.view(idx))));
         }
     }
 
-    const double scale = std::max(1, m);
-    const double tol_fac = 200.0 * eps * scale; // same op sequence as ?geqr2, ~eps
-    const double tol_rec = 200.0 * eps * scale; // ?ormqr's rounding differs, same bound
-    const double tol_sol = 1e5 * eps * m;       // cond(A)-dependent
-    bool ok_h = e_h <= tol_fac, ok_t = e_t <= tol_fac, ok_r = e_rec <= tol_rec;
-    bool ok_s = (e_solve < 0) || (e_solve <= tol_sol);
+    const bool ok_h = passes(r_h), ok_t = passes(r_t), ok_r = passes(r_rec);
+    const bool ok_s = (r_solve < 0) || passes(r_solve);
 
-    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d | H:%.1e %s tau:%.1e %s rec:%.1e %s",
-                compact<T>::name, V, nm, m, n, e_h, ok_h ? "OK" : "FAIL", e_t,
-                ok_t ? "OK" : "FAIL", e_rec, ok_r ? "OK" : "FAIL");
-    if (e_solve >= 0) std::printf(" solve:%.1e %s", e_solve, ok_s ? "OK" : "FAIL");
+    std::printf(
+        "T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d | H:%-5.2g %s tau:%-5.2g %s rec:%-5.2g %s",
+        compact<T>::name, V, nm, m, n, r_h, verdict(r_h), r_t, verdict(r_t), r_rec,
+        verdict(r_rec));
+    if (r_solve >= 0) std::printf(" solve:%-5.2g %s", r_solve, verdict(r_solve));
     std::printf(" | info=%d\n", info);
     return (info != 0) + !ok_h + !ok_t + !ok_r + !ok_s;
 }
@@ -154,7 +155,6 @@ template <class T> static void gen_matrix(MatrixView<T> A, double cond, Structur
 template <class T, int V>
 static int run_invariants(int nm, int m, int n, double cond, Structure structure = DENSE)
 {
-    const double eps = std::numeric_limits<T>::epsilon();
     const int k = std::min(m, n);
 
     MatrixBatch<T> A(nm, m, n);
@@ -168,7 +168,7 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
     unpack_compact(H, ap.data(), m, V);
     unpack_tau(tau, tp.data(), V);
 
-    double worst_res = 0, worst_orth = 0, worst_el = 0;
+    double r_res = 0, r_orth = 0, r_el = 0;
     std::vector<T> Qs((size_t)m * k), QtAs((size_t)k * n), QtQs((size_t)k * k),
         Hrefs(A.stride()), tauref(k);
     const auto Q = mat_view(Qs.data(), m, k), QtA = mat_view(QtAs.data(), k, n),
@@ -181,20 +181,21 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
         copy_matrix(leading(Hm, m, k), Q);
         ref_orgqr(k, Q, tau[idx]);
 
-        // residual R - Q^T A, R = triu(H) (k x n)
+        // residual R - Q^T A, R = triu(H) (k x n): dqrt01's
+        // ||R - Q^T A|| / (m ||A|| eps)
         matmul(Q.transposed(), Am, QtA);
         double resid = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < k; ++i)
                 resid = std::max(
                     resid, (double)std::abs(((i <= j) ? Hm(i, j) : T(0)) - QtA(i, j)));
-        worst_res = std::max(worst_res, resid / std::max(norm1(Am), norm_floor));
+        r_res = std::max(r_res, test_ratio<T>(resid, m, norm1(Am)));
 
-        // orthogonality Q^T Q - I
+        // orthogonality Q^T Q - I: dqrt01's ||I - Q^T Q|| / (m eps)
         matmul(Q.transposed(), Q, QtQ);
         for (int d = 0; d < k; ++d)
             QtQ(d, d) -= T(1);
-        worst_orth = std::max(worst_orth, norm1(QtQ));
+        r_orth = std::max(r_orth, test_ratio<T>(norm1(QtQ), m));
 
         // elementwise vs the blocked LAPACKE_?geqrf, on the dense inputs only,
         // where the reflectors are essentially unique: it catches a
@@ -207,21 +208,19 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
             ref_geqrf(Href, tauref.data());
             const double el = std::max(max_abs_diff(H[idx], Hrefs.data(), A.stride()),
                                        max_abs_diff(tau[idx], tauref.data(), (size_t)k));
-            worst_el = std::max(worst_el, el / std::max(norm1(Am), norm_floor));
+            r_el = std::max(r_el, test_ratio<T>(el, n, norm1(Am)));
         }
     }
 
-    const double rtol_res = 20.0 * n * eps, rtol_orth = 100.0 * n * eps;
-    const double rtol_el = 100.0 * n * eps;
-    const bool ok = (info == 0) && (worst_res <= rtol_res) && (worst_orth <= rtol_orth) &&
-                    (worst_el <= rtol_el);
+    const bool ok = (info == 0) && passes(r_res) && passes(r_orth) && passes(r_el);
     const char *sname = structure == DENSE            ? "dense"
                         : structure == RANK_DEFICIENT ? "rankdef"
                                                       : "collin";
-    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d cond=%.0f %-8s| res %.2e (%.1e) "
-                "orth %.2e (%.1e) el %.1e | info=%d %s\n",
-                compact<T>::name, V, nm, m, n, cond, sname, worst_res, rtol_res,
-                worst_orth, rtol_orth, worst_el, info, ok ? "OK" : "FAIL");
+    std::printf(
+        "T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d cond=%.0f %-8s| res %-5.2g orth %-5.2g "
+        "el %-5.2g | info=%d %s\n",
+        compact<T>::name, V, nm, m, n, cond, sname, r_res, r_orth, r_el, info,
+        ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -260,7 +259,6 @@ template <class T, int V> static int test_underflow()
 {
     const int nm = V, m = 6, n = 4, tiny_col = 0; /* no earlier reflector touches it */
     const T tiny = std::is_same_v<T, double> ? T(1e-170) : T(1e-25);
-    const T eps = std::numeric_limits<T>::epsilon();
 
     MatrixBatch<T> A(nm, m, n);
     for (int idx = 0; idx < nm; ++idx) {
@@ -277,7 +275,7 @@ template <class T, int V> static int test_underflow()
     unpack_tau(tau, tp.data(), V);
 
     int fails = (info != 0);
-    double e_rec = 0;
+    double r_rec = 0;
     for (int idx = 0; idx < nm; ++idx) {
         /* column 0 is the first reflector's, so nothing reduces it first: its
          * tail underflows squared, tau = 0, the diagonal is kept, the body
@@ -298,14 +296,14 @@ template <class T, int V> static int test_underflow()
             for (int i = 0; i <= std::min(j, n - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
         ref_ormqr('N', n, Aout.view(idx), tau[idx], Rec);
-        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)m * n));
+        r_rec = std::max(r_rec,
+                         test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)m * n),
+                                       m, norm1(A.view(idx))));
     }
-    const double tol_rec = 200.0 * eps * m;
-    fails += !(e_rec <= tol_rec);
+    fails += !passes(r_rec);
     std::printf("T=%-6s V=%-2d underflow column: tau=0, diag kept, body 0, finite %s | "
-                "rec:%.1e %s\n",
-                compact<T>::name, V, fails ? "FAIL" : "OK", e_rec,
-                e_rec <= tol_rec ? "OK" : "FAIL");
+                "rec:%-5.2g %s\n",
+                compact<T>::name, V, fails ? "FAIL" : "OK", r_rec, verdict(r_rec));
     return fails;
 }
 

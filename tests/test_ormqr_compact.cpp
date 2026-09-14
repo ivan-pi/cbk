@@ -8,11 +8,11 @@
  * Test design: X(:,j) = j+1 (ones, twos, threes, ...), B = A*X, so the
  * b columns are scaled row sums of A; the solve must recover X.
  *
- * Checks per (T, V):
- *   1. compact Q^T B  ==  LAPACKE_?ormqr Q^T B, relative to ||Q^T B||_1 at
- *      20 m eps (the design's 7.1 gate: two backward-stable applications of
- *      the same reflectors, LAPACK's blocked above its crossover)
- *   2. back substitution recovers X
+ * Checks per (T, V), each a test ratio against THRESH (test_compact_util.hpp):
+ *   1. compact Q^T B  ==  LAPACKE_?ormqr Q^T B, relative to ||Q^T B||_1 (the
+ *      design's 7.1 gate: two backward-stable applications of the same
+ *      reflectors, LAPACK's blocked above its crossover)
+ *   2. back substitution recovers X (dget04's forward error, rcond(A))
  *   3. applying 'N' after 'T' recovers the original B  (Q Q^T = I)
  * over the suite's shapes and the small-dimension cross product (small_dims:
  * m x nrhs from 0 to 5, the empty operand and the 1/2/3-column right-hand
@@ -39,10 +39,6 @@ using namespace cbk::test;
 template <class T, int V> static int run_case(int nm, int m, int nrhs)
 {
     const int k = m;
-    const T eps = std::numeric_limits<T>::epsilon();
-    const double tol_el = 20.0 * eps * m;   /* vs LAPACKE_?ormqr, relative */
-    const double tol_exact = 100.0 * eps;   /* the 'N' after 'T' round trip */
-    const double tol_solve = 1e5 * eps * m; /* cond(A)-dependent */
 
     const std::vector<T> Xs = known_solution<T>(m, nrhs);
     const auto X = mat_view(Xs.data(), m, nrhs);
@@ -67,31 +63,35 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     /* check 1: compact Q^T B vs LAPACKE_?ormqr, relative to ||Q^T B||_1 */
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), ld, tp.data(), bp.data(), ld, V, nm);
     unpack_compact(Bout, bp.data(), ld, V);
-    double e1 = 0;
+    double r1 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        e1 = std::max<double>(e1, max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs) /
-                                      std::max(norm1(Bref.view(kk)), norm_floor));
+        r1 =
+            std::max(r1, test_ratio<T>(max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs),
+                                       m, norm1(Bref.view(kk))));
 
-    /* check 2: solve recovers X */
-    double e2 = 0;
+    /* check 2: solve recovers X (dget04, discounted by rcond(A)) */
+    double r2 = 0;
     for (int kk = 0; kk < nm; ++kk) {
         ref_trsm_upper(Afac.view(kk), Bout.view(kk));
-        e2 = std::max<double>(e2, max_abs_diff(Bout[kk], Xs.data(), (size_t)m * nrhs));
+        r2 = std::max(
+            r2, forward_ratio<T>(max_abs_diff(Bout[kk], Xs.data(), (size_t)m * nrhs),
+                                 norm1(X), rcond1(A.view(kk))));
     }
 
-    /* check 3: 'N' undoes 'T' */
+    /* check 3: 'N' undoes 'T', relative to ||B||_1 */
     compact<T>::ormqr('N', m, nrhs, k, ap.data(), ld, tp.data(), bp.data(), ld, V, nm);
     unpack_compact(Bout, bp.data(), ld, V);
-    double e3 = 0;
+    double r3 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        e3 = std::max<double>(e3, max_abs_diff(Bout[kk], B[kk], (size_t)m * nrhs));
+        r3 = std::max(r3, test_ratio<T>(max_abs_diff(Bout[kk], B[kk], (size_t)m * nrhs),
+                                        m, norm1(B.view(kk))));
 
-    /* scale-aware: B entries are O(m), QQ^t roundtrip accumulates a bit */
-    bool ok1 = e1 <= tol_el, ok2 = e2 <= tol_solve, ok3 = e3 <= tol_exact * m * 10;
-    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d nrhs=%d | QtB: %.2e %s | solve X: %.2e %s "
-                "| QQt=I: %.2e %s\n",
-                compact<T>::name, V, nm, m, nrhs, e1, ok1 ? "OK" : "FAIL", e2,
-                ok2 ? "OK" : "FAIL", e3, ok3 ? "OK" : "FAIL");
+    const bool ok1 = passes(r1), ok2 = passes(r2), ok3 = passes(r3);
+    std::printf(
+        "T=%-6s V=%-2d nm=%-2d m=%-3d nrhs=%d | QtB: %-5.2g %s | solve X: %-5.2g %s "
+        "| QQt=I: %-5.2g %s\n",
+        compact<T>::name, V, nm, m, nrhs, r1, verdict(r1), r2, verdict(r2), r3,
+        verdict(r3));
     return !ok1 + !ok2 + !ok3;
 }
 
@@ -105,21 +105,18 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
 template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
 {
     const int k = m; /* square, full rank */
-    const T eps = std::numeric_limits<T>::epsilon();
-    const double tol_solve = 1e5 * eps * m; /* cond(A)-dependent */
 
     const std::vector<T> Xs = known_solution<T>(m, nrhs);
     const auto X = mat_view(Xs.data(), m, nrhs);
 
-    MatrixBatch<T> Afac(nm, m, m), B(nm, m, nrhs), Bout(nm, m, nrhs), tau(nm, m, 1);
+    MatrixBatch<T> A(nm, m, m), Afac(nm, m, m), B(nm, m, nrhs), Bout(nm, m, nrhs),
+        tau(nm, m, 1);
     MatrixBatch<lapack_int> jpvt(nm, m, 1);
     for (int kk = 0; kk < nm; ++kk) {
-        std::vector<T> As((size_t)m * m);
-        const auto A = mat_view(As.data(), m, m);
-        gen_boosted(A);           /* diagonal boost tames cond */
-        matmul(A, X, B.view(kk)); /* B = A X */
+        gen_boosted(A.view(kk));           /* diagonal boost tames cond */
+        matmul(A.view(kk), X, B.view(kk)); /* B = A X */
 
-        std::copy(As.begin(), As.end(), Afac[kk]);
+        std::copy(A[kk], A[kk] + A.stride(), Afac[kk]);
         ref_geqp3(Afac.view(kk), jpvt[kk], tau[kk]);
     }
 
@@ -131,8 +128,9 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
     compact<T>::ormqr('T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V, nm);
     unpack_compact(Bout, bp.data(), m, V);
 
-    /* R y = c, then back-permute x(jpvt(j)) = y(j); compare against X */
-    double e = 0;
+    /* R y = c, then back-permute x(jpvt(j)) = y(j); compare against X (dget04,
+     * discounted by rcond(A)) */
+    double r = 0;
     std::vector<T> xs((size_t)m * nrhs);
     const auto x = mat_view(xs.data(), m, nrhs);
     for (int kk = 0; kk < nm; ++kk) {
@@ -141,12 +139,14 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
         for (int j = 0; j < nrhs; ++j)
             for (int i = 0; i < m; ++i)
                 x(jpvt[kk][i], j) = y(i, j);
-        e = std::max<double>(e, max_abs_diff(xs.data(), Xs.data(), (size_t)m * nrhs));
+        r = std::max(
+            r, forward_ratio<T>(max_abs_diff(xs.data(), Xs.data(), (size_t)m * nrhs),
+                                norm1(X), rcond1(A.view(kk))));
     }
 
-    bool ok = e <= tol_solve;
-    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d nrhs=%d | pivoted solve X: %.2e %s\n",
-                compact<T>::name, V, nm, m, nrhs, e, ok ? "OK" : "FAIL");
+    const bool ok = passes(r);
+    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d nrhs=%d | pivoted solve X: %-5.2g %s\n",
+                compact<T>::name, V, nm, m, nrhs, r, verdict(r));
     return !ok;
 }
 

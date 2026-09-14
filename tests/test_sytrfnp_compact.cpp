@@ -11,7 +11,8 @@
 // reference itself is validated first, against the library: its (L, D) must
 // reconstruct A through cblas_?trmm / ?gemm (test_reference).
 //
-// Checks per (T, V, uplo, layout), on symmetric *indefinite* batches:
+// Checks per (T, V, uplo, layout), on symmetric *indefinite* batches, each a
+// test ratio against THRESH (test_compact_util.hpp):
 //   1. named-triangle factor  ==  scalar reference factor  (elementwise)
 //   2. reconstruction  L D L^T == A  (lower) / U^T D U == A  (upper)
 //   3. the strictly-opposite triangle of the compact buffer is bit-for-bit
@@ -77,12 +78,11 @@ template <class T> static void ref_sytf2np(char uplo, MatrixView<T> As)
 // (L, D) must reconstruct A. W = L D (the columns of the unit-lower L scaled
 // by D), then W := W L^T by ?trmm (side 'R', unit diagonal); the upper
 // factor U^T D U is the same product read through the transposed view, as in
-// ref_sytf2np itself, and A is symmetric. Gated at
-// ||L D L^T - A||_1 / ||A||_1 <= 20 n eps, the design's 7.1 residual.
+// ref_sytf2np itself, and A is symmetric. Gated on the test ratio
+// ||L D L^T - A|| / (n ||A|| eps), the design's 7.1 residual.
 
 template <class T> static int test_reference(int n, char uplo)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool upper = (uplo == 'U' || uplo == 'u');
     std::vector<T> As((size_t)n * n), Fs((size_t)n * n), Ws((size_t)n * n),
         Rs((size_t)n * n);
@@ -96,14 +96,12 @@ template <class T> static int test_reference(int n, char uplo)
         for (int i = 0; i < n; ++i)
             W(i, j) = (i == j) ? L(j, j) : (i > j) ? L(i, j) * L(j, j) : T(0); // L D
     tri_apply('R', 'L', 'T', 'U', L, W, R); // (L D) L^T
-    const double worst =
-        max_abs_diff(Rs.data(), As.data(), As.size()) / std::max(norm1(A), norm_floor);
-    const double tol = 20.0 * eps * std::max(1, n);
-    const bool ok = worst <= tol;
-    std::printf(
-        "T=%-6s reference ref_sytf2np uplo=%c n=%-3d | ||LDL^T-A||/||A|| %.1e (%.1e) "
-        "%s\n",
-        compact<T>::name, uplo, n, worst, tol, ok ? "OK" : "FAIL");
+    const double r =
+        test_ratio<T>(max_abs_diff(Rs.data(), As.data(), As.size()), n, norm1(A));
+    const bool ok = passes(r);
+    std::printf("T=%-6s reference ref_sytf2np uplo=%c n=%-3d | ||LDL^T-A||/(n ||A|| eps) "
+                "%-5.2g %s\n",
+                compact<T>::name, uplo, n, r, verdict(r));
     return !ok;
 }
 
@@ -111,7 +109,6 @@ template <class T> static int test_reference(int n, char uplo)
 
 template <class T, int V> static int run_case(int nm, int n, char uplo, char layout)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const bool upper = (uplo == 'U' || uplo == 'u');
 
@@ -130,12 +127,14 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), lda, V, rowmajor);
 
-    double e_fac = 0, e_rec = 0, e_untouched = 0, a_norm = 1;
+    double r_fac = 0, r_rec = 0, e_untouched = 0;
     for (int idx = 0; idx < nm; ++idx) {
         const auto Ain = A.view(idx), Fac = Aout.view(idx), Ref = Aref.view(idx);
-        a_norm = std::max(a_norm, norm1(Ain));
-        // check 1: named-triangle factor vs scalar reference (elementwise)
+        const double na = norm1(Ain);
+        // check 1: named-triangle factor vs scalar reference (elementwise, the
+        // same operation sequence; relative to ||A||)
         // check 3: strictly-opposite triangle unchanged from the input A
+        double e_fac = 0, e_rec = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
@@ -145,27 +144,26 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
                     e_untouched =
                         std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
             }
+        r_fac = std::max(r_fac, test_ratio<T>(e_fac, n, na));
 
-        // check 2: reconstruction of A from the named triangle's (D, L|U)
+        // check 2: reconstruction of A from the named triangle's (D, L|U):
+        // ||L D L^T - A|| / (n ||A|| eps), dsyt01's form
         for (int i = 0; i < n; ++i)
             for (int j = 0; j < n; ++j)
                 e_rec = std::max(e_rec, std::abs(ldlt_reconstruct(Fac, i, j, upper) -
                                                  (double)Ain(i, j)));
+        r_rec = std::max(r_rec, test_ratio<T>(e_rec, n, na));
     }
 
-    const double scale = std::max(1, n);
-    const double tol_fac = 20.0 * eps * scale;          // same op sequence
-    const double tol_rec = 40.0 * eps * scale * a_norm; // O(n) accumulation in recon
-    bool ok_f = e_fac <= tol_fac;
-    bool ok_r = e_rec <= tol_rec;
-    bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
-    bool ok_i = (info == 0);
+    const bool ok_f = passes(r_fac), ok_r = passes(r_rec);
+    const bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
+    const bool ok_i = (info == 0);
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d | fac:%.1e %s rec:%.1e %s "
-                "untouched:%s | info=%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, e_fac, ok_f ? "OK" : "FAIL",
-                e_rec, ok_r ? "OK" : "FAIL", ok_u ? "OK" : "FAIL", info,
-                ok_i ? "OK" : "FAIL");
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d | fac:%-5.2g %s rec:%-5.2g %s "
+        "untouched:%s | info=%d %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, r_fac, verdict(r_fac), r_rec,
+        verdict(r_rec), ok_u ? "OK" : "FAIL", info, ok_i ? "OK" : "FAIL");
     return (!ok_f) + (!ok_r) + (!ok_u) + (!ok_i);
 }
 
@@ -177,7 +175,6 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
 template <class T, int V>
 static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
 
@@ -203,22 +200,20 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
     MatrixBatch<T> Xhat(nm, n, nrhs);
     unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
 
-    const auto [e_fwd, e_res] = solve_errors(A, B, Xhat, X);
+    // dget02's residual and dget04's forward error (the latter discounted by
+    // rcond(A), which the indefinite batch's conditioning enters through)
+    const auto [r_res, r_fwd] = solve_ratios(A, B, Xhat, X);
     // fused vs two-step, on the raw compact buffers (padded lanes included)
     const bool fused_same = (ap2 == ap) && (bp2 == bp);
 
-    // The residual gate is what the (backward-stable) sweeps control; the
-    // forward error additionally carries cond(A) of the indefinite batch, so
-    // its gate gets conditioning headroom.
-    const double rtol_res = 100.0 * std::max(1, n) * eps;
-    const double rtol_fwd = 500.0 * std::max(1, n) * eps;
-    bool ok = (e_fwd <= rtol_fwd) && (e_res <= rtol_res) && fused_same && (info_f == 0) &&
-              (info_s == 0) && (info_v == 0);
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | fwd:%.1e "
-                "(%.1e) res:%.1e (%.1e) sysv==trf+trs:%s info=%d/%d/%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, nrhs, e_fwd, rtol_fwd, e_res,
-                rtol_res, fused_same ? "yes" : "NO", info_f, info_s, info_v,
-                ok ? "OK" : "FAIL");
+    const bool ok = passes(r_res) && passes(r_fwd) && fused_same && (info_f == 0) &&
+                    (info_s == 0) && (info_v == 0);
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | res:%-5.2g %s "
+        "fwd:%-5.2g %s sysv==trf+trs:%s info=%d/%d/%d %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, nrhs, r_res, verdict(r_res), r_fwd,
+        verdict(r_fwd), fused_same ? "yes" : "NO", info_f, info_s, info_v,
+        ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -293,10 +288,11 @@ template <class T, int V> static int run_zerodiag(char uplo, char layout)
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
-    double e = 0;
+    double r = 0;
     bool finite = true;
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx);
+        double e = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
@@ -304,12 +300,12 @@ template <class T, int V> static int run_zerodiag(char uplo, char layout)
                 if (!std::isfinite((double)Fac(i, j))) finite = false;
                 e = std::max(e, (double)std::abs(Fac(i, j) - Ref(i, j)));
             }
+        r = std::max(r, test_ratio<T>(e, n, norm1(A.view(idx))));
     }
-    const double tol = 20.0 * std::numeric_limits<T>::epsilon() * n;
-    bool ok = finite && (e <= tol) && (info == 0);
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c zero-diagonal A(1,1)=0 | err:%.1e "
+    const bool ok = finite && passes(r) && (info == 0);
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c zero-diagonal A(1,1)=0 | err:%-5.2g "
                 "finite:%s %s\n",
-                compact<T>::name, V, uplo, layout, e, finite ? "yes" : "NO",
+                compact<T>::name, V, uplo, layout, r, finite ? "yes" : "NO",
                 ok ? "OK" : "FAIL");
     return !ok;
 }
@@ -352,11 +348,12 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
-    double e_sib = 0; // worst error over the factorable sibling lanes
+    double r_sib = 0; // worst ratio over the factorable sibling lanes
     bool sib_finite = true;
     bool bad_poisoned = false; // the zero-pivot lane must carry Inf/NaN
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx);
+        double e_sib = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
@@ -370,17 +367,19 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
                     e_sib = std::max(e_sib, (double)std::abs(x - Ref(i, j)));
                 }
             }
+        if (idx != badlane)
+            r_sib = std::max(r_sib, test_ratio<T>(e_sib, n, norm1(A.view(idx))));
     }
 
-    const double tol = 20.0 * std::numeric_limits<T>::epsilon() * std::max(1, n);
-    bool ok_sib = sib_finite && (e_sib <= tol); // siblings uncontaminated & correct
-    bool ok_bad = bad_poisoned;                 // poison confined but present
-    bool ok_info = (info == 0);                 // GIGO: no early-exit, no error
+    const bool ok_sib = sib_finite && passes(r_sib); // siblings uncontaminated & correct
+    const bool ok_bad = bad_poisoned;                // poison confined but present
+    const bool ok_info = (info == 0);                // GIGO: no early-exit, no error
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c n=%-3d zero-pivot lane | siblings:%.1e %s "
-                "poison:%s info=%d %s\n",
-                compact<T>::name, V, uplo, layout, n, e_sib, ok_sib ? "OK" : "FAIL",
-                ok_bad ? "OK" : "FAIL", info, ok_info ? "OK" : "FAIL");
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c n=%-3d zero-pivot lane | siblings:%-5.2g %s "
+        "poison:%s info=%d %s\n",
+        compact<T>::name, V, uplo, layout, n, r_sib, ok_sib ? "OK" : "FAIL",
+        ok_bad ? "OK" : "FAIL", info, ok_info ? "OK" : "FAIL");
     return (!ok_sib) + (!ok_bad) + (!ok_info);
 }
 

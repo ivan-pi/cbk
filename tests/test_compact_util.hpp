@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -74,6 +75,48 @@ template <class T> T frand()
 // ratio -- it only keeps a zero reference norm from producing 0/0 = NaN. It is
 // a divide-by-zero guard (a normal double near DBL_MIN), not a tolerance.
 constexpr double norm_floor = 1e-300;
+
+// ----------------------- test ratios and the threshold ----------------
+// Every numerical check is a dimensionless test ratio in the convention of
+// LAPACK's TESTING suites: the error divided by what backward stability
+// allows it to be, (order) * (operand norm) * eps, and one threshold decides
+// -- THRESH = 30, the value of LAPACK's dtest.in. A correct kernel's ratio is
+// O(1) in either precision; a case prints its ratios next to its verdict, so
+// a near miss is visible, and a ratio >= THRESH fails (so does NaN: the
+// comparison is written to fail it). One knob tunes every suite; there are
+// no per-check tolerances. Only structural contracts -- a bit-for-bit
+// reproduction, storage the routine must not touch, the identity in the
+// padding lanes -- stay exact.
+//
+//   test_ratio<T>(err, dim, norm)   err / (max(1, dim) * norm * eps)
+//     the residual form (dqrt01, dpot01, dget02): err the worst entry of
+//     R - Q^T A, L L^T - A, B - A X, ...; dim the order it accumulates over;
+//     norm the operand(s) it is relative to (1 for an orthogonal Q)
+//   forward_ratio<T>(err, normx, rcond)   err * rcond / (normx * eps)
+//     the forward-error form (dget04): err = ||x - x_true||, discounted by
+//     rcond = 1 / (||A|| ||A^-1||), the amplification a solve is allowed
+constexpr double THRESH = 30.0;
+
+template <class T> double test_ratio(double err, int dim, double norm = 1.0)
+{
+    return err / (std::max(1, dim) * std::max(norm, norm_floor) *
+                  (double)std::numeric_limits<T>::epsilon());
+}
+
+template <class T> double forward_ratio(double err, double normx, double rcond)
+{
+    return test_ratio<T>(err * rcond, 1, normx);
+}
+
+inline bool passes(double ratio)
+{
+    return ratio < THRESH; /* false for NaN */
+}
+
+inline const char *verdict(double ratio)
+{
+    return passes(ratio) ? "OK" : "FAIL";
+}
 
 // max |a - b| over n elements.
 template <class T> double max_abs_diff(const T *a, const T *b, size_t n)

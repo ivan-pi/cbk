@@ -8,11 +8,12 @@
 // time, blocked by LAPACK above its crossover -- and, independently of it,
 // the properties that define the two solutions.
 //
-// Checks per (T, V, layout, trans, shape), the design's 7.1 gates:
+// Checks per (T, V, layout, trans, shape), the design's 7.1 gates, each a
+// test ratio against THRESH (test_compact_util.hpp):
 //   1. X (all max(m,n) rows of B, the residual rows included) == ref_gels,
-//      relative to ||X_lapack||_1 at 100 max(m,n) eps
+//      relative to ||X_lapack||_1
 //   2. the factorization left in A and the tau left in taup == ref_gels,
-//      relative to ||A||_1 at 100 max(m,n) eps
+//      relative to ||A||_1
 //   3. least squares: the normal equations op(A)^T (B - op(A) X) = 0, and the
 //      residual sums of squares in rows n..m-1 of B equal ||B - op(A) X||^2
 //      minimum norm: op(A) X = B, and X equals the minimum-norm solution formed
@@ -49,7 +50,6 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
     const bool overdet = (tall != tran);
     const int rows_op = tran ? n : m,
               cols_op = tran ? m : n; // op(A) is rows_op x cols_op
-    const T eps = std::numeric_limits<T>::epsilon();
 
     // random A (diagonal-boosted, so op(A) is well conditioned) and random B;
     // the reference works on copies
@@ -79,20 +79,24 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
     unpack_tau(tau_out, tp.data(), V);
 
     // check 1 & 2: X (all p rows), the factorization, and tau vs the
-    // reference, each relative to the reference operand's L1 norm
-    double e_x = 0, e_h = 0, e_t = 0;
+    // reference, relative to the reference operand's L1 norm (tau, O(1)
+    // reflector scalars, to 1)
+    double r_x = 0, r_h = 0, r_t = 0;
     for (int idx = 0; idx < nm; ++idx) {
-        const double na = std::max(norm1(A.view(idx)), norm_floor);
-        e_x = std::max(e_x, max_abs_diff(Bout[idx], Bref[idx], B.stride()) /
-                                std::max(norm1(Bref.view(idx)), norm_floor));
-        e_h = std::max(e_h, max_abs_diff(Aout[idx], Aref[idx], A.stride()) / na);
-        e_t = std::max(e_t, max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)q) / na);
+        const double na = norm1(A.view(idx));
+        r_x = std::max(r_x, test_ratio<T>(max_abs_diff(Bout[idx], Bref[idx], B.stride()),
+                                          p, norm1(Bref.view(idx))));
+        r_h = std::max(
+            r_h, test_ratio<T>(max_abs_diff(Aout[idx], Aref[idx], A.stride()), p, na));
+        r_t = std::max(
+            r_t, test_ratio<T>(max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)q), p));
     }
 
-    // check 3: the defining properties, formed without the reference: e_prop is
-    // the normal equations (least squares) or the residual (minimum norm),
-    // e_prop2 the residual-sum-of-squares rows or the Gram-formed solution
-    double e_prop = 0, e_prop2 = 0;
+    // check 3: the defining properties, formed without the reference: r_prop
+    // is the normal equations (least squares) or the residual (minimum norm),
+    // relative to ||op(A)|| ||B|| (dqrt17's scale), r_prop2 the
+    // residual-sum-of-squares rows or the Gram-formed solution
+    double r_prop = 0, r_prop2 = 0;
     std::vector<T> Rs((size_t)rows_op * nrhs), Ss((size_t)cols_op * nrhs);
     const auto R = mat_view(Rs.data(), rows_op, nrhs);
     const auto S = mat_view(Ss.data(), cols_op, nrhs);
@@ -100,8 +104,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
         const auto Aop = tran ? A.view(idx).transposed() : A.view(idx);
         const auto Bin = leading(B.view(idx), rows_op, nrhs);  // the right-hand sides
         const auto X = leading(Bout.view(idx), cols_op, nrhs); // the solution rows
-        const double scale =
-            std::max(norm1(Aop), norm_floor) * std::max(norm1(Bin), norm_floor);
+        const double scale = norm1(Aop) * norm1(Bin);
         matmul(Aop, X, R); // R = op(A) X
         if (overdet) {
             // r = B - op(A) X; normal equations op(A)^T r = 0
@@ -110,7 +113,8 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
                     R(i, j) = Bin(i, j) - R(i, j);
             matmul(Aop.transposed(), R, S);
             for (size_t e = 0; e < Ss.size(); ++e)
-                e_prop = std::max(e_prop, std::abs((double)Ss[e]) / scale);
+                r_prop =
+                    std::max(r_prop, test_ratio<T>(std::abs((double)Ss[e]), p, scale));
             // rows cols_op..rows_op-1 of B hold the residual: squared column
             // norms == ||r_j||^2 (relative to ||b_j||^2: a square system has no
             // residual rows and a zero residual). Not at min(m,n) = 0: that is
@@ -124,55 +128,55 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
                 }
                 for (int i = cols_op; i < rows_op; ++i)
                     rss_b += (double)Bout(idx, i, j) * Bout(idx, i, j);
-                e_prop2 =
-                    std::max(e_prop2, std::abs(rss - rss_b) / std::max(bb, norm_floor));
+                r_prop2 = std::max(
+                    r_prop2,
+                    test_ratio<T>(std::abs(rss - rss_b) / std::max(bb, norm_floor), p));
             }
         }
         else {
             // op(A) X = B
             for (int j = 0; j < nrhs; ++j)
                 for (int i = 0; i < rows_op; ++i)
-                    e_prop =
-                        std::max(e_prop, std::abs((double)R(i, j) - Bin(i, j)) / scale);
+                    r_prop = std::max(
+                        r_prop,
+                        test_ratio<T>(std::abs((double)R(i, j) - Bin(i, j)), p, scale));
             // minimum norm the other way: X = op(A)^T Z, G Z = B with the Gram
             // matrix G = op(A) op(A)^T (rows_op x rows_op, SPD), solved by the
-            // LAPACKE QR references
+            // LAPACKE QR references. The two solutions differ by what the
+            // Gram solve amplifies, cond(G) = cond(op(A))^2: dget04's forward
+            // error, discounted by rcond(G).
             std::vector<T> Gs((size_t)rows_op * rows_op), Zs((size_t)rows_op * nrhs),
                 tg(rows_op), Xmns((size_t)cols_op * nrhs);
             const auto G = mat_view(Gs.data(), rows_op, rows_op);
             const auto Z = mat_view(Zs.data(), rows_op, nrhs);
             const auto Xmn = mat_view(Xmns.data(), cols_op, nrhs);
             matmul(Aop, Aop.transposed(), G);
+            const double rcond_g = rcond1(G);
             copy_matrix(Bin, Z);
             ref_geqr2(G, tg.data());
             ref_ormqr('T', rows_op, G, tg.data(), Z);
             ref_trsm_upper(G, Z);
             matmul(Aop.transposed(), Z, Xmn);
-            for (int j = 0; j < nrhs; ++j)
-                for (int i = 0; i < cols_op; ++i)
-                    e_prop2 = std::max(e_prop2, std::abs((double)Xmn(i, j) - X(i, j)) /
-                                                    std::max(norm1(X), norm_floor));
+            r_prop2 =
+                std::max(r_prop2, forward_ratio<T>(max_abs_diff(Xmns.data(), X.data,
+                                                                (size_t)cols_op * nrhs),
+                                                   norm1(X), rcond_g));
         }
     }
 
     // One gate for X, the factorization and the defining properties: two
     // backward-stable implementations (LAPACK's blocked above its crossover)
-    // of a well-conditioned op(A)'s factorization and solve, relative to the
-    // operand norms (design 7.1). The Gram-formed minimum-norm solution
-    // carries cond(G) = cond(op(A))^2, so its gate gets that headroom.
-    const double tol = 100.0 * eps * p;
-    const double tol_prop2 = overdet ? tol : 1e4 * eps * p;
-    const bool ok_x = e_x <= tol, ok_h = e_h <= tol, ok_t = e_t <= tol;
-    const bool ok_p = e_prop <= tol, ok_p2 = e_prop2 <= tol_prop2;
+    // of a well-conditioned op(A)'s factorization and solve (design 7.1).
+    const bool ok_x = passes(r_x), ok_h = passes(r_h), ok_t = passes(r_t);
+    const bool ok_p = passes(r_prop), ok_p2 = passes(r_prop2);
 
     std::printf(
-        "T=%-6s V=%-2d %s trans=%c nm=%-2d m=%-3d n=%-3d nrhs=%d %-6s | X:%.1e %s "
-        "H:%.1e %s tau:%.1e %s | %s:%.1e %s %s:%.1e %s | info=%d\n",
+        "T=%-6s V=%-2d %s trans=%c nm=%-2d m=%-3d n=%-3d nrhs=%d %-6s | X:%-5.2g %s "
+        "H:%-5.2g %s tau:%-5.2g %s | %s:%-5.2g %s %s:%-5.2g %s | info=%d\n",
         compact<T>::name, V, row ? "row" : "col", trans, nm, m, n, nrhs,
-        overdet ? "lstsq" : "minnrm", e_x, ok_x ? "OK" : "FAIL", e_h,
-        ok_h ? "OK" : "FAIL", e_t, ok_t ? "OK" : "FAIL", overdet ? "normal" : "resid",
-        e_prop, ok_p ? "OK" : "FAIL", overdet ? "rss" : "minnorm", e_prop2,
-        ok_p2 ? "OK" : "FAIL", info);
+        overdet ? "lstsq" : "minnrm", r_x, verdict(r_x), r_h, verdict(r_h), r_t,
+        verdict(r_t), overdet ? "normal" : "resid", r_prop, verdict(r_prop),
+        overdet ? "rss" : "minnorm", r_prop2, verdict(r_prop2), info);
     return (info != 0) + !ok_x + !ok_h + !ok_t + !ok_p + !ok_p2;
 }
 

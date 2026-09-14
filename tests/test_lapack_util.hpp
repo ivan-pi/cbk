@@ -53,8 +53,8 @@
 namespace cbk::test {
 
 // ----------------------- LAPACKE / CBLAS, by scalar type -------------
-// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / gels
-// forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
+// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / getrf /
+// gecon / gels forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
 // generates both specializations so the two cannot drift apart.
 
 template <class T> struct lapack;
@@ -84,6 +84,12 @@ template <> struct lapack<T> {                                                  
     { return LAPACKE_##p##geqp3(layout, m, n, a, lda, jpvt, tau); }                        \
     static lapack_int potrf(int layout, char uplo, lapack_int n, T *a, lapack_int lda)    \
     { return LAPACKE_##p##potrf(layout, uplo, n, a, lda); }                                \
+    static lapack_int getrf(int layout, lapack_int m, lapack_int n, T *a, lapack_int lda, \
+                            lapack_int *ipiv)                                              \
+    { return LAPACKE_##p##getrf(layout, m, n, a, lda, ipiv); }                             \
+    static lapack_int gecon(int layout, char norm, lapack_int n, const T *a,              \
+                            lapack_int lda, T anorm, T *rcond)                             \
+    { return LAPACKE_##p##gecon(layout, norm, n, a, lda, anorm, rcond); }                  \
     static lapack_int gels(int layout, char trans, lapack_int m, lapack_int n,            \
                            lapack_int nrhs, T *a, lapack_int lda, T *b, lapack_int ldb)   \
     { return LAPACKE_##p##gels(layout, trans, m, n, nrhs, a, lda, b, ldb); }               \
@@ -398,10 +404,59 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 
 // ----------------------- shared checks -------------------------------
 
-// The end-to-end solve gate every solving suite closes with: the worst
-// relative forward error of Xhat against the known X, and the worst relative
-// residual ||A Xhat - B|| formed by ?gemm -- so a solver bug cannot hide
-// behind the factorization that produced Xhat.
+// rcond = 1 / (||A||_1 ||A^-1||_1) of a square matrix, by ?getrf + ?gecon:
+// the RCOND LAPACK's dget04 discounts a forward error by (forward_ratio).
+// An empty matrix is perfectly conditioned; a singular one returns 0, which
+// makes any forward error pass -- the ratio then says nothing, as in LAPACK.
+template <class Av> double rcond1(Av A)
+{
+    using T = elem_t<Av>;
+    assert(A.rows == A.cols);
+    const int n = A.rows;
+    if (n == 0) return 1.0;
+    std::vector<T> LUs((std::size_t)n * n);
+    std::vector<lapack_int> ipiv(n);
+    const auto LU = mat_view(LUs.data(), n, n);
+    copy_matrix(A, LU);
+    const double anorm = norm1(LU);
+    lapack<T>::getrf(LAPACK_COL_MAJOR, n, n, LU.data, n, ipiv.data());
+    T rcond = 0;
+    lapack<T>::gecon(LAPACK_COL_MAJOR, '1', n, LU.data, n, (T)anorm, &rcond);
+    return (double)rcond;
+}
+
+// The end-to-end solve gate every solving suite closes with, as test ratios:
+// dget02's residual ||B - A Xhat|| / (n ||A|| ||Xhat|| eps), formed by ?gemm
+// so a solver bug cannot hide behind the factorization that produced Xhat,
+// and dget04's forward error ||Xhat - X|| rcond(A) / (||X|| eps) against the
+// known X. The worst over the batch of each.
+struct SolveRatios {
+    double res, fwd;
+};
+
+template <class T>
+SolveRatios solve_ratios(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
+                         const MatrixBatch<T> &Xhat, ConstMatrixView<T> X)
+{
+    assert(B.rows() == Xhat.rows() && B.cols() == Xhat.cols() && X.rows == Xhat.rows() &&
+           X.cols == Xhat.cols());
+    const int n = A.rows();
+    const size_t sB = Xhat.stride();
+    std::vector<T> AXs(sB);
+    const auto AX = mat_view(AXs.data(), Xhat.rows(), Xhat.cols());
+    const double nX = norm1(X);
+    SolveRatios r{0, 0};
+    for (int v = 0; v < Xhat.count(); ++v) {
+        matmul(A.view(v), Xhat.view(v), AX);
+        r.res = std::max(r.res, test_ratio<T>(max_abs_diff(AXs.data(), B[v], sB), n,
+                                              norm1(A.view(v)) * norm1(Xhat.view(v))));
+        r.fwd = std::max(r.fwd, forward_ratio<T>(max_abs_diff(Xhat[v], X.data, sB), nX,
+                                                 rcond1(A.view(v))));
+    }
+    return r;
+}
+
+// The same two, as relative errors (the MKL suites' gates).
 struct SolveErrors {
     double fwd, res;
 };
