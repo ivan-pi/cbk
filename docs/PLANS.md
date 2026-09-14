@@ -222,9 +222,10 @@ driver (`docs/cbk_dsytrfnp_compact_design.md`); MKL has no compact
   moved into the portable suites, on every stack. Where a reference is
   LAPACK's blocked driver, the gate is relative to the operand norms at a
   multiple of `n eps` (design 7.1), not elementwise at `~eps`; only `?geqr2`
-  stays an elementwise `~eps` comparison. macOS through Accelerate +
-  accelerate-lapacke has a tag-only workflow (`.github/workflows/macos.yml`),
-  not yet exercised.
+  stays an elementwise `~eps` comparison. macOS runs against Accelerate +
+  accelerate-lapacke on the macOS runners (`.github/workflows/macos.yml`), on
+  the same triggers as the Linux CI; written without a macOS machine at hand,
+  so its first run is the check.
 - **Planned: LAPACK-style test coverage.** Adopt the testing approaches of the
   reference LAPACK repository (its `TESTING/LIN` drivers): `?latms`-style
   generators with prescribed condition number and spectral distribution, and

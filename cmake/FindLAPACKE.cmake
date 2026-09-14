@@ -5,7 +5,7 @@
 #   LAPACKE::LAPACKE   -- the include dirs, the link line, and one compile
 #                         definition naming the stack's headers:
 #                         CBK_LAPACKE_MKL        <mkl_lapacke.h>, <mkl_cblas.h>
-#                         CBK_LAPACKE_ACCELERATE <lapacke.h>, <Accelerate/Accelerate.h>
+#                         CBK_LAPACKE_ACCELERATE <lapacke.h>, <vecLib/cblas.h>
 #                         (none)                 <lapacke.h>, <cblas.h>
 #
 #   LAPACKE_VENDOR   Any (default) | MKL | OpenBLAS | Netlib | Accelerate
@@ -35,9 +35,10 @@
 #               first (PATH_SUFFIXES), which is where the distro keeps them.
 #   Accelerate  macOS: Apple's Accelerate framework provides LAPACK and
 #               CBLAS but no LAPACKE; https://github.com/lepus2589/accelerate-lapacke
-#               builds one on top of it and installs a `lapacke` CMake
-#               package (find_package(LAPACKE CONFIG)). Unverified in CI:
-#               the macOS workflow runs on tags and by hand only.
+#               builds one on top of it (Netlib's LAPACKE, so it needs a
+#               Fortran compiler to configure) and installs a `lapacke`
+#               CMake package. .github/workflows/macos.yml builds it on the
+#               macOS runners.
 #
 # ILP64 is supported through MKL only (MKL_ILP64 comes with MKL::Compact);
 # the other stacks are used at their default 32-bit integer interface.
@@ -67,7 +68,7 @@ function(_lapacke_link_test vendor includes libs defs outvar)
   #include <mkl_cblas.h>
   #elif defined(CBK_LAPACKE_ACCELERATE)
   #include <lapacke.h>
-  #include <Accelerate/Accelerate.h>
+  #include <vecLib/cblas.h>
   #else
   #include <lapacke.h>
   #include <cblas.h>
@@ -89,6 +90,7 @@ set(_lapacke_found_vendor "")
 set(_lapacke_includes "")
 set(_lapacke_libs "")
 set(_lapacke_defs "")
+set(_lapacke_options "")
 
 # ---- MKL -------------------------------------------------------------------
 if(NOT _lapacke_found_vendor AND LAPACKE_VENDOR STREQUAL "MKL")
@@ -195,17 +197,30 @@ if(NOT _lapacke_found_vendor AND LAPACKE_VENDOR MATCHES "^(Any|Netlib)$")
 endif()
 
 # ---- Accelerate (macOS) -----------------------------------------------------
+# accelerate-lapacke installs Netlib's lapacke-config.cmake (looked up under
+# its own lower-case file name, so this module is not re-entered) with the
+# `lapacke` target; CBLAS is Accelerate's, reached as <vecLib/cblas.h> through
+# the framework directory of the SDK's Accelerate.framework, which
+# `xcrun --show-sdk-path` locates. Only the vecLib sub-framework's header is
+# included, never the <Accelerate/Accelerate.h> umbrella: its LAPACK
+# prototypes and the ones lapacke.h declares are the same C symbols with
+# different parameter types.
 if(NOT _lapacke_found_vendor AND LAPACKE_VENDOR STREQUAL "Accelerate")
-  find_package(LAPACKE CONFIG QUIET)   # accelerate-lapacke's package: target `lapacke`
+  find_package(lapacke CONFIG QUIET)
   find_library(LAPACKE_Accelerate_FRAMEWORK Accelerate)
   mark_as_advanced(LAPACKE_Accelerate_FRAMEWORK)
-  if(TARGET lapacke AND LAPACKE_Accelerate_FRAMEWORK)
+  execute_process(COMMAND xcrun --show-sdk-path
+    OUTPUT_VARIABLE _ac_sdk OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  set(_ac_frameworks "${_ac_sdk}/System/Library/Frameworks/Accelerate.framework/Frameworks")
+  if(TARGET lapacke AND LAPACKE_Accelerate_FRAMEWORK AND EXISTS "${_ac_frameworks}/vecLib.framework")
     set(_ac_libs lapacke "${LAPACKE_Accelerate_FRAMEWORK}")
-    _lapacke_link_test(Accelerate "" "${_ac_libs}" "-DCBK_LAPACKE_ACCELERATE" _ok)
+    set(_ac_defs -DCBK_LAPACKE_ACCELERATE -DACCELERATE_NEW_LAPACK "-F${_ac_frameworks}")
+    _lapacke_link_test(Accelerate "" "${_ac_libs}" "${_ac_defs}" _ok)
     if(_ok)
       set(_lapacke_found_vendor Accelerate)
       set(_lapacke_libs ${_ac_libs})
-      set(_lapacke_defs CBK_LAPACKE_ACCELERATE)
+      set(_lapacke_defs CBK_LAPACKE_ACCELERATE ACCELERATE_NEW_LAPACK)
+      set(_lapacke_options "-F${_ac_frameworks}")
     endif()
   endif()
 endif()
@@ -247,6 +262,7 @@ if(LAPACKE_FOUND AND NOT TARGET LAPACKE::LAPACKE)
   set_target_properties(LAPACKE::LAPACKE PROPERTIES
     INTERFACE_INCLUDE_DIRECTORIES "${LAPACKE_INCLUDE_DIRS}"
     INTERFACE_LINK_LIBRARIES "${LAPACKE_LIBRARIES}"
-    INTERFACE_COMPILE_DEFINITIONS "${_lapacke_defs}")
+    INTERFACE_COMPILE_DEFINITIONS "${_lapacke_defs}"
+    INTERFACE_COMPILE_OPTIONS "${_lapacke_options}")
   message(STATUS "LAPACKE for the tests: ${LAPACKE_VENDOR_FOUND} (${LAPACKE_LIBRARIES})")
 endif()

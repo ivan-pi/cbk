@@ -29,9 +29,11 @@ ctest --test-dir build --output-on-failure
 
 On macOS, Accelerate provides LAPACK and CBLAS but no LAPACKE;
 [accelerate-lapacke](https://github.com/lepus2589/accelerate-lapacke) builds
-one on top of it, and `-DCBK_TEST_LAPACK=accelerate` with
-`-DCMAKE_PREFIX_PATH` at its install looks for that (the tag-only
-`.github/workflows/macos.yml`; not yet exercised on a macOS machine).
+one on top of it (its configure needs a Fortran compiler, `brew install gcc`),
+and `-DCBK_TEST_LAPACK=accelerate` with `-DCMAKE_PREFIX_PATH` at its install
+(`~/.local` by default) looks for that: the `lapacke` package plus
+Accelerate's own CBLAS through `<vecLib/cblas.h>`. `.github/workflows/macos.yml`
+runs exactly this on the macOS runners, one job next to the Linux matrix.
 
 ## The Intel MKL extension (`-DCBK_WITH_MKL=ON`)
 

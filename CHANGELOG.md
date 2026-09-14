@@ -15,7 +15,8 @@ release may change the API.
   scalar references (issue #27). The dense-LAPACK cross-checks of the MKL
   suites run in the portable suites, on any stack; the unpivoted LDL^T keeps
   its scalar reference, itself validated against CBLAS. Building the tests
-  now needs such a stack; the library does not.
+  now needs such a stack; the library does not. A macOS workflow tests
+  against Accelerate through accelerate-lapacke.
 
 ## [0.1.0] - 2026-09-13
 

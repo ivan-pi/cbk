@@ -185,7 +185,7 @@ workspace contract, or the benchmarks' threading.
   enforces: both alignment faults so far (issue #34 and the one above) were
   invisible to gcc. The default (portable) tree needs only the compiler and a
   LAPACKE stack for the tests (CI runs OpenBLAS and Netlib under both
-  compilers):
+  compilers, and Accelerate on macOS through `.github/workflows/macos.yml`):
 
   ```sh
   CXX=clang++ cmake -S . -B build-clang -DCBK_TEST_LAPACK=openblas && cmake --build build-clang && ctest --test-dir build-clang

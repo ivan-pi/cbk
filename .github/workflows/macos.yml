@@ -1,17 +1,23 @@
 name: macOS
 
-# The test suites on macOS, against Apple's Accelerate through
-# accelerate-lapacke (https://github.com/lepus2589/accelerate-lapacke), which
-# builds the LAPACKE interface Accelerate lacks. macOS runners are expensive,
-# so this runs only for release tags and on manual dispatch, never per push
-# or pull request. Unverified as of its introduction (no macOS machine was at
-# hand): expect to adjust the accelerate-lapacke preset or the CBLAS header
-# mapping (CBK_LAPACKE_ACCELERATE in tests/test_lapack_util.hpp) on the first
-# run.
+# The test suites on Apple silicon against Accelerate: Apple's framework
+# provides LAPACK and CBLAS but no LAPACKE, so the job first builds
+# accelerate-lapacke (https://github.com/lepus2589/accelerate-lapacke, Netlib's
+# LAPACKE over Accelerate's LAPACK 3.9.1 interface; its configure needs a
+# Fortran compiler, which Homebrew's gcc supplies) into ~/.local, then
+# configures cbk with -DCBK_TEST_LAPACK=accelerate (cmake/FindLAPACKE.cmake:
+# the `lapacke` package plus <vecLib/cblas.h> from the SDK). macOS runners
+# cost several times a Linux minute, so this is one job, not a matrix.
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   accelerate:
@@ -20,11 +26,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # accelerate-lapacke's project enables Fortran (Netlib's LAPACK build
+      # system does, even though only its C LAPACKE sources are compiled and
+      # the result links nothing but Accelerate).
+      - name: Install a Fortran compiler
+        run: |
+          brew install gcc
+          fc=$(ls "$(brew --prefix)"/bin/gfortran* | head -n 1)
+          echo "FC=$fc" >> "$GITHUB_ENV"
+          "$fc" --version | head -n 1
+
       - name: Build accelerate-lapacke
         run: |
           git clone --depth 1 https://github.com/lepus2589/accelerate-lapacke.git "$RUNNER_TEMP/accelerate-lapacke"
           cd "$RUNNER_TEMP/accelerate-lapacke"
           cmake --workflow --preset accelerate-lapacke32-install
+          ls "$HOME/.local/include/lapacke.h" "$HOME/.local/lib/"
 
       - name: Configure
         run: >

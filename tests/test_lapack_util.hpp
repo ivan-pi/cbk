@@ -14,7 +14,8 @@
 // cmake/FindLAPACKE.cmake through one definition on the LAPACKE::LAPACKE
 // target: MKL's own <mkl_lapacke.h>/<mkl_cblas.h> when the tests are built
 // with the MKL extension (a test binary must never link two LAPACK stacks),
-// the plain <lapacke.h>/<cblas.h> of OpenBLAS or Netlib otherwise.
+// the plain <lapacke.h>/<cblas.h> of OpenBLAS or Netlib otherwise, and on
+// macOS accelerate-lapacke's <lapacke.h> with Accelerate's CBLAS.
 // Integer arguments are lapack_int (MKL_INT under MKL, so an ilp64 MKL build
 // gets its 64-bit integers); the CBLAS calls take the same lapack_int and
 // convert to the stack's own BLAS integer, which matches on every stack the
@@ -31,8 +32,16 @@
 #include <mkl_cblas.h>
 #include <mkl_lapacke.h>
 #elif defined(CBK_LAPACKE_ACCELERATE)
-#include <Accelerate/Accelerate.h>
+// macOS: LAPACKE from accelerate-lapacke (Netlib's LAPACKE over Accelerate's
+// LAPACK 3.9.1 interface), CBLAS from Accelerate's vecLib sub-framework
+// directly -- not through the <Accelerate/Accelerate.h> umbrella, whose LAPACK
+// prototypes would collide with the ones lapacke.h pulls in. The framework
+// search path for <vecLib/...> is on the LAPACKE::LAPACKE target.
+#ifndef ACCELERATE_NEW_LAPACK
+#define ACCELERATE_NEW_LAPACK
+#endif
 #include <lapacke.h>
+#include <vecLib/cblas.h>
 #else
 #include <cblas.h>
 #include <lapacke.h>
@@ -83,16 +92,16 @@ template <> struct lapack<T> {                                                  
     static lapack_int gels(int layout, char trans, lapack_int m, lapack_int n,            \
                            lapack_int nrhs, T *a, lapack_int lda, T *b, lapack_int ldb)   \
     { return LAPACKE_##p##gels(layout, trans, m, n, nrhs, a, lda, b, ldb); }               \
-    static void gemm(CBLAS_LAYOUT layout, CBLAS_TRANSPOSE ta, CBLAS_TRANSPOSE tb,         \
+    static void gemm(CBLAS_ORDER layout, CBLAS_TRANSPOSE ta, CBLAS_TRANSPOSE tb,         \
                      lapack_int m, lapack_int n, lapack_int k, T alpha, const T *a,        \
                      lapack_int lda, const T *b, lapack_int ldb, T beta, T *c,             \
                      lapack_int ldc)                                                       \
     { cblas_##p##gemm(layout, ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc); }     \
-    static void trsm(CBLAS_LAYOUT layout, CBLAS_SIDE side, CBLAS_UPLO uplo,               \
+    static void trsm(CBLAS_ORDER layout, CBLAS_SIDE side, CBLAS_UPLO uplo,               \
                      CBLAS_TRANSPOSE ta, CBLAS_DIAG diag, lapack_int m, lapack_int n,      \
                      T alpha, const T *a, lapack_int lda, T *b, lapack_int ldb)            \
     { cblas_##p##trsm(layout, side, uplo, ta, diag, m, n, alpha, a, lda, b, ldb); }        \
-    static void trmm(CBLAS_LAYOUT layout, CBLAS_SIDE side, CBLAS_UPLO uplo,               \
+    static void trmm(CBLAS_ORDER layout, CBLAS_SIDE side, CBLAS_UPLO uplo,               \
                      CBLAS_TRANSPOSE ta, CBLAS_DIAG diag, lapack_int m, lapack_int n,      \
                      T alpha, const T *a, lapack_int lda, T *b, lapack_int ldb)            \
     { cblas_##p##trmm(layout, side, uplo, ta, diag, m, n, alpha, a, lda, b, ldb); }        \
@@ -106,7 +115,8 @@ CBK_TEST_LAPACK_DISPATCH(float, s)
 
 // ----------------------- views as LAPACKE / CBLAS arguments ----------
 // A MatrixView carries its layout as strides (si, sj); LAPACKE and CBLAS take
-// one layout flag per call plus a leading dimension per operand. A view maps
+// one layout flag per call plus a leading dimension per operand (the CBLAS
+// one is spelled CBLAS_ORDER, the name every CBLAS header agrees on). A view maps
 // without a copy when one stride is 1 and the other is at least the extent
 // along it -- column-major (si == 1, ld = sj) or row-major (sj == 1, ld = si);
 // the ambiguous degenerate shapes (a single row or column) are read as
@@ -129,7 +139,7 @@ template <class Mv> int lapack_layout(const Mv &M)
     return is_rowmajor(M) ? LAPACK_ROW_MAJOR : LAPACK_COL_MAJOR;
 }
 
-template <class Mv> CBLAS_LAYOUT cblas_layout(const Mv &M)
+template <class Mv> CBLAS_ORDER cblas_layout(const Mv &M)
 {
     return is_rowmajor(M) ? CblasRowMajor : CblasColMajor;
 }
@@ -175,8 +185,8 @@ template <class T> class Staged {
             return;
         }
         buf_.resize((std::size_t)M.rows * M.cols);
-        const auto w = mat_view(buf_.data(), M.rows, M.cols, rowmajor ? M.cols : M.rows,
-                                rowmajor);
+        const auto w =
+            mat_view(buf_.data(), M.rows, M.cols, rowmajor ? M.cols : M.rows, rowmajor);
         copy_matrix(M, w);
         use_ = MatrixView<T>{w.data, w.si, w.sj, w.rows, w.cols};
     }
