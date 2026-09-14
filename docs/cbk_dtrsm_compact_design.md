@@ -184,8 +184,7 @@ rather than streaming it per column as a 4-only block with a one-column remainde
 would. `JB` and the `uplo/trans/diag` config are compile-time, so the
 accumulators land in registers, the loops unroll, and the config branches vanish.
 This lifts the awkward counts (`n = 2, 3, 5, 6, 7, ...`) to parity-or-better with
-the clean multiples of 4 (`bench_qr_compact --nrhs=k` measures it against
-`mkl_?trsm_compact`).
+the clean multiples of 4.
 
 The exception is a single **`op(A) = A` leftover column** (`n = 1` -- a single-RHS
 solve such as QR's `R x = Q^T b` -- and the 1-tail of odd `n`): with one column

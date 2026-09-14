@@ -1,25 +1,22 @@
 # PLANS
 
 Status of each routine against its design document (this folder), and what
-remains. Every routine ships both API surfaces -- the MKL-style
-`cbk_?*_compact` (no argument checking, scalar `info`) and the portable
-`?*_compact` C API (LAPACK-style `info = -j`) -- in FP64 and FP32, over one
-`BatchView` kernel that covers every layout (and side, for `ormqr`/`trsm`).
+remains. Every routine ships both API surfaces -- the portable `?*_compact`
+C API (LAPACK-style `info = -j`) and the MKL-style `cbk_?*_compact` (no
+argument checking, scalar `info`) -- in FP64 and FP32, over one `BatchView`
+kernel that covers every layout (and side, for `ormqr`/`trsm`).
+
 Complex precisions, pivoting, and overflow/underflow-safe scaling are out of
 scope throughout; each design document's section 6 says what else its routine
 leaves out, and its section 7 what the test suites gate. The benchmarks are
-listed in `examples.md`; what a kernel measures lives in their output, not
-here (`.claude/CLAUDE.md`).
+listed in `examples.md`.
 
 ## geqrf
 
 - **Done:** design 6-8; unblocked, both layouts through one strided kernel.
-- **Open:** the unblocked factorization is bandwidth-bound across the target
-  range (it streams the trailing block per reflector, and its throughput is
-  flat over the middle of the size list, where a compute-bound kernel's would
-  still rise), so a blocked (compact-WY) factorization is the next lever for
-  `geqrf` and `gels`, and the one that would make multiple right-hand sides
-  pay.
+- **Open:** the factorization is unblocked: each reflector makes its own pass
+  over the trailing block. A blocked (compact-WY) factorization is the
+  standard next step, for `geqrf` and `gels` alike; not tried.
 
 ## ormqr
 
@@ -46,8 +43,8 @@ here (`.claude/CLAUDE.md`).
 - **Done:** design 6-8; the factorization recursively blocked (6.1) with the
   pivot's `sqrt` off the pivot-to-pivot chain (6.2) and the four
   `(layout, uplo)` cases one kernel over transposed views (6.3); `potrs` as
-  two non-unit `trsm` group sweeps; `posv` bit-identical to the two calls
-  (6.8). MKL has a compact `potrf` but no compact `potrs` or `posv`.
+  two non-unit `trsm` group sweeps; `posv` the fused per-group driver (6.8).
+  MKL has a compact `potrf` but no compact `potrs` or `posv`.
 - **Open:** the smallest orders are behind `mkl_?potrf_compact`: the pivot's
   divide and sqrt on the one divider port bound both, so only an approximate
   reciprocal off the pivot chain would move it, and that is AVX-512-specific
@@ -64,15 +61,12 @@ here (`.claude/CLAUDE.md`).
 - **Done:** design 6-8; blocked recursively like `potrf`, sharing its
   register-tiled trailing update with the pivot folded into the tile's
   weights; `sytrsnp` as two unit-diagonal `trsm` sweeps around a diagonal
-  solve; `sysvnp` bit-identical to the two calls. The upper convention is
+  solve; `sysvnp` the fused per-group driver. The upper convention is
   `A = U^T D U` (design 6.3), not `?sytrf`'s `U D U^T`. MKL has no compact
   `sytrf`; the `np` naming follows its `mkl_?getrfnp_compact`.
 - **Open:** the blocking was tuned on the contiguous case; the strided cases
   run the same code untuned. The solve is the plain sweeps. No
-  factorization-only benchmark (the `potrf` harness would port), and no
-  `sysvnp` vs `sytrfnp + sytrsnp` measurement on out-of-cache pools, the
-  comparison that would quantify the fusion (design 6.8); `bench_posv_compact`
-  carries exactly that column for the Cholesky pair and would port directly.
+  factorization-only benchmark (the `potrf` harness would port).
 
 ## trsm
 
