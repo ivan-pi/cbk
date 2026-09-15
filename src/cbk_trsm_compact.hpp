@@ -18,8 +18,11 @@
  * format stores element (i,j) of all V contiguously, so it lifts verbatim with
  * double -> V-wide vector, one lane per matrix (no data-dependent branch). The
  * tuned side='L', column-major path is templated on the RHS block width and on
- * uplo/trans/diag; the other side/layout combinations go through one strided
- * kernel over BatchViews (docs/cbk_dtrsm_compact_design.md has the details).
+ * uplo/trans/diag; from trsm_block_min up it sweeps the pivots in blocks, with
+ * each block's effect on the rows still to come applied as one register-tiled
+ * rank-NB update instead of a chain of rank-1 passes. The other side/layout
+ * combinations go through one strided kernel over BatchViews
+ * (docs/cbk_dtrsm_compact_design.md has the details).
  *
  * Compact storage (matches mkl_?gepack_compact); group g = idx/V, slot v = idx%V,
  * A the order-s (s = m left / n right) triangular batch, B the m x n batch:
@@ -57,7 +60,9 @@ inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
     for (Int t = 0; t < m; ++t) {
         const Int kk = UPPER ? m - 1 - t : t;
         const VT *ak = A + kk * ldap;
-        const VT xk = UNIT ? bj[kk] : bj[kk] / ak[kk];
+        /* the reciprocal of trsm_dot_block, so a column's answer does not
+         * depend on which block of the 4/2/1 split it landed in */
+        const VT xk = UNIT ? bj[kk] : bj[kk] * (T(1) / ak[kk]);
         if (!UNIT) bj[kk] = xk;
         const Int lo = UPPER ? 0 : kk + 1;
         const Int hi = UPPER ? kk : m;
@@ -94,12 +99,144 @@ inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
                 w[c] -= av * B[c * ldbp + l];
         }
         if (!UNIT) {
-            const VT d = A[i * ldap + i];
+            /* One divide per pivot row, not one per (row, column): the divider
+             * port is not pipelined, so a divide per RHS column dominated the
+             * small orders outright (measured: at n = 8 the divides were the
+             * whole kernel at 16 right-hand sides). It costs one extra
+             * rounding per solved entry; the suites' test ratios cover it. */
+            const VT r = T(1) / A[i * ldap + i];
             for (int c = 0; c < JB; ++c)
-                w[c] = w[c] / d;
+                w[c] = w[c] * r;
         }
         for (int c = 0; c < JB; ++c)
             B[c * ldbp + i] = w[c];
+    }
+}
+
+/* Pivot-block width of the blocked sweep below, and the order from which that
+ * sweep is used at all. Under the block width the substitution is the plain
+ * row-dot above; above it, a block of pivots is solved and its effect on the
+ * rows still to come is applied as one register-tiled update, which is what
+ * turns the sweep from a chain of rank-1 passes into a rank-NB one. Below
+ * trsm_block_min the blocking costs more in per-block overhead than the
+ * tiling saves (measured under both gcc and clang, which agree on where the
+ * crossing is). */
+#ifndef CBK_TRSM_NB
+#define CBK_TRSM_NB 32
+#endif
+constexpr int trsm_nb = CBK_TRSM_NB;
+#ifndef CBK_TRSM_BLOCK_MIN
+#define CBK_TRSM_BLOCK_MIN 40
+#endif
+constexpr int trsm_block_min = CBK_TRSM_BLOCK_MIN;
+
+/* One IB x JB tile of B -- rows i0.., RHS columns j0.. -- updated by the
+ * pivots [k0,k1) already solved:  B(i,j) -= sum_l op(A)(i,l) B(l,j).
+ * The IB*JB accumulators live in registers, so the IB values of op(A) and JB
+ * of B loaded per l feed IB*JB fused multiply-adds -- the register tiling the
+ * blocked potrf uses for its trailing update (sytrfnp_syrk_tile), with the
+ * same JB-loop shape the compiler unrolls rather than hand-expanded copies. */
+template <int IB, int JB, bool TRAN, typename T, int V, typename Int>
+inline void trsm_update_tile(const typename pack<T, V>::type *A, Int ldap,
+                             typename pack<T, V>::type *B, Int ldbp, Int i0, Int j0,
+                             Int k0, Int k1)
+{
+    using VT = typename pack<T, V>::type;
+    VT acc[IB][JB];
+    for (int r = 0; r < IB; ++r)
+        for (int c = 0; c < JB; ++c)
+            acc[r][c] = B[(j0 + c) * ldbp + i0 + r];
+    for (Int l = k0; l < k1; ++l) {
+        /* TRAN reads op(A)(i,l) = A(l,i) = A[i*ldap+l], one per tile row down
+         * column i; !TRAN reads A(i,l) = A[l*ldap+i], IB contiguous packs of
+         * column l. */
+        VT u[IB], w[JB];
+        for (int r = 0; r < IB; ++r)
+            u[r] = TRAN ? A[(i0 + r) * ldap + l] : A[l * ldap + i0 + r];
+        for (int c = 0; c < JB; ++c)
+            w[c] = B[(j0 + c) * ldbp + l];
+        for (int r = 0; r < IB; ++r)
+            for (int c = 0; c < JB; ++c)
+                acc[r][c] -= u[r] * w[c];
+    }
+    for (int r = 0; r < IB; ++r)
+        for (int c = 0; c < JB; ++c)
+            B[(j0 + c) * ldbp + i0 + r] = acc[r][c];
+}
+
+/* The pivots [k0,k1) applied to every row in [r0,r1) and every RHS column, in
+ * 2x4 tiles with 2x1 / 1x4 / 1x1 edges.
+ *
+ * 2x4 holds 2*4 accumulators plus 2 + 4 operands = 14 vectors live, which fits
+ * the *16* architectural vector registers of SSE and AVX as well as AVX-512's
+ * 32 -- and the kernel is instantiated at all three widths. A 4x4 tile needs
+ * 24 and is the faster shape where 32 registers exist, but it spills where
+ * only 16 do: built for an AVX2 target it lost about 40% at V = 4, 16
+ * right-hand sides, order 128, against this shape. One tile for every
+ * generation is worth more than the last few percent on one of them. */
+template <bool TRAN, typename T, int V, typename Int>
+void trsm_update(Int r0, Int r1, Int n, const typename pack<T, V>::type *A, Int ldap,
+                 typename pack<T, V>::type *B, Int ldbp, Int k0, Int k1)
+{
+    Int i = r0;
+    for (; i + 2 <= r1; i += 2) {
+        Int j = 0;
+        for (; j + 4 <= n; j += 4)
+            trsm_update_tile<2, 4, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
+        for (; j < n; ++j)
+            trsm_update_tile<2, 1, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
+    }
+    for (; i < r1; ++i) {
+        Int j = 0;
+        for (; j + 4 <= n; j += 4)
+            trsm_update_tile<1, 4, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
+        for (; j < n; ++j)
+            trsm_update_tile<1, 1, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
+    }
+}
+
+/* The blocked sweep: pivots in blocks of trsm_nb, each block's own triangle
+ * solved by the row-dot above (every RHS column, in the same 4/2/1 split) and
+ * its effect on the rows still to come applied by one trsm_update.
+ *
+ * The sweep runs in *pivot* order p = 0 .. m-1; the row it touches is
+ * i = m-1-p when op(A) is upper-triangular (back-substitution) and p when it
+ * is lower. Either way a block of pivots is a contiguous run of rows, so one
+ * index (d0) and a length place both the diagonal block and the rows left.
+ *
+ * alpha is already folded into B by the caller, so the sweep runs at alpha = 1:
+ * each entry of B is read as the right-hand side exactly once before its
+ * solution overwrites it, which makes pre-scaling bit-identical to scaling at
+ * the point of use. */
+template <bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
+void trsm_left_blocked(Int m, Int n, const typename pack<T, V>::type *A, Int ldap,
+                       typename pack<T, V>::type *B, Int ldbp)
+{
+    using VT = typename pack<T, V>::type;
+    constexpr bool back = (UPPER != TRAN);
+    VT one;
+    broadcast<T, V>(one, T(1));
+    for (Int p0 = 0; p0 < m; p0 += trsm_nb) {
+        const Int p1 = (p0 + trsm_nb < m) ? p0 + trsm_nb : m;
+        const Int db = p1 - p0;
+        const Int d0 = back ? m - p1 : p0;
+        const VT *Ad = A + d0 * ldap + d0;
+        VT *Bd = B + d0;
+        Int j = 0;
+        for (; j + 4 <= n; j += 4)
+            trsm_dot_block<4, UPPER, TRAN, UNIT, T, V, Int>(db, Ad, ldap, Bd + j * ldbp,
+                                                            ldbp, one);
+        if (n - j >= 2) {
+            trsm_dot_block<2, UPPER, TRAN, UNIT, T, V, Int>(db, Ad, ldap, Bd + j * ldbp,
+                                                            ldbp, one);
+            j += 2;
+        }
+        if (n - j >= 1)
+            trsm_dot_block<1, UPPER, TRAN, UNIT, T, V, Int>(db, Ad, ldap, Bd + j * ldbp,
+                                                            ldbp, one);
+        const Int r0 = back ? Int(0) : d0 + db;
+        const Int r1 = back ? d0 : m;
+        trsm_update<TRAN, T, V, Int>(r0, r1, n, A, ldap, B, ldbp, d0, d0 + db);
     }
 }
 
@@ -123,6 +260,21 @@ void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int l
 
     VT va;
     broadcast<T, V>(va, alpha);
+
+    /* The blocked sweep pays when the tile has something to amortize over: a
+     * second RHS column, or the transposed sweep, whose unblocked form reduces
+     * each row into a single accumulator and runs at FMA latency. A single
+     * column of op(A) = A is already the contiguous column-axpy below, and
+     * blocking it only adds passes (measured, both compilers). */
+    if (m >= trsm_block_min && (TRAN || n >= 2)) {
+        if (alpha != T(1))
+            for (Int j = 0; j < n; ++j)
+                for (Int i = 0; i < m; ++i)
+                    B[j * ldbp + i] = B[j * ldbp + i] * va;
+        trsm_left_blocked<UPPER, TRAN, UNIT, T, V, Int>(m, n, A, ldap, B, ldbp);
+        return;
+    }
+
     Int j = 0;
     for (; j + 4 <= n; j += 4)
         trsm_dot_block<4, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, ldbp,

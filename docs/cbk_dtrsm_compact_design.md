@@ -194,6 +194,38 @@ contiguously. `op(A) = A^T`
 reads `A(r, i)` = a column already, so it always uses the row-dot. Every path
 computes the same result -- this is a throughput choice only.
 
+Two further points decide throughput at the larger orders and at many
+right-hand sides.
+
+**One reciprocal per pivot row.** The non-unit diagonal used to divide once per
+`(row, RHS column)`. The divider is the one port that is not pipelined, so at
+`nrhs` columns that is `n * nrhs` unpipelined divides against `n^2 * nrhs / 2`
+fused multiply-adds -- a ratio of `2/n`, which at the small orders this library
+is for is not a rounding error but the kernel. The diagonal is now inverted
+once per row and the row's columns multiplied, in both the row-dot and the
+axpy tail so a column's answer does not depend on which block of the 4/2/1
+split it landed in. It costs one extra rounding per solved entry, which the
+suites' test ratios cover.
+
+**A blocked sweep above `trsm_block_min`.** Unblocked, the substitution is a
+chain of rank-1 passes: every pivot row touches all the rows still to come,
+once. From order 40 up the sweep instead takes the pivots in blocks of
+`trsm_nb`, solving each block's own small triangle with the row-dot and
+applying its whole effect on the rows still to come as one **register-tiled
+rank-`NB` update** -- the same structure the blocked `potrf` uses for its
+trailing update. The tile is **2 rows x 4 RHS columns**: `2*4` accumulators
+plus `2 + 4` operands is 14 vectors live, which fits the *16* architectural
+vector registers of SSE and AVX as well as AVX-512's 32, and the kernel is
+instantiated at all three widths. A 4x4 tile is faster where 32 registers
+exist and spills where only 16 do (built for an AVX2 target it lost about 40%
+at `V = 4`, 16 right-hand sides, order 128), so the smaller tile is the one
+that holds across CPU generations; tuning a tile per micro-architecture is
+explicitly out of scope. The blocked sweep is used when there is something for
+the tile to amortize over -- a second RHS column, or `op(A) = A^T`, whose
+unblocked form reduces each row into a single accumulator and runs at FMA
+latency. A single column of `op(A) = A` is already the contiguous axpy above
+and stays there.
+
 ### 6.3 Layouts: tuned column-major, strided row-major
 
 Column-major is the tuned path: a matrix column is contiguous in the compact

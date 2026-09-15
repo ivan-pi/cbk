@@ -89,9 +89,27 @@ listed in `examples.md`.
   tuned 4/2/1 register-blocked path; the group kernel routes on views, so a
   transposed column-major view reaches it too (`gels` does). Every other
   combination is the strided kernel.
-- **Open:** per-group overhead at the smallest orders, where it is behind
-  `mkl_?trsm_compact`; reciprocal-multiplying the diagonal in the blocked
-  paths; tuning the strided kernel.
+  The non-unit diagonal is inverted once per pivot row and multiplied, not
+  divided per `(row, RHS column)` -- the divider port is not pipelined, and at
+  many right-hand sides the divides were the kernel at the small orders. From
+  `trsm_block_min` up, the tuned path sweeps the pivots in blocks of
+  `trsm_nb` and applies each block as one register-tiled rank-`NB` update
+  (2 rows x 4 RHS columns: 14 vectors live, so it fits the 16 registers of
+  SSE and AVX as well as AVX-512's 32 -- a 4x4 tile is faster where 32 exist
+  and spills where 16 do). Blocking is used where the tile has something to
+  amortize over: a second RHS column, or `op(A) = A^T`. Together these put the
+  Cholesky substitution (the `potrs` sweep pair) ahead of MKL's compact `trsm`
+  pair at 4 and 16 right-hand sides across the range below 128, and at
+  near-parity at one (`bench_trs_compact`).
+- **Open:** a *single* `op(A) = A` sweep at several right-hand sides is still
+  behind `mkl_?trsm_compact` -- the pair comes out ahead because `op(A) = A^T`
+  is well ahead, not because both are. The tile reaches about two thirds of the
+  machine's fused-multiply-add rate, which is roughly where MKL's whole kernel
+  runs, so closing it means a better micro-kernel (packing the operands, a
+  deeper reduction), not more blocking. Per-micro-architecture tuning of the
+  tile is deliberately not on this list. Also: per-group overhead at the
+  smallest orders; tuning the strided kernel, which is what row-major takes and
+  which is several times slower than the tuned path at many right-hand sides.
 
 ## gels
 
