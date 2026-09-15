@@ -260,12 +260,29 @@ bench_trs_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8]
 `--size-sweep` runs both routines cbk-only across the range and prints the
 pool's size in MiB next to the rates, which is the column to read first: at one
 right-hand side the substitution touches as much of the factor as it does
-arithmetic on it (`n^2` reads for `n^2` flops), so it is bandwidth-bound, and
-its rate turns over where the pool stops fitting a level of cache. The knee
-therefore moves with `nmat`, not with `n` -- halve the pool and it moves to a
-larger order. Reuse of the factor across right-hand sides is what lifts the
-stage off that bound: `--nrhs=k` feeds the tuned path's 4/2/1-column blocking,
-and the rate rises several-fold between `k = 1` and `k = 4`.
+arithmetic on it (`n^2` reads for `n^2` flops), so it is bandwidth-bound and
+its rate is set by which level of cache serves the factor.
+
+That makes the timing itself part of what the number means, and it is worth
+being explicit about. The factor is read-only here, so every pass after the
+first re-reads a pool the previous pass just walked; `best_time` reports the
+best of them. When the whole pool fits the aggregate L2 those passes are served
+from it, and when it does not they fall back to L3 or memory -- so the rate
+turns over at a *pool* size, and the knee moves with `nmat`, not with `n`
+(measured: at a fixed `n`, throughput peaks at the same pool size for `n = 20`,
+`40` and `60`, whose groups differ by 9x). The group working set is *not* what
+sets it: forcing the group's `nmat`-independent `V n^2 T` bytes across the L1
+boundary with `--simdlen` -- which moves that crossing by 2x in `n` -- produces
+no feature in the curve, and `potrs` runs at a single `trsm` sweep's rate per
+flop even where a group is comfortably L1-resident, so the two sweeps get no
+measurable reuse of it either. A caller making one cold call over a pool it has
+not just touched sees neither effect: every byte of the factor is a compulsory
+miss, which is the flat, lower rate the first pass measures.
+
+Reuse of the factor across *right-hand sides* is the one that lifts the stage
+off the bandwidth bound within a single pass: `--nrhs=k` feeds the tuned path's
+4/2/1-column blocking, and the rate rises several-fold between `k = 1` and
+`k = 4`.
 
 ## Notes
 

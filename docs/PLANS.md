@@ -60,8 +60,9 @@ listed in `examples.md`.
   were not tuned or measured separately. `potrs` at a single right-hand side
   is behind MKL's compact `trsm` pair from the low tens of orders on
   (`bench_trs_compact`): with one column the sweeps have no factor reuse and
-  run bandwidth-bound, and the tuned path falls back to its single-column
-  tails -- `trsm_axpy_col` for `op(A) = A`, the 1-wide dot block for the
+  run bandwidth-bound -- per flop at the rate of a single `trsm` sweep, with
+  no measurable reuse of the group's factor between the two -- and the tuned
+  path falls back to its single-column tails -- `trsm_axpy_col` for `op(A) = A`, the 1-wide dot block for the
   transpose. At `nrhs >= 2` the register-blocked path takes over and the gap
   closes. Blocking the two sweeps over the factor rather than over the
   right-hand sides is the untried direction.
