@@ -218,11 +218,13 @@ pass at all. That matters because the tile's rate rises steeply with reduction
 length (measured 1.7 G vector-FMA/s at 8, 3.9 at 64). It is the same arithmetic
 in the same order, so the two sweeps agree bit for bit.
 
-The block is **3 rows x 4 RHS columns**: unlike the right-looking tile it must
-hold its accumulators through the diagonal solve too, which needs a temporary
-or two, and 4 x 4 (24 live) spills there and measured erratic while 3 x 4 (19)
-has headroom. It was the fastest of 2, 3 and 4 at every order and right-hand-side
-count tried.
+The block is **3 rows x 4 RHS columns**, measured the fastest of 2, 3, 4, 5 and
+6 at every order and right-hand-side count tried. Not for the reason one would
+guess: 4 x 4 and 5 x 4 hold more accumulators (24 and 29 live against 19) and
+have the *better* arithmetic intensity (2.00 and 2.22 fused multiply-adds per
+load against 1.71), and the disassembly shows they spill nothing -- their
+reduction loops are a clean 30 and 35 instructions. They are simply slower, so
+what binds here is not register pressure and not the load-to-arithmetic ratio.
 
 Left-looking pays while the panel of solved right-hand sides each block re-reads
 -- `m` rows by the 4 columns of a block -- still fits a first-level cache; past
@@ -233,11 +235,17 @@ right order for every format: `m = 128` for a 64-byte pack, and measurement
 bears that out -- left-looking led by 1.1-1.4x through 128, tied at 170 and lost
 at 256.
 
-Two approaches were measured and rejected. Packing the `A` row panel
+Several approaches were measured and rejected. Packing the `A` row panel
 contiguously (the classic GEMM move, on the theory that its stride-`ldap` walk
 was thrashing the TLB) cost more than it saved at every size -- 0.5-1.0x of the
-unpacked sweep. And a fixed pivot-block width, scanned at 4, 8, 16, 32 and 64,
-never beat the recursion.
+unpacked sweep. A fixed pivot-block width, scanned at 4, 8, 16, 32 and 64, never
+beat the recursion. Widening the block past 3 rows lost too, even though 4 x 4
+and 5 x 4 have the better arithmetic intensity and (checked in the disassembly)
+spill nothing. And `__restrict` on the operands -- which looks promising, since
+the pack type is `may_alias` -- turns out to be a *no-op*: the object file is
+bit-identical with and without it, because the hot loop holds only loads, the
+stores being hoisted past the reduction, so there is no aliasing hazard for it
+to remove.
 
 **A blocked sweep above `trsm_block_min`.** Unblocked, the substitution is a
 chain of rank-1 passes: every pivot row touches all the rows still to come,

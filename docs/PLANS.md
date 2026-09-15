@@ -134,7 +134,14 @@ listed in `examples.md`.
   kernel is uniform at 3.3-3.9 and the machine's ceiling for the tile's
   instruction mix is 5.4. Closing the last 10% means a deeper micro-kernel;
   operand packing was tried and lost at every size (0.5-1.0x), as did every
-  fixed pivot-block width. Per-micro-architecture tuning of the tile is
+  fixed pivot-block width and every block wider than 3 rows. `__restrict` on
+  the operands was tried too and is a no-op, verifiably so: the object file is
+  bit-identical with and without it, because the hot loop holds only loads,
+  the stores being hoisted past the reduction, so there is no aliasing hazard
+  for it to remove. `-funroll-loops` measured slightly *worse*, and the gcc
+  optimisation reports confirm every small operand loop is already unrolled
+  and the reduction loop spills nothing (25 instructions, 12 fused
+  multiply-adds, 7 loads). Per-micro-architecture tuning of the tile is
   deliberately not on this list. Also open: per-group overhead at the smallest
   orders.
 

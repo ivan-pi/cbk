@@ -246,13 +246,15 @@ void trsm_update(Int r0, Int r1, Int n, const typename pack<T, V>::type *A, Int 
     }
 }
 
-/* Rows per left-looking block. The block holds IB*4 accumulators plus IB + 4
- * operands live -- 19 vectors at IB = 3 -- and unlike the right-looking tile it
- * must also hold them across the diagonal solve, which needs a temporary or
- * two of its own. IB = 4 (24 live) spills there and measured erratic; IB = 3
- * leaves headroom and was the fastest of 2, 3 and 4 at every order and every
- * right-hand-side count tried. Where the pack width does not imply AVX-512's
- * 32 registers, 2 is the only width that fits 16. */
+/* Rows per left-looking block: measured the fastest of 2, 3, 4, 5 and 6 at
+ * every order and right-hand-side count tried. Not for the reason one would
+ * guess -- IB = 4 and 5 hold more accumulators (24 and 29 vectors live against
+ * 19) and have the better arithmetic intensity (2.00 and 2.22 fused
+ * multiply-adds per load against 1.71), and the disassembly shows they spill
+ * nothing, their reduction loops being a clean 30 and 35 instructions. They
+ * are simply slower, so what binds is neither register pressure nor the
+ * load-to-arithmetic ratio. Where the pack width does not imply AVX-512's 32
+ * registers, 2 is the only width that fits 16. */
 template <typename T, int V> constexpr int trsm_ll_rows = (sizeof(T) * V >= 64) ? 3 : 2;
 
 /* One left-looking block: the IB x JB corner of X at pivot positions
