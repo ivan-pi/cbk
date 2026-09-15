@@ -9,6 +9,22 @@ release may change the API.
 
 ### Changed
 
+- **Breaking:** the portable `?ormqr_compact` takes `layout`, `side` and
+  `trans` -- `(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, V, nm)`,
+  LAPACK `?ormqr`'s argument order behind the layout, as the MKL-style
+  `cbk_?ormqr_compact` already did -- so Q can be applied from either side in
+  either layout; it was side `'L'`, column-major only. A caller of the old
+  signature `(trans, m, nrhs, k, ...)` now writes `('C', 'L', trans, m, nrhs,
+  k, ...)`. Its argument validation renumbers accordingly (`-1 layout`,
+  `-2 side`, `-3 trans`, ..., `-13 nm`).
+- Tests: the portable suites gate every numerical check on a dimensionless
+  test ratio in the exact form of the corresponding LAPACK checker (dqrt01,
+  dqrt03, dpot01, dsyt01, dget02, dtrt02, dget04, ...) against one threshold,
+  `THRESH = 30`, instead of per-check tolerances; sweep the small-dimension
+  cross product (`m, n` from 0 to 5, the empty operand included) in every
+  routine; and check related routines against each other (`potrs` and
+  `sytrsnp` against the `trsm` sweeps they are built from, `ormqr` in every
+  layout, side and trans against the explicit Q of `orgqr`).
 - Tests: every suite validates against a real LAPACKE + CBLAS stack
   (OpenBLAS, Netlib, or MKL's own with the MKL extension;
   `cmake/FindLAPACKE.cmake` over `find_package(LAPACK)` and `BLA_VENDOR`)
