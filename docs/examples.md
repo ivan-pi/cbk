@@ -54,7 +54,11 @@ MKL's compact kernels and LAPACKE.
   against the known solution.
 
 The factorization and solve benchmarks share the `--size-sweep=nmin:nmax[:stride]`
-and `--simdlen=2|4|8` flags. For a fair comparison against MKL, build with
+and `--simdlen=2|4|8` flags. `bench_trs_compact` adds `--pool=MiB`, which sizes
+the batch from a fixed pool size at each order rather than from a fixed matrix
+count, so that every row of its table is measured in the same part of the
+memory hierarchy; the other benchmarks parse and ignore it, as the
+factorization ones do `--nrhs`. For a fair comparison against MKL, build with
 host-tuned flags (`-DCMAKE_CXX_FLAGS="-O3 -march=native"`) so the compact
 kernels use the full vector width, as MKL's runtime dispatch does (see
 [building.md](building.md)).

@@ -23,18 +23,26 @@
  *
  * What the numbers say: at one right-hand side the substitution moves as much
  * of the factor as it does arithmetic on it (n^2 reads for n^2 flops), so it is
- * bandwidth-bound, and its rate tracks which level of cache holds the pool --
- * pick nmat and n together, or read the knee as a cache boundary rather than a
- * kernel effect. Reuse of the factor across right-hand sides is what lifts it:
- * --nrhs=k feeds the tuned path's 4/2/1-column blocking.
+ * bandwidth-bound and its rate is set by which level of cache serves the
+ * factor on the repeat passes best_time takes the best of. With a *fixed*
+ * matrix count the pool grows as n^2 and crosses a cache boundary partway
+ * along the size list, so the rows either side of it are not measured in the
+ * same regime -- which is how a cache knee reads as a property of the kernel.
+ * --pool=MiB derives the count from a fixed pool size instead, holding every
+ * size in one regime; each row reports the count and the pool it came to
+ * either way. Reuse of the factor across right-hand sides is what lifts the
+ * stage off the bound within a pass: --nrhs=k feeds the tuned path's 4/2/1-
+ * column blocking.
  *
- * Usage:  bench_trs_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]]
+ * Usage:  bench_trs_compact [--nrhs=k] [--pool=MiB]
+ *                           [--size-sweep=nmin:nmax[:stride]]
  *                           [--simdlen=2|4|8] [nmat] [reps]
  *         (defaults: 1 right-hand side, 512 matrices, 3 reps)
  *
  * With no --size-sweep it runs the comparison at the default size list; with
  * it, a cbk-only scan of both routines over the size range. --simdlen forces
- * the interleave width (2/4/8) instead of the host's widest.
+ * the interleave width (2/4/8) instead of the host's widest. --pool replaces
+ * the fixed [nmat] with a per-size count.
  *
  * Build: needs Intel MKL plus this repo's MKL-style API; wired up by
  * CMakeLists.txt as the `bench_trs_compact` target. OpenMP is used when
@@ -209,72 +217,94 @@ Row run_one(int n, int nmat, int nrhs, int reps, int V, MKL_COMPACT_PACK fmt, bo
     return r;
 }
 
+/* The matrix count for one size: the fixed [nmat], or the --pool policy's
+ * per-size count. Reported on every row, with the pool it comes to, so a table
+ * is readable without knowing which policy produced it. */
+int nmat_at(const CmdArgs &args, int n, int nthreads)
+{
+    return args.pool_mib > 0
+               ? nmat_for_pool(args.pool_mib, (std::size_t)n * n * sizeof(double), args.V,
+                               nthreads)
+               : args.nmat;
+}
+
+double pool_mib_of(int n, int nmat)
+{
+    return (double)nmat * n * n * sizeof(double) / 1048576.0;
+}
+
 /* Cholesky solve table: cbk vs MKL's compact trsm pair vs per-matrix LAPACK. */
-void run_potrs(int nmat, int reps, int nrhs, const std::vector<int> &sizes, int V,
-               MKL_COMPACT_PACK fmt)
+void run_potrs(const CmdArgs &args, const std::vector<int> &sizes, int nthreads)
 {
     std::printf("\nCholesky substitution (cbk_dpotrs_compact): two non-unit sweeps\n");
-    std::printf("   n | cbk GFLOP/s |   cbk mat/s |   mkl mat/s | lapack mat/s | "
-                "cbk/mkl | cbk/lap | fwderr(cbk) | fwderr(lapack)\n");
-    std::printf("-----+-------------+-------------+-------------+--------------+"
-                "---------+---------+-------------+---------------\n");
+    std::printf("   n |   nmat | pool (MiB) | cbk GFLOP/s |   cbk mat/s |   mkl mat/s | "
+                "lapack mat/s | cbk/mkl | cbk/lap | fwderr(cbk) | fwderr(lapack)\n");
+    std::printf("-----+--------+------------+-------------+-------------+-------------+"
+                "--------------+---------+---------+-------------+---------------\n");
     for (int n : sizes) {
-        const Row r = run_one(n, nmat, nrhs, reps, V, fmt, /*ldlt=*/false);
+        const int nmat = nmat_at(args, n, nthreads);
+        const Row r = run_one(n, nmat, args.nrhs, args.reps, args.V, args.fmt,
+                              /*ldlt=*/false);
         check(r.err_cbk < 1e-6, "cbk_dpotrs_compact did not recover the known solution");
         check(r.err_lap < 1e-6, "LAPACKE_dpotrs did not recover the known solution");
-        std::printf("%4d | %11.2f | %11.2e | %11.2e | %12.2e | %6.2fx | %6.2fx | "
-                    "%11.2e | %13.2e\n",
-                    n, nmat * trs_gflop(n, nrhs, false) / r.t_cbk, nmat / r.t_cbk,
+        std::printf("%4d | %6d | %10.2f | %11.2f | %11.2e | %11.2e | %12.2e | %6.2fx | "
+                    "%6.2fx | %11.2e | %13.2e\n",
+                    n, nmat, pool_mib_of(n, nmat),
+                    nmat * trs_gflop(n, args.nrhs, false) / r.t_cbk, nmat / r.t_cbk,
                     nmat / r.t_mkl, nmat / r.t_lap, r.t_mkl / r.t_cbk, r.t_lap / r.t_cbk,
                     r.err_cbk, r.err_lap);
         std::fflush(stdout);
     }
-    std::printf("-----+-------------+-------------+-------------+--------------+"
-                "---------+---------+-------------+---------------\n");
+    std::printf("-----+--------+------------+-------------+-------------+-------------+"
+                "--------------+---------+---------+-------------+---------------\n");
 }
 
 /* LDL^T solve table: cbk vs per-matrix LAPACK (MKL has no compact sytrs). */
-void run_sytrsnp(int nmat, int reps, int nrhs, const std::vector<int> &sizes, int V,
-                 MKL_COMPACT_PACK fmt)
+void run_sytrsnp(const CmdArgs &args, const std::vector<int> &sizes, int nthreads)
 {
     std::printf("\nUnpivoted LDL^T substitution (cbk_dsytrsnp_compact): two unit sweeps "
                 "and the D^-1 scaling\n");
-    std::printf("   n | cbk GFLOP/s |   cbk mat/s | lapack mat/s | cbk/lap | "
-                "fwderr(cbk) | fwderr(lapack)\n");
-    std::printf("-----+-------------+-------------+--------------+---------+"
-                "-------------+---------------\n");
+    std::printf("   n |   nmat | pool (MiB) | cbk GFLOP/s |   cbk mat/s | lapack mat/s "
+                "| cbk/lap | fwderr(cbk) | fwderr(lapack)\n");
+    std::printf("-----+--------+------------+-------------+-------------+--------------+"
+                "---------+-------------+---------------\n");
     for (int n : sizes) {
-        const Row r = run_one(n, nmat, nrhs, reps, V, fmt, /*ldlt=*/true);
+        const int nmat = nmat_at(args, n, nthreads);
+        const Row r = run_one(n, nmat, args.nrhs, args.reps, args.V, args.fmt,
+                              /*ldlt=*/true);
         check(r.err_cbk < 1e-6,
               "cbk_dsytrsnp_compact did not recover the known solution");
         check(r.err_lap < 1e-6, "LAPACKE_dsytrs did not recover the known solution");
-        std::printf("%4d | %11.2f | %11.2e | %12.2e | %6.2fx | %11.2e | %13.2e\n", n,
-                    nmat * trs_gflop(n, nrhs, true) / r.t_cbk, nmat / r.t_cbk,
+        std::printf("%4d | %6d | %10.2f | %11.2f | %11.2e | %12.2e | %6.2fx | %11.2e | "
+                    "%13.2e\n",
+                    n, nmat, pool_mib_of(n, nmat),
+                    nmat * trs_gflop(n, args.nrhs, true) / r.t_cbk, nmat / r.t_cbk,
                     nmat / r.t_lap, r.t_lap / r.t_cbk, r.err_cbk, r.err_lap);
         std::fflush(stdout);
     }
-    std::printf("-----+-------------+-------------+--------------+---------+"
-                "-------------+---------------\n");
+    std::printf("-----+--------+------------+-------------+-------------+--------------+"
+                "---------+-------------+---------------\n");
 }
 
 /* Both routines side by side, cbk only: the scan that shows where the
  * substitution's rate turns over as the pool outgrows a cache level. */
-void run_sweep(int nmat, int reps, int nrhs, const std::vector<int> &sizes, int V,
-               MKL_COMPACT_PACK fmt)
+void run_sweep(const CmdArgs &args, const std::vector<int> &sizes, int nthreads)
 {
     std::printf("\nSubstitution size sweep: cbk only (throughput, no cross-check)\n");
-    std::printf("   n |  pool A (MiB) |  potrs GFLOP/s | sytrsnp GFLOP/s\n");
-    std::printf("-----+---------------+----------------+----------------\n");
+    std::printf("   n |   nmat | pool A (MiB) |  potrs GFLOP/s | sytrsnp GFLOP/s\n");
+    std::printf("-----+--------+--------------+----------------+----------------\n");
     for (int n : sizes) {
-        const Row p = run_one(n, nmat, nrhs, reps, V, fmt, /*ldlt=*/false);
-        const Row s = run_one(n, nmat, nrhs, reps, V, fmt, /*ldlt=*/true);
-        std::printf("%4d | %13.2f | %14.2f | %15.2f\n", n,
-                    (double)nmat * n * n * sizeof(double) / (1024.0 * 1024.0),
-                    nmat * trs_gflop(n, nrhs, false) / p.t_cbk,
-                    nmat * trs_gflop(n, nrhs, true) / s.t_cbk);
+        const int nmat = nmat_at(args, n, nthreads);
+        const Row p = run_one(n, nmat, args.nrhs, args.reps, args.V, args.fmt,
+                              /*ldlt=*/false);
+        const Row s = run_one(n, nmat, args.nrhs, args.reps, args.V, args.fmt,
+                              /*ldlt=*/true);
+        std::printf("%4d | %6d | %12.2f | %14.2f | %15.2f\n", n, nmat,
+                    pool_mib_of(n, nmat), nmat * trs_gflop(n, args.nrhs, false) / p.t_cbk,
+                    nmat * trs_gflop(n, args.nrhs, true) / s.t_cbk);
         std::fflush(stdout);
     }
-    std::printf("-----+---------------+----------------+----------------\n");
+    std::printf("-----+--------+--------------+----------------+----------------\n");
 }
 
 } /* anonymous namespace */
@@ -282,8 +312,6 @@ void run_sweep(int nmat, int reps, int nrhs, const std::vector<int> &sizes, int 
 int main(int argc, char **argv)
 {
     const CmdArgs args(argc, argv, "bench_trs_compact");
-    const int nmat = args.nmat, reps = args.reps, nrhs = args.nrhs, V = args.V;
-    const MKL_COMPACT_PACK fmt = args.fmt;
 
     /* Pin MKL's internal threading: the OpenMP outer loops are the only
      * parallelism. LAPACKE NaN-checking off so the per-matrix path is timed
@@ -301,15 +329,19 @@ int main(int argc, char **argv)
 
     std::printf("Triangular substitution throughput: the solve stage alone, on a "
                 "factor already in hand\n");
-    std::printf("matrices=%d  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
+    if (args.pool_mib > 0)
+        std::printf("pool=%.1f MiB (matrices derived per size)", args.pool_mib);
+    else
+        std::printf("matrices=%d (fixed; the pool then grows as n^2)", args.nmat);
+    std::printf("  nrhs=%d  reps=%d  simdlen=%d (%s)  OpenMP threads=%d  "
                 "(col-major lower, pre-packed and pre-factored)\n",
-                nmat, nrhs, reps, V, compact_format_name(fmt), nthreads);
+                args.nrhs, args.reps, args.V, compact_format_name(args.fmt), nthreads);
 
     if (args.sweep)
-        run_sweep(nmat, reps, nrhs, sizes, V, fmt);
+        run_sweep(args, sizes, nthreads);
     else {
-        run_potrs(nmat, reps, nrhs, sizes, V, fmt);
-        run_sytrsnp(nmat, reps, nrhs, sizes, V, fmt);
+        run_potrs(args, sizes, nthreads);
+        run_sytrsnp(args, sizes, nthreads);
     }
     return 0;
 }

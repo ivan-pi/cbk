@@ -254,8 +254,22 @@ factor -- the same "two ways to solve the batch" comparison
 `bench_sysvnp_compact` makes.
 
 ```
-bench_trs_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
+bench_trs_compact [--nrhs=k] [--pool=MiB] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
 ```
+
+`--pool=MiB` is the answer to the regime problem below: it derives the matrix
+count from a fixed pool size at each order instead of holding the count fixed,
+so every row is measured in the same part of the memory hierarchy and the
+GFLOP/s column is comparable down its length. A *fixed* count cannot do that --
+the pool grows as `n^2`, so it crosses a cache boundary partway along any size
+list, and a larger fixed count does not remove the crossing, it moves it to a
+smaller order (`nmat = 512` crosses an 8 MiB L2 near `n = 45`, `nmat = 1000`
+near `n = 32`, right in the middle of the range this library is for). The count
+is rounded to whole groups and floored at one group per thread, so at large
+orders that floor takes over and the pool drifts above the target -- which is
+why both the count and the pool it actually came to are columns on every row,
+under either policy. What `--pool` costs is that the batch size now varies down
+the table, so the `mat/s` columns move for that reason as well.
 
 `--size-sweep` runs both routines cbk-only across the range and prints the
 pool's size in MiB next to the rates, which is the column to read first: at one

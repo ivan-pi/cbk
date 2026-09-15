@@ -35,6 +35,7 @@
 #include <limits>
 #include <new>
 #include <random>
+#include <cmath>
 #include <vector>
 #include <algorithm>
 
@@ -278,16 +279,42 @@ inline int omp_threads()
     return nthreads;
 }
 
+/* Matrix count that puts `bytes_per_matrix` x nmat closest to a target pool
+ * size, for the --pool sizing policy: a *fixed matrix count* means the pool
+ * grows as n^2, so a size list crosses a cache boundary somewhere in the
+ * middle and the rows either side of it are not measured in the same regime --
+ * which is how a cache knee reads as a property of the kernel. Fixing the pool
+ * in *bytes* instead keeps every size in one regime, at the cost of comparing
+ * different batch counts (the mat/s column then moves for that reason too).
+ *
+ * The count is rounded to a whole number of groups, so no size is handed a
+ * padded partial last group the others do not have, and floored at one group
+ * per thread, so the threaded loop is never starved -- at large n that floor
+ * takes over and the pool drifts above the target, which is why every caller
+ * reports the pool it actually ran. */
+inline int nmat_for_pool(double pool_mib, std::size_t bytes_per_matrix, int V,
+                         int nthreads)
+{
+    const double want = pool_mib * 1048576.0 / (double)bytes_per_matrix;
+    const double groups = std::max(1.0, std::round(want / V));
+    const double floor_groups = std::max(1, nthreads);
+    return (int)(std::max(groups, floor_groups) * V);
+}
+
 /* Command line of the factorization and solve benchmarks: positional [nmat]
  * [reps], plus --size-sweep=nmin:nmax[:stride] (cbk-only scan, any nmax),
- * --simdlen=2|4|8 (force the interleave width instead of the host default) and
- * --nrhs=k (right-hand sides; the factorization benchmarks ignore it). The
+ * --simdlen=2|4|8 (force the interleave width instead of the host default),
+ * --nrhs=k (right-hand sides; the factorization benchmarks ignore it) and
+ * --pool=MiB (derive the matrix count per size from a fixed pool size instead
+ * of the fixed [nmat]; only bench_trs_compact reads it so far, the others
+ * ignore it as they ignore --nrhs). The
  * constructor parses and validates and resolves the pack format; hold the
  * object const. */
 struct CmdArgs {
     int nmat = 512;
     int reps = 3;
     int nrhs = 1;
+    double pool_mib = 0; /* > 0: --pool sizing, nmat derived per size */
     bool sweep = false;
     int sweep_min = 0, sweep_max = 0, sweep_step = 1;
     MKL_COMPACT_PACK fmt; /* the host's widest, or the --simdlen one */
@@ -309,6 +336,8 @@ struct CmdArgs {
                 simdlen = std::atoi(argv[i] + 10);
             else if (std::strncmp(argv[i], "--nrhs=", 7) == 0)
                 nrhs = std::atoi(argv[i] + 7);
+            else if (std::strncmp(argv[i], "--pool=", 7) == 0)
+                pool_mib = std::atof(argv[i] + 7);
             else
                 pos.push_back(argv[i]);
         }
@@ -316,12 +345,13 @@ struct CmdArgs {
         if (pos.size() > 1) reps = std::atoi(pos[1]);
         if (!(nmat > 0 && reps > 0 && nrhs > 0)) {
             std::printf("usage: %s [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] "
-                        "[--nrhs=k>0] [nmat>0] [reps>0]\n",
+                        "[--nrhs=k>0] [--pool=MiB>0] [nmat>0] [reps>0]\n",
                         prog);
             std::exit(1);
         }
         check(!sweep || (sweep_min > 0 && sweep_max >= sweep_min && sweep_step > 0),
               "usage: --size-sweep needs 0 < nmin <= nmax and stride > 0");
+        check(pool_mib >= 0, "usage: --pool takes a positive pool size in MiB");
         /* Double compact widths are 2/4/8 (SSE/AVX/AVX512); 16 is float's AVX512
          * width and has no double format. */
         check(simdlen == 0 || simdlen == 2 || simdlen == 4 || simdlen == 8,
