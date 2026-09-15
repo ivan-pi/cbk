@@ -85,31 +85,46 @@ listed in `examples.md`.
 ## trsm
 
 - **Done:** design 2-6 and 8.1; the full `side x uplo x transa x diag`
-  matrix and the `alpha = 0` fast path. Column-major `side = 'L'` is the
-  tuned 4/2/1 register-blocked path; the group kernel routes on views, so a
-  transposed column-major view reaches it too (`gels` does). Every other
-  combination is the strided kernel.
+  matrix and the `alpha = 0` fast path. Every `(side, layout)` combination
+  reaches the tuned path: layout is a template parameter of one body
+  (`trsm_ix` is the whole difference between the two), and `side = 'R'` reduces
+  to `side = 'L'` on the transposed views with `uplo` flipped -- the identity
+  that already makes `ormqr`'s `side = 'R'` and `gels`'s LQ case the kernels
+  they had. The strided `BatchView` kernel is now only the fallback for a view
+  with no unit stride. Row-major used to take that kernel, which has no
+  blocking or register tiling, and ran 2-4x slower than MKL at several
+  right-hand sides; it is now at or ahead of MKL in three of its four
+  `(uplo, transa)` cases.
   The non-unit diagonal is inverted once per pivot row and multiplied, not
   divided per `(row, RHS column)` -- the divider port is not pipelined, and at
   many right-hand sides the divides were the kernel at the small orders. From
-  `trsm_block_min` up, the tuned path sweeps the pivots in blocks of
-  `trsm_nb` and applies each block as one register-tiled rank-`NB` update
-  (2 rows x 4 RHS columns: 14 vectors live, so it fits the 16 registers of
-  SSE and AVX as well as AVX-512's 32 -- a 4x4 tile is faster where 32 exist
-  and spills where 16 do). Blocking is used where the tile has something to
-  amortize over: a second RHS column, or `op(A) = A^T`. Together these put the
-  Cholesky substitution (the `potrs` sweep pair) ahead of MKL's compact `trsm`
-  pair at 4 and 16 right-hand sides across the range below 128, and at
-  near-parity at one (`bench_trs_compact`).
-- **Open:** a *single* `op(A) = A` sweep at several right-hand sides is still
-  behind `mkl_?trsm_compact` -- the pair comes out ahead because `op(A) = A^T`
-  is well ahead, not because both are. The tile reaches about two thirds of the
-  machine's fused-multiply-add rate, which is roughly where MKL's whole kernel
-  runs, so closing it means a better micro-kernel (packing the operands, a
-  deeper reduction), not more blocking. Per-micro-architecture tuning of the
-  tile is deliberately not on this list. Also: per-group overhead at the
-  smallest orders; tuning the strided kernel, which is what row-major takes and
-  which is several times slower than the tuned path at many right-hand sides.
+  `trsm_block_min` up the pivot range is split recursively (no fixed block
+  width wins: widening one lengthens the updates' reduction but grows the
+  unblocked share, and 4, 8, 16 and 32 all trail the recursion), each split's
+  effect on the rows still to come applied as one register-tiled update.
+  That update sweeps RHS columns outermost, so the panel of already-solved
+  pivot rows stays L1-resident while the row tiles stream past it --
+  row-outermost collapsed from about 2.5 to 1.4 G vector-FMA/s at 16 columns.
+  The tile is 4 rows x 4 RHS columns where the pack width implies AVX-512's 32
+  vector registers and 2 x 4 where it may be 16 (a property of the instruction
+  set the pack width requires, not a micro-architecture tuning; a 4x4 tile
+  spills on an AVX2 target and lost about 40% there). Blocking is used where
+  the tile has something to amortize over: a second RHS column, or
+  `op(A) = A^T`. Together these put the Cholesky substitution (the `potrs`
+  sweep pair) ahead of MKL's compact `trsm` pair at 4 and 16 right-hand sides
+  across the range below 128, and at near-parity at one (`bench_trs_compact`).
+- **Open:** one configuration of the eight is still behind
+  `mkl_?trsm_compact`: `transa = 'N'` with the *lower* triangle -- and, by the
+  side identity, the `side = 'R'` upper case that reduces to it. Measured per
+  configuration in vector-FMA/s this kernel is uniform (about 1.6-1.9 across
+  all eight) while MKL is not: its `'N'`-lower path runs at 2.0-3.0 and every
+  other one at 0.5-0.9, one hand-tuned kernel for the canonical post-Cholesky
+  forward substitution. So the remaining gap is a better micro-kernel there
+  (packing the operands, a deeper reduction), not more blocking -- the block
+  width, the leaf width and the recursion have all been scanned. It is worst
+  between orders 24 and 40, where the blocked and the unblocked path both sit
+  near 0.6 of MKL. Per-micro-architecture tuning of the tile is deliberately
+  not on this list. Also open: per-group overhead at the smallest orders.
 
 ## gels
 

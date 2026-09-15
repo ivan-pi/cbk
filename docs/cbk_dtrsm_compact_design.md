@@ -226,13 +226,34 @@ unblocked form reduces each row into a single accumulator and runs at FMA
 latency. A single column of `op(A) = A` is already the contiguous axpy above
 and stays there.
 
-### 6.3 Layouts: tuned column-major, strided row-major
+### 6.3 Layouts and sides: one kernel, four routes
 
-Column-major is the tuned path: a matrix column is contiguous in the compact
-buffer, so the substitution walks contiguous packs. Row-major is supported for
-MKL compatibility through the same stride-generalized addressing (a `BatchView`
-per operand), correctness-first, mirroring how `ormqr`/`geqrf` treat the
-non-contiguous layout.
+Every `(side, layout)` combination reaches the tuned kernel; the strided
+`BatchView` kernel remains only as the fallback for a view with no unit stride
+at all.
+
+**Layout** is a template parameter of the tuned body, not a separate kernel.
+Column-major makes a matrix column contiguous in the compact buffer,
+row-major a row; that is the *whole* difference, and it is one index
+expression (`trsm_ix`), selected at compile time so neither layout pays for the
+other. The substitution, the blocking, the register tile and the reciprocal are
+written once. Previously row-major fell to the stride-generic kernel, which has
+no blocking or register tiling at all and ran several times slower than the
+tuned path at many right-hand sides.
+
+**Side** needs no kernel of its own either. `X op(A) = alpha B` transposes to
+`op(A)^T X^T = alpha B^T`, a *left* solve on the transposed views with the
+extents swapped -- and in compact storage a transposed view is a stride swap,
+which `BatchView::transposed()` already expresses. `op(A)^T` is `A^T` when
+`transa = 'N'` and `A` when it is `'T'`, which is exactly `op(A^T)` for the
+*same* `transa`, and `A^T` is upper where `A` is lower. So `side = 'R'` reduces
+to "transpose both views, swap `m` and `n`, flip `uplo`, keep `transa`" -- the
+same identity that makes `ormqr`'s `side = 'R'` and `gels`'s LQ case the
+kernels they already had.
+
+The routing is then four branches on which of each operand's strides is unit
+(B column-major or row-major, A stored the same way or as its transpose), all
+landing in the same body. One branch per group, outside every kernel loop.
 
 ### 6.4 Padding and SIMD semantics
 
