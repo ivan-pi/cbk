@@ -7,18 +7,25 @@
 // (recursive / blocked, so its rounding differs from the kernel's
 // right-looking sweep, but the SPD factor is unique).
 //
-// Checks per (T, V, uplo, layout):
+// Checks per (T, V, uplo, layout), each a test ratio against THRESH
+// (test_compact_util.hpp):
 //   1. named-triangle factor  ==  LAPACKE_?potrf factor, relative to the
-//      reference factor's L1 norm at 20 n eps (design 7.1: the unique factor
-//      agrees to a few n eps between backward-stable implementations)
+//      reference factor's L1 norm (design 7.1: the unique factor agrees to a
+//      few n eps between backward-stable implementations)
 //   2. reconstruction  L L^T == A  (lower) / U^T U == A  (upper), by ?trmm
+//      (dpot01's residual)
 //   3. the strictly-opposite triangle of the compact buffer is bit-for-bit
 //      unchanged from the input (the routine must not reference or write it)
 //   4. end-to-end solve: factor + ?potrs_compact recovers a known X, and
 //      ?posv_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?posv_compact still factors (LAPACK ?posv), bit-identical to
 //      ?potrf_compact, with a 1-element dummy bp (never referenced)
-// plus LAPACK-style argument validation of the three C APIs.
+//   6. ?potrs_compact == the two ?trsm_compact sweeps it is built from
+//      (dget04 of the one solution against the other)
+// over the suite's orders and the small-dimension sweep (small_dims: every
+// order from 0 to 5 through the factorization checks, n x nrhs through the
+// solve pipeline, the empty operand included), plus LAPACK-style argument
+// validation of the three C APIs.
 //
 // Assisted-by: Claude:claude-opus-4-8 Claude:claude-fable-5
 
@@ -37,7 +44,6 @@ using namespace cbk::test;
 template <class T, int V>
 static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
     const bool upper = (uplo == 'U' || uplo == 'u');
 
@@ -51,34 +57,40 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
     }
 
     // pack the full symmetric A, factor with the routine under test, unpack
-    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
-    int info = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    const int lda = std::max(1, n);
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    int info = compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm);
     MatrixBatch<T> Aout(nm, n, n);
-    unpack_compact(Aout, ap.data(), n, V, rowmajor);
+    unpack_compact(Aout, ap.data(), lda, V, rowmajor);
 
-    double e_fac = 0, e_rec = 0, e_untouched = 0;
+    double r_fac = 0, r_rec = 0, e_untouched = 0;
     std::vector<T> Fs((size_t)n * n), Recs((size_t)n * n);
     const auto F = mat_view(Fs.data(), n, n), Rec = mat_view(Recs.data(), n, n);
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx), Ain = A.view(idx);
-        // check 1: named-triangle factor vs LAPACKE_?potrf, relative to the
-        // reference factor's L1 norm (the unique SPD factor: a sharp signal)
+        // check 1: named-triangle factor vs LAPACKE_?potrf, the 1-norm of the
+        // difference over the triangle relative to the reference factor's
+        // (the unique SPD factor: a sharp signal)
         // check 3: strictly-opposite triangle unchanged from the input A
         double el = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (named)
-                    el = std::max(el, (double)std::abs(Fac(i, j) - Ref(i, j)));
+                    cs += std::abs((double)Fac(i, j) - Ref(i, j));
                 else
                     e_untouched =
                         std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
             }
-        e_fac = std::max(e_fac, el / std::max(norm1(Ref), norm_floor));
+            el = std::max(el, cs);
+        }
+        r_fac = std::max(r_fac, test_ratio<T>(el, n, norm1(Ref)));
 
         // check 2: reconstruction of A from the named triangle's factor, by
         // ?trmm: F is the factor with the other triangle zeroed, so
-        // L L^T = F L^T (side 'R') and U^T U = U^T F (side 'L')
+        // L L^T = F L^T (side 'R') and U^T U = U^T F (side 'L') -- dpot01's
+        // ||L L^T - A|| / (n ||A|| eps)
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < n; ++i)
                 F(i, j) = (upper ? (i <= j) : (i >= j)) ? Fac(i, j) : T(0);
@@ -86,23 +98,17 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
             tri_apply('R', 'L', 'T', 'N', Fac, F, Rec);
         else
             tri_apply('L', 'U', 'T', 'N', Fac, F, Rec);
-        e_rec = std::max(e_rec, max_abs_diff(Recs.data(), A[idx], (size_t)n * n) /
-                                    std::max(norm1(Ain), norm_floor));
+        r_rec = std::max(r_rec, test_ratio<T>(diff_norm1(Rec, Ain), n, norm1(Ain)));
     }
 
-    // design 7.1: the unique factor vs LAPACK's, and ||L L^T - A|| / ||A||,
-    // both backward-stable quantities at n eps
-    const double tol = 20.0 * eps * std::max(1, n);
-    bool ok_f = e_fac <= tol;
-    bool ok_r = e_rec <= tol;
-    bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
-    bool ok_i = (info == 0);
+    const bool ok_f = passes(r_fac), ok_r = passes(r_rec);
+    const bool ok_u = e_untouched == 0.0; // must be bit-for-bit unchanged
+    const bool ok_i = (info == 0);
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d cond=%.0f | fac:%.1e %s "
-                "rec:%.1e %s untouched:%s | info=%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, cond, e_fac,
-                ok_f ? "OK" : "FAIL", e_rec, ok_r ? "OK" : "FAIL", ok_u ? "OK" : "FAIL",
-                info, ok_i ? "OK" : "FAIL");
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d cond=%.0f | fac:%-5.2g %s "
+                "rec:%-5.2g %s untouched:%s | info=%d %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, cond, r_fac, verdict(r_fac),
+                r_rec, verdict(r_rec), ok_u ? "OK" : "FAIL", info, ok_i ? "OK" : "FAIL");
     return (!ok_f) + (!ok_r) + (!ok_u) + (!ok_i);
 }
 
@@ -114,9 +120,8 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
 template <class T, int V>
 static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
 {
-    const T eps = std::numeric_limits<T>::epsilon();
     const bool rowmajor = (layout == 'R' || layout == 'r');
-    const int ldb = rowmajor ? nrhs : n;
+    const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
 
     // known X, B = A X densely
     MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
@@ -127,32 +132,85 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
         matmul(A.view(idx), X, B.view(idx));
     }
 
-    std::vector<T> ap = pack_compact(A, n, V, rowmajor);
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
     std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
     std::vector<T> ap2 = ap, bp2 = bp; // the fused call's copies
 
-    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), n, V, nm);
+    int info_f = compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm);
     int info_s =
-        compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), n, bp.data(), ldb, V, nm);
+        compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), lda, bp.data(), ldb, V, nm);
     int info_v =
-        compact<T>::posv(layout, uplo, n, nrhs, ap2.data(), n, bp2.data(), ldb, V, nm);
+        compact<T>::posv(layout, uplo, n, nrhs, ap2.data(), lda, bp2.data(), ldb, V, nm);
 
     MatrixBatch<T> Xhat(nm, n, nrhs);
     unpack_compact(Xhat, bp.data(), ldb, V, rowmajor);
 
-    const auto [e_fwd, e_res] = solve_errors(A, B, Xhat, X);
+    // dget02's residual and dget04's forward error
+    const auto [r_res, r_fwd] = solve_ratios(A, B, Xhat, X);
     // fused vs two-step, on the raw compact buffers (padded lanes included)
     const bool fused_same = (ap2 == ap) && (bp2 == bp);
 
-    // The tame SPD batches keep cond(A) modest, so residual and forward error
-    // share one backward-stability-sized gate.
-    const double rtol = 100.0 * std::max(1, n) * eps;
-    bool ok = (e_fwd <= rtol) && (e_res <= rtol) && fused_same && (info_f == 0) &&
-              (info_s == 0) && (info_v == 0);
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | fwd:%.1e "
-                "res:%.1e (%.1e) posv==trf+trs:%s info=%d/%d/%d %s\n",
-                compact<T>::name, V, uplo, layout, nm, n, nrhs, e_fwd, e_res, rtol,
-                fused_same ? "yes" : "NO", info_f, info_s, info_v, ok ? "OK" : "FAIL");
+    const bool ok = passes(r_res) && passes(r_fwd) && fused_same && (info_f == 0) &&
+                    (info_s == 0) && (info_v == 0);
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d solve | res:%-5.2g %s "
+        "fwd:%-5.2g %s posv==trf+trs:%s info=%d/%d/%d %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, nrhs, r_res, verdict(r_res), r_fwd,
+        verdict(r_fwd), fused_same ? "yes" : "NO", info_f, info_s, info_v,
+        ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// ------------- potrs vs the two trsm sweeps it is built from ----------
+// ?potrs_compact is two ?trsm_compact sweeps on the factor (lower: L z = B,
+// L^T X = z; upper: U^T z = B, U X = z), so the public trsm entry point must
+// solve the same system from the same factor -- the consistency between
+// related routines LAPACK's drivers check through their shared ratios.
+// Gated as dget04's forward error of the one solution against the other
+// (rcond(A)); whether the two are bit-identical is reported, not gated.
+
+template <class T, int V>
+static int run_compose(int nm, int n, int nrhs, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    const bool upper = (uplo == 'U' || uplo == 'u');
+    const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
+
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_spd(A.view(idx));
+        matmul(A.view(idx), X, B.view(idx));
+    }
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
+    std::vector<T> bp2 = bp;
+
+    int bad = (compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm) != 0);
+    bad += (compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), lda, bp.data(), ldb, V,
+                              nm) != 0);
+    // the same solve as two trsm sweeps on the factor
+    const char t1 = upper ? 'T' : 'N', t2 = upper ? 'N' : 'T';
+    bad += (compact<T>::trsm(layout, 'L', uplo, t1, 'N', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+    bad += (compact<T>::trsm(layout, 'L', uplo, t2, 'N', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+
+    MatrixBatch<T> X1(nm, n, nrhs), X2(nm, n, nrhs);
+    unpack_compact(X1, bp.data(), ldb, V, rowmajor);
+    unpack_compact(X2, bp2.data(), ldb, V, rowmajor);
+    double r = 0;
+    for (int idx = 0; idx < nm; ++idx)
+        r = std::max(r, forward_ratio(X1.view(idx), X2.view(idx), rcond1(A.view(idx))));
+    const bool same = (bp == bp2);
+
+    const bool ok = passes(r) && (bad == 0);
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d potrs vs trsm+trsm | "
+        "%-5.2g %s bit-identical:%s %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, nrhs, r, verdict(r),
+        same ? "yes" : "no", ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -222,12 +280,13 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
     MatrixBatch<T> Aout(nm, n, n);
     unpack_compact(Aout, ap.data(), n, V, rowmajor);
 
-    double e_spd = 0; // worst relative error over the SPD sibling lanes
+    double r_spd = 0; // worst ratio over the SPD sibling lanes
     bool spd_finite = true;
     bool bad_poisoned = false; // the non-SPD lane must carry NaN/Inf
     for (int idx = 0; idx < nm; ++idx) {
         double el = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (!named) continue;
@@ -237,20 +296,21 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
                     continue;
                 }
                 spd_finite = spd_finite && std::isfinite((double)x);
-                el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
+                cs += std::abs((double)x - Aref(idx, i, j));
             }
+            el = std::max(el, cs);
+        }
         if (idx != badlane) // vs LAPACKE_?potrf, relative to its factor's norm
-            e_spd = std::max(e_spd, el / std::max(norm1(Aref.view(idx)), norm_floor));
+            r_spd = std::max(r_spd, test_ratio<T>(el, n, norm1(Aref.view(idx))));
     }
 
-    const double tol = 20.0 * std::numeric_limits<T>::epsilon() * std::max(1, n);
-    bool ok_spd = spd_finite && (e_spd <= tol); // siblings uncontaminated & correct
-    bool ok_bad = bad_poisoned;                 // poison confined but present
-    bool ok_info = (info == 0);                 // GIGO: no early-exit, no error
+    const bool ok_spd = spd_finite && passes(r_spd); // siblings uncontaminated & correct
+    const bool ok_bad = bad_poisoned;                // poison confined but present
+    const bool ok_info = (info == 0);                // GIGO: no early-exit, no error
 
-    std::printf("T=%-6s V=%-2d uplo=%c lay=%c n=%-3d non-SPD lane | siblings:%.1e %s "
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c n=%-3d non-SPD lane | siblings:%-5.2g %s "
                 "poison:%s info=%d %s\n",
-                compact<T>::name, V, uplo, layout, n, e_spd, ok_spd ? "OK" : "FAIL",
+                compact<T>::name, V, uplo, layout, n, r_spd, ok_spd ? "OK" : "FAIL",
                 ok_bad ? "OK" : "FAIL", info, ok_info ? "OK" : "FAIL");
     return (!ok_spd) + (!ok_bad) + (!ok_info);
 }
@@ -304,6 +364,25 @@ int main()
             fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
+        }
+
+    // potrs against the two trsm sweeps it is built from, over uplo/layout.
+    for (char u : uplos)
+        for (char l : lays) {
+            fails += run_compose<double, 4>(8, 30, 5, u, l);
+            fails += run_compose<float, 8>(11, 24, 3, u, l); // padded partial group
+        }
+
+    // The small-dimension sweep (small_dims): every order over uplo x layout,
+    // then n x nrhs through the solve pipeline, a padded group each.
+    for (int n : small_dims)
+        for (char u : uplos)
+            for (char l : lays)
+                fails += run_case<double, 4>(5, n, u, l);
+    for (int n : small_dims)
+        for (int nrhs : small_dims) {
+            fails += run_solve<double, 4>(5, n, nrhs, 'L', 'C');
+            fails += run_solve<float, 8>(9, n, nrhs, 'U', 'R');
         }
 
     // nrhs = 0 must factor anyway (LAPACK ?posv), bit-identical to potrf,

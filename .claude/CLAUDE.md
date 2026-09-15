@@ -251,6 +251,30 @@ workspace contract, or the benchmarks' threading.
   own kernel. Register blocking is
   written as a `JB`-templated block helper with `for (c < JB)` loops the
   compiler unrolls, not as hand-expanded `w0..w3` copies.
+- **Test ratios, one threshold.** The portable suites gate every numerical
+  check the way LAPACK's TESTING suites do: a dimensionless test ratio in the
+  exact form of LAPACK's own checker, compared against the single
+  `THRESH = 30` of LAPACK's `dtest.in`. The three forms are in
+  `tests/test_compact_util.hpp`: `test_ratio<T>` for a factorization residual
+  (dqrt01 / dpot01 / dsyt01: the *1-norm* of `R - Q^T A`, `L L^T - A`, ...
+  over `(order) * ||A||_1 * eps` -- `diff_norm1`, `orth_norm1` form the
+  numerators), `residual_ratio` for a solve (dget02 / dpot02 / dtrt02: per
+  right-hand side, `||b_j - A x_j||_1 / (||A||_1 ||x_j||_1 eps)`, no order
+  factor), and `forward_ratio` for a forward error (dget04: per right-hand
+  side, `||x_j - x_j^true||_inf / ||x_j^true||_inf`, discounted by `rcond` from
+  `rcond1`, LAPACKE's `?getrf` + `?gecon` on the dense, unpacked input --
+  condition numbers are never taken from the packed format). A correct
+  kernel's ratios are O(1) (observed ≤ 5 across the suites) in either
+  precision; each case prints them, so a near miss is visible. Add a check as
+  one of these ratios, never as a hand-picked `k * eps * n` tolerance or a
+  max-abs entry; only structural contracts (bit-for-bit reproduction,
+  untouched storage, identity padding lanes) are exact. Related routines are
+  also checked against each other, as LAPACK's paths do: `posv == potrf +
+  potrs` and `sysvnp == sytrfnp + sytrsnp` bit-for-bit, `potrs` against the two
+  `trsm` sweeps it is built from, `sytrsnp` against `trsm`, `D^-1`, `trsm`,
+  `ormqr` in every layout / side / trans against the explicit Q of `orgqr`
+  (dqrt03).
+  The MKL suites still carry their own relative gates.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cbk.h`) validates LAPACK-style, returning `-j` for a bad j-th

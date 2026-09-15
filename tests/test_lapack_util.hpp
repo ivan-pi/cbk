@@ -53,8 +53,8 @@
 namespace cbk::test {
 
 // ----------------------- LAPACKE / CBLAS, by scalar type -------------
-// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / gels
-// forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
+// lapack<T>::geqr2 / geqrf / gelqf / orgqr / ormqr / geqp3 / potrf / getrf /
+// gecon / gels forward to LAPACKE_?*, gemm / trsm / trmm to cblas_?*. One macro
 // generates both specializations so the two cannot drift apart.
 
 template <class T> struct lapack;
@@ -84,6 +84,12 @@ template <> struct lapack<T> {                                                  
     { return LAPACKE_##p##geqp3(layout, m, n, a, lda, jpvt, tau); }                        \
     static lapack_int potrf(int layout, char uplo, lapack_int n, T *a, lapack_int lda)    \
     { return LAPACKE_##p##potrf(layout, uplo, n, a, lda); }                                \
+    static lapack_int getrf(int layout, lapack_int m, lapack_int n, T *a, lapack_int lda, \
+                            lapack_int *ipiv)                                              \
+    { return LAPACKE_##p##getrf(layout, m, n, a, lda, ipiv); }                             \
+    static lapack_int gecon(int layout, char norm, lapack_int n, const T *a,              \
+                            lapack_int lda, T anorm, T *rcond)                             \
+    { return LAPACKE_##p##gecon(layout, norm, n, a, lda, anorm, rcond); }                  \
     static lapack_int gels(int layout, char trans, lapack_int m, lapack_int n,            \
                            lapack_int nrhs, T *a, lapack_int lda, T *b, lapack_int ldb)   \
     { return LAPACKE_##p##gels(layout, trans, m, n, nrhs, a, lda, b, ldb); }               \
@@ -115,12 +121,15 @@ CBK_TEST_LAPACK_DISPATCH(float, s)
 // without a copy when one stride is 1 and the other is at least the extent
 // along it -- column-major (si == 1, ld = sj) or row-major (sj == 1, ld = si);
 // the ambiguous degenerate shapes (a single row or column) are read as
-// whichever description satisfies the library's ld >= extent rule.
+// whichever description satisfies the library's ld >= extent rule. An empty
+// extent constrains nothing (mat_view of a 0 x n matrix has sj = 0); the
+// library's ld >= max(1, extent) is then lapack_ld's business.
 
 template <class Mv> bool is_rowmajor(const Mv &M)
 {
-    if (M.si == 1 && M.sj >= std::max(M.rows, 1)) return false;
-    assert(M.sj == 1 && M.si >= std::max(M.cols, 1) && "view is not a BLAS layout");
+    if (M.si == 1 && (M.rows == 0 || M.sj >= std::max(M.rows, 1))) return false;
+    assert(M.sj == 1 && (M.cols == 0 || M.si >= std::max(M.cols, 1)) &&
+           "view is not a BLAS layout");
     return true;
 }
 
@@ -206,28 +215,50 @@ template <class T> class Staged {
 // sequence: the suites gate such comparisons relative to the operand norms,
 // at a multiple of n * eps. Only ?geqr2 is unblocked by definition, and only
 // it is compared elementwise at ~eps.
+//
+// Each takes LAPACK's own quick return on an empty operand before the call:
+// the routine would do nothing, but LAPACKE's NaN check runs first and an
+// empty batch's operand is a possibly null pointer (MatrixBatch hands out
+// std::vector storage), which not every stack's check guards.
+
+template <class Mv> bool is_empty(const Mv &M)
+{
+    return M.rows == 0 || M.cols == 0;
+}
 
 // ?geqr2: unblocked Householder QR, (H, tau) in the LAPACK convention.
 template <class T> void ref_geqr2(MatrixView<T> A, T *tau)
 {
+    if (is_empty(A)) return;
     lapack<T>::geqr2(lapack_layout(A), A.rows, A.cols, A.data, lapack_ld(A), tau);
 }
 
 // ?geqrf: the blocked driver, for the invariants suites.
 template <class T> void ref_geqrf(MatrixView<T> A, T *tau)
 {
+    if (is_empty(A)) return;
     lapack<T>::geqrf(lapack_layout(A), A.rows, A.cols, A.data, lapack_ld(A), tau);
 }
 
-// ?ormqr, side='L': B := Q^T B (trans 'T') or Q B ('N') from (H, tau), with
-// k reflectors read from A (m x k or wider) and applied to B (m x nrhs).
+// ?ormqr: C := op(Q) C (side 'L') or C op(Q) ('R'), op(Q) = Q ('N') or Q^T
+// ('T'), from (H, tau) with k reflectors read from A (nq x k or wider, nq = m
+// for 'L' and n for 'R') and applied to C (m x n).
+template <class T, class Av>
+void ref_ormqr(char side, char trans, int k, Av A, const T *tau, MatrixView<T> C)
+{
+    const bool left = (side == 'L' || side == 'l');
+    assert(A.rows == (left ? C.rows : C.cols) && k <= std::min(A.rows, A.cols));
+    if (is_empty(C) || k == 0) return;
+    const Staged<T> Cs(C, is_rowmajor(A));
+    lapack<T>::ormqr(lapack_layout(A), side, trans, C.rows, C.cols, k, A.data,
+                     lapack_ld(A), tau, Cs.data(), Cs.ld());
+}
+
+// The common case, side 'L': B := Q^T B (trans 'T') or Q B ('N').
 template <class T, class Av>
 void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
-    assert(A.rows == B.rows && k <= std::min(A.rows, A.cols));
-    const Staged<T> Bs(B, is_rowmajor(A));
-    lapack<T>::ormqr(lapack_layout(A), 'L', trans, B.rows, B.cols, k, A.data,
-                     lapack_ld(A), tau, Bs.data(), Bs.ld());
+    ref_ormqr('L', trans, k, A, tau, B);
 }
 
 // ?orgqr: generate the first n columns of Q = H(0)..H(k-1) in place over the
@@ -235,6 +266,7 @@ void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 template <class T> void ref_orgqr(int k, MatrixView<T> A, const T *tau)
 {
     assert(k <= A.cols && A.cols <= A.rows);
+    if (is_empty(A)) return; /* k = 0 is not empty: Q = I(:, 0:n-1) is written */
     lapack<T>::orgqr(lapack_layout(A), A.rows, A.cols, k, A.data, lapack_ld(A), tau);
 }
 
@@ -257,6 +289,7 @@ template <class T> void ref_geqp3(MatrixView<T> A, lapack_int *jpvt, T *tau)
 template <class T> lapack_int ref_potrf(char uplo, MatrixView<T> A)
 {
     assert(A.rows == A.cols);
+    if (is_empty(A)) return 0;
     return lapack<T>::potrf(lapack_layout(A), uplo, A.rows, A.data, lapack_ld(A));
 }
 
@@ -306,10 +339,18 @@ template <class T, class Rv> void ref_trsm_upper(Rv R, MatrixView<T> B)
 // ?gelqf storage (m < n) -- and tau its min(m,n) reflector scalars. LAPACK's
 // ?gels keeps tau in its workspace, so it runs on a copy of A for X, and
 // (A, tau) come from ?geqrf / ?gelqf on A itself, the same call ?gels makes.
+// min(m, n) = 0 is ?gels's quick return, B := 0 over all max(m, n) rows (no
+// factorization, no least-squares solution: the residual rows hold zeros too).
 template <class T> void ref_gels(char trans, MatrixView<T> A, MatrixView<T> B, T *tau)
 {
     const int m = A.rows, n = A.cols, nrhs = B.cols;
     assert(B.rows == std::max(m, n));
+    if (is_empty(A)) {
+        for (int j = 0; j < nrhs; ++j)
+            for (int i = 0; i < B.rows; ++i)
+                B(i, j) = T(0);
+        return;
+    }
     const bool row = is_rowmajor(A);
 
     std::vector<T> A0s((std::size_t)m * n);
@@ -372,10 +413,59 @@ void tri_apply(char side, char uplo, char transa, char diag, Av A, Xv X, Rv R)
 
 // ----------------------- shared checks -------------------------------
 
-// The end-to-end solve gate every solving suite closes with: the worst
-// relative forward error of Xhat against the known X, and the worst relative
-// residual ||A Xhat - B|| formed by ?gemm -- so a solver bug cannot hide
-// behind the factorization that produced Xhat.
+// rcond = 1 / (||A||_1 ||A^-1||_1) of a square matrix, by ?getrf + ?gecon:
+// the RCOND LAPACK's dget04 discounts a forward error by (forward_ratio).
+// An empty matrix is perfectly conditioned; a singular one returns 0, which
+// makes any forward error pass -- the ratio then says nothing, as in LAPACK.
+template <class Av> double rcond1(Av A)
+{
+    using T = elem_t<Av>;
+    assert(A.rows == A.cols);
+    const int n = A.rows;
+    if (n == 0) return 1.0;
+    std::vector<T> LUs((std::size_t)n * n);
+    std::vector<lapack_int> ipiv(n);
+    const auto LU = mat_view(LUs.data(), n, n);
+    copy_matrix(A, LU);
+    const double anorm = norm1(LU);
+    lapack<T>::getrf(LAPACK_COL_MAJOR, n, n, LU.data, n, ipiv.data());
+    T rcond = 0;
+    lapack<T>::gecon(LAPACK_COL_MAJOR, '1', n, LU.data, n, (T)anorm, &rcond);
+    return (double)rcond;
+}
+
+// The end-to-end solve gate every solving suite closes with, as test ratios:
+// dget02's / dpot02's residual, per right-hand side, ||b_j - A xhat_j||_1 /
+// (||A||_1 ||xhat_j||_1 eps), the residual formed by ?gemm so a solver bug
+// cannot hide behind the factorization that produced Xhat; and dget04's
+// forward error against the known X, discounted by rcond(A). The worst over
+// the batch of each.
+struct SolveRatios {
+    double res, fwd;
+};
+
+template <class T>
+SolveRatios solve_ratios(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
+                         const MatrixBatch<T> &Xhat, ConstMatrixView<T> X)
+{
+    assert(B.rows() == Xhat.rows() && B.cols() == Xhat.cols() && X.rows == Xhat.rows() &&
+           X.cols == Xhat.cols());
+    std::vector<T> Rs(Xhat.stride());
+    const auto R = mat_view(Rs.data(), Xhat.rows(), Xhat.cols());
+    SolveRatios r{0, 0};
+    for (int v = 0; v < Xhat.count(); ++v) {
+        const auto Av = A.view(v), Bv = B.view(v), Xv = Xhat.view(v);
+        matmul(Av, Xv, R); // R := B - A Xhat
+        for (int j = 0; j < R.cols; ++j)
+            for (int i = 0; i < R.rows; ++i)
+                R(i, j) = Bv(i, j) - R(i, j);
+        r.res = std::max(r.res, residual_ratio(norm1(Av), R, Xv));
+        r.fwd = std::max(r.fwd, forward_ratio(Xv, X, rcond1(Av)));
+    }
+    return r;
+}
+
+// The same two, as relative errors (the MKL suites' gates).
 struct SolveErrors {
     double fwd, res;
 };

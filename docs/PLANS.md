@@ -21,7 +21,10 @@ listed in `examples.md`.
 ## ormqr
 
 - **Done:** design 2-6 and 8.1; `side = 'R'` is the kernel over the
-  transposed view, `trans = 'C'` folds to `'T'`.
+  transposed view, `trans = 'C'` folds to `'T'`. The portable `?ormqr_compact`
+  takes layout, side and trans like the MKL-style entry point, and its suite
+  runs the layout x side x trans product against LAPACKE `?ormqr` and the
+  explicit Q of `?orgqr` (LAPACK's dqrt03) on every stack.
 - **Gap:** the stress structures of design 7.3 (`cond` knob, banded /
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases. The LAPACK-style

@@ -8,17 +8,20 @@
  * reflectors into the first k columns of an m x n buffer whose remaining
  * columns hold garbage (they must be overwritten), and generate Q.
  *
- * Checks per (T, V, layout):
- *   1. compact Q  ==  LAPACKE_?orgqr Q (elementwise, 100 m eps: Q's entries
- *      are O(1) and, for full-rank A, Q is unique up to the shared sign
- *      convention, so two backward-stable routes agree to cond(A) * eps;
+ * Checks per (T, V, layout), each a test ratio against THRESH
+ * (test_compact_util.hpp):
+ *   1. compact Q  ==  LAPACKE_?orgqr Q (elementwise, relative to 1: Q's
+ *      entries are O(1) and, for full-rank A, Q is unique up to the shared
+ *      sign convention, so two backward-stable routes agree to cond(A) * eps;
  *      LAPACK blocks its accumulation above k = 128, so the rounding order
  *      differs)
- *   2. Q^T Q = I (orthonormal columns, formed independently)
+ *   2. Q^T Q = I (orthonormal columns, formed independently: dqrt02's)
  *   3. Q(:, 0:k-1) R = A with R = triu of the factorization (k > 0)
  *   4. padded lanes of a partial last group come out exactly identity
  * plus k < n (unit-seeded extra columns), k = 0 (Q = leading columns of I),
- * row-major, and the C API's LAPACK-style argument validation.
+ * row-major, the small-dimension sweep (small_dims: every m >= n from 0 to 5
+ * with k in {n, 0, 1, n/2}, LAPACK's K values, the empty operand included),
+ * and the C API's LAPACK-style argument validation.
  *
  * Assisted-by: Claude:claude-fable-5
  */
@@ -41,12 +44,8 @@ template <class T, int V>
 static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
 {
     assert(m >= n && n >= k);
-    const T eps = std::numeric_limits<T>::epsilon();
-    const double tol_el = 100.0 * eps * m;   /* vs LAPACKE_?orgqr, see the header */
-    const double tol_orth = 100.0 * eps * m; /* independent invariants */
-    const double tol_rec = 100.0 * eps * m;
 
-    const int ld = rowmajor ? n : m;
+    const int ld = std::max(1, rowmajor ? n : m);
 
     /* factor a random m x k batch (empty at k = 0); stage its reflectors
      * into m x n */
@@ -78,18 +77,20 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
     }
     unpack_compact(Qout, ap.data(), ld, V, rowmajor);
 
-    /* check 1: elementwise vs LAPACKE_?orgqr */
-    double e1 = 0;
+    /* check 1: elementwise vs LAPACKE_?orgqr (Q's entries are O(1): relative
+     * to 1, the norm of an orthogonal matrix) */
+    double r1 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        e1 = std::max(e1, max_abs_diff(Qout[kk], Qref[kk], Qout.stride()));
+        r1 = std::max(r1, test_ratio<T>(diff_norm1(Qout.view(kk), Qref.view(kk)), m));
 
-    /* check 2: Q^T Q = I, formed densely */
-    double e2 = 0;
+    /* check 2: Q^T Q = I, formed densely (dqrt02's ||I - Q^T Q||_1 / (m eps)) */
+    double r2 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        e2 = std::max(e2, orth_error(Qout.view(kk)));
+        r2 = std::max(r2, test_ratio<T>(orth_norm1(Qout.view(kk)), m));
 
-    /* check 3: Q(:, 0:k-1) R = A0, R = triu of the factorization */
-    double e3 = 0;
+    /* check 3: Q(:, 0:k-1) R = A0, R = triu of the factorization, relative
+     * to ||A0|| */
+    double r3 = 0;
     if (k > 0) {
         std::vector<T> Rs((size_t)k * k), Recs((size_t)m * k);
         const auto R = mat_view(Rs.data(), k, k);
@@ -99,8 +100,8 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
                 for (int i = 0; i < k; ++i)
                     R(i, j) = (i <= j) ? Afac(kk, i, j) : T(0);
             matmul(leading(Qout.view(kk), m, k), R, Rec);
-            e3 = std::max(e3, max_abs_diff(Recs.data(), A0[kk], (size_t)m * k) /
-                                  std::max(norm1(A0.view(kk)), norm_floor));
+            r3 = std::max(
+                r3, test_ratio<T>(diff_norm1(Rec, A0.view(kk)), m, norm1(A0.view(kk))));
         }
     }
 
@@ -118,13 +119,12 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
                                   (double)std::abs(P(i, j)[v] - (i == j ? T(1) : T(0))));
     }
 
-    bool ok1 = e1 <= tol_el, ok2 = e2 <= tol_orth, ok3 = e3 <= tol_rec, ok4 = e4 == 0;
+    const bool ok1 = passes(r1), ok2 = passes(r2), ok3 = passes(r3), ok4 = e4 == 0;
     fails += !ok1 + !ok2 + !ok3 + !ok4;
-    std::printf("T=%-6s V=%-2d nm=%-2d %s m=%-3d n=%-3d k=%-3d | ref: %.2e %s | QtQ=I: "
-                "%.2e %s | QR=A: %.2e %s | pad: %.1e %s\n",
-                compact<T>::name, V, nm, rowmajor ? "row" : "col", m, n, k, e1,
-                ok1 ? "OK" : "FAIL", e2, ok2 ? "OK" : "FAIL", e3, ok3 ? "OK" : "FAIL", e4,
-                ok4 ? "OK" : "FAIL");
+    std::printf("T=%-6s V=%-2d nm=%-2d %s m=%-3d n=%-3d k=%-3d | ref: %-5.2g %s | QtQ=I: "
+                "%-5.2g %s | QR=A: %-5.2g %s | pad: %.1e %s\n",
+                compact<T>::name, V, nm, rowmajor ? "row" : "col", m, n, k, r1,
+                verdict(r1), r2, verdict(r2), r3, verdict(r3), e4, ok4 ? "OK" : "FAIL");
     return fails;
 }
 
@@ -191,6 +191,20 @@ int main()
 
     /* smallest size */
     fails += run_case<double, 2>(3, 1, 1, 1);
+
+    /* the small-dimension sweep (small_dims): every m >= n, k over LAPACK's
+     * {n, 0, 1, n/2} (each value once), a padded group, one layout each */
+    for (int mm : small_dims)
+        for (int nn : small_dims) {
+            if (nn > mm) continue;
+            const int ks[] = {nn, 0, 1, nn / 2};
+            for (int t = 0; t < 4; ++t) {
+                const int kk = ks[t];
+                if (kk > nn || std::find(ks, ks + t, kk) != ks + t) continue;
+                fails += run_case<double, 4>(5, mm, nn, kk);
+                fails += run_case<float, 8>(9, mm, nn, kk, true);
+            }
+        }
 
     /* row-major */
     fails += run_case<double, 4>(8, 43, 43, 43, true);

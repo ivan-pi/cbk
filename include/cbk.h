@@ -8,7 +8,7 @@
  * interleave width V.
  *
  *   dgeqrf_compact   / sgeqrf_compact    -- QR factorization  A = Q R
- *   dormqr_compact   / sormqr_compact    -- apply Q or Q^T from the left, B := op(Q) B
+ *   dormqr_compact   / sormqr_compact    -- apply Q or Q^T, C := op(Q) C or C op(Q)
  *   dorgqr_compact   / sorgqr_compact    -- form the explicit Q of a QR, in place
  *   dpotrf_compact   / spotrf_compact    -- Cholesky factorization  A = L L^T or U^T U
  *   dpotrs_compact   / spotrs_compact    -- solve A X = B from a Cholesky factor
@@ -58,12 +58,12 @@
 
 /* Version. The macros describe the header; cbk_get_version() the library
  * linked, as CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 +
- * CBK_VERSION_PATCH (0.1.0 -> 100), so a consumer can check the two agree.
+ * CBK_VERSION_PATCH (0.2.0 -> 200), so a consumer can check the two agree.
  * Macros, not an enum: this is a C header, and a consumer must be able to
  * test the version in the preprocessor (#if CBK_VERSION >= ...). */
 /* NOLINTBEGIN(modernize-macro-to-enum) */
 #define CBK_VERSION_MAJOR 0
-#define CBK_VERSION_MINOR 1
+#define CBK_VERSION_MINOR 2
 #define CBK_VERSION_PATCH 0
 #define CBK_VERSION                                                                      \
     (CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 + CBK_VERSION_PATCH)
@@ -94,27 +94,33 @@ int dgeqrf_compact(char layout, int m, int n, double *ap, int ldap, double *taup
 int sgeqrf_compact(char layout, int m, int n, float *ap, int ldap, float *taup, int V,
                    int nm);
 
-/* Apply Q (or Q^T) of a compact QR to a compact RHS block from the left,
- * B := op(Q) B -- the reflector-application (side='L') step between a compact
- * QR factorization (?geqrf_compact) and a triangular solve.
- *   trans    'T' (Q^T B, the solve case) or 'N' (Q B)
- *   m, nrhs  rows of B (and A); columns of B
- *   k        number of reflectors (min(m,n) of the factorization)
- *   ap       compact reflectors from ?geqrf_compact, (ldap, k) per matrix
- *   ldap     compact leading dimension of A (>= m)
+/* Apply Q (or Q^T) of a compact QR to a compact matrix, from either side:
+ * C := op(Q) C (side='L') or C := C op(Q) (side='R'), op(Q) = Q ('N') or Q^T
+ * ('T') -- LAPACK ?ormqr, one matrix per compact lane, in either layout.
+ * Q = H(0) H(1) ... H(k-1) is the product of the k reflectors ?geqrf_compact
+ * left in ap and taup; it is nq x nq with nq = m (side='L') or n (side='R').
+ *   layout   'C' column-major or 'R' row-major (A and C alike)
+ *   side     'L' (C := op(Q) C) or 'R' (C := C op(Q))
+ *   trans    'T' (Q^T, the solve case) or 'N' (Q)
+ *   m, n     rows and columns of C
+ *   k        number of reflectors (0 <= k <= nq)
+ *   ap       compact reflectors from ?geqrf_compact, (nq x k) per matrix
+ *   ldap     compact leading dimension of A (>= nq column-major, >= k row-major)
  *   taup     compact tau (k per matrix, ld = k)
- *   bp       compact B (m x nrhs), overwritten with op(Q) B
- *   ldbp     compact leading dimension of B (>= m)
+ *   cp       compact C (m x n), overwritten with op(Q) C or C op(Q)
+ *   ldcp     compact leading dimension of C (>= m column-major, >= n row-major)
  *   V, nm    interleave width; total number of matrices (padded last group)
  * Returns 0, or -j for an illegal j-th argument:
- *   -1 trans   -2 m (<0)   -3 nrhs (<0)   -4 k (<0 or >m)   -6 ldap
- *   -9 ldbp    -10 V (not 2/4/8/16)   -11 nm (<0)
+ *   -1 layout   -2 side   -3 trans   -4 m (<0)   -5 n (<0)   -6 k (<0 or >nq)
+ *   -8 ldap    -11 ldcp   -12 V (not 2/4/8/16)   -13 nm (<0)
  */
-int dormqr_compact(char trans, int m, int nrhs, int k, const double *ap, int ldap,
-                   const double *taup, double *bp, int ldbp, int V, int nm);
+int dormqr_compact(char layout, char side, char trans, int m, int n, int k,
+                   const double *ap, int ldap, const double *taup, double *cp, int ldcp,
+                   int V, int nm);
 
-int sormqr_compact(char trans, int m, int nrhs, int k, const float *ap, int ldap,
-                   const float *taup, float *bp, int ldbp, int V, int nm);
+int sormqr_compact(char layout, char side, char trans, int m, int n, int k,
+                   const float *ap, int ldap, const float *taup, float *cp, int ldcp,
+                   int V, int nm);
 
 /* Generate the explicit orthogonal factor of a compact QR: the first n columns
  * of Q = H(0) H(1) ... H(k-1) (m >= n >= k), formed in place over the

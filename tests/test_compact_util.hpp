@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <limits>
 #include <random>
 #include <string>
 #include <type_traits>
@@ -75,6 +76,90 @@ template <class T> T frand()
 // a divide-by-zero guard (a normal double near DBL_MIN), not a tolerance.
 constexpr double norm_floor = 1e-300;
 
+// ----------------------- test ratios and the threshold ----------------
+// Every numerical check is a dimensionless test ratio in the convention of
+// LAPACK's TESTING suites: the error divided by what backward stability
+// allows it to be, (order) * (operand norm) * eps, and one threshold decides
+// -- THRESH = 30, the value of LAPACK's dtest.in. A correct kernel's ratio is
+// O(1) in either precision; a case prints its ratios next to its verdict, so
+// a near miss is visible, and a ratio >= THRESH fails (so does NaN: the
+// comparison is written to fail it). One knob tunes every suite; there are
+// no per-check tolerances. Only structural contracts -- a bit-for-bit
+// reproduction, storage the routine must not touch, the identity in the
+// padding lanes -- stay exact.
+//
+// The three forms are LAPACK's own checkers', norms included:
+//   test_ratio<T>(err, dim, norm)     err / (max(1, dim) * norm * eps)
+//     the factorization form (dqrt01, dpot01, dsyt01, dqrt16): err the
+//     1-norm of the residual matrix R - Q^T A, L L^T - A, ... (diff_norm1,
+//     orth_norm1); dim the order it accumulates over; norm the operand(s) it
+//     is relative to (1 for an orthogonal Q)
+//   residual_ratio(anorm, R, X)       max_j ||r_j||_1 / (anorm ||x_j||_1 eps)
+//     the solve form (dget02, dpot02, dtrt02): per right-hand side, R the
+//     residual B - op(A) X, anorm = ||op(A)||_1 -- no order factor
+//   forward_ratio(Xhat, X, rcond)     max_j (||xhat_j - x_j||_inf / ||x_j||_inf) rcond / eps
+//     the forward-error form (dget04): per right-hand side, discounted by
+//     rcond = 1 / (||A|| ||A^-1||), the amplification a solve is allowed
+// A zero solution column with a nonzero error is 1 / eps (a failure), as
+// in LAPACK; an empty system is 0.
+constexpr double THRESH = 30.0;
+
+template <class T> double test_ratio(double err, int dim, double norm = 1.0)
+{
+    return err / (std::max(1, dim) * std::max(norm, norm_floor) *
+                  (double)std::numeric_limits<T>::epsilon());
+}
+
+template <class Rv, class Xv> double residual_ratio(double anorm, Rv R, Xv X)
+{
+    using T = elem_t<Xv>;
+    assert(R.cols == X.cols);
+    const double eps = std::numeric_limits<T>::epsilon();
+    if (R.rows == 0 || R.cols == 0) return 0;
+    if (anorm <= 0) return 1.0 / eps;
+    double r = 0;
+    for (int j = 0; j < R.cols; ++j) {
+        double bnorm = 0, xnorm = 0;
+        for (int i = 0; i < R.rows; ++i)
+            bnorm += std::abs((double)R(i, j));
+        for (int i = 0; i < X.rows; ++i)
+            xnorm += std::abs((double)X(i, j));
+        r = std::max(r, xnorm <= 0 ? 1.0 : (bnorm / anorm) / xnorm);
+    }
+    return r / eps;
+}
+
+template <class Xv, class Xa> double forward_ratio(Xv Xhat, Xa X, double rcond)
+{
+    using T = elem_t<Xv>;
+    assert(Xhat.rows == X.rows && Xhat.cols == X.cols);
+    const double eps = std::numeric_limits<T>::epsilon();
+    double r = 0;
+    for (int j = 0; j < X.cols; ++j) {
+        double diff = 0, xnorm = 0;
+        for (int i = 0; i < X.rows; ++i) {
+            diff = std::max(diff, std::abs((double)Xhat(i, j) - (double)X(i, j)));
+            xnorm = std::max(xnorm, std::abs((double)X(i, j)));
+        }
+        if (xnorm <= 0) {
+            if (diff > 0) r = std::max(r, 1.0);
+        }
+        else
+            r = std::max(r, (diff / xnorm) * rcond);
+    }
+    return r / eps;
+}
+
+inline bool passes(double ratio)
+{
+    return ratio < THRESH; /* false for NaN */
+}
+
+inline const char *verdict(double ratio)
+{
+    return passes(ratio) ? "OK" : "FAIL";
+}
+
 // max |a - b| over n elements.
 template <class T> double max_abs_diff(const T *a, const T *b, size_t n)
 {
@@ -104,9 +189,41 @@ template <class Mv> double norm1(Mv M)
     return mx;
 }
 
+// ||A - B||_1 of two same-shaped views, in double: the residual norm LAPACK's
+// checkers take of a reconstruction (dqrt01, dpot01, dsyt01) or a comparison.
+template <class Av, class Bv> double diff_norm1(Av A, Bv B)
+{
+    assert(A.rows == B.rows && A.cols == B.cols);
+    double mx = 0;
+    for (int j = 0; j < A.cols; ++j) {
+        double s = 0;
+        for (int i = 0; i < A.rows; ++i)
+            s += std::abs((double)A(i, j) - (double)B(i, j));
+        mx = std::max(mx, s);
+    }
+    return mx;
+}
+
+// ||Q^T Q - I||_1, formed in double: dqrt02's orthogonality residual.
+template <class Qv> double orth_norm1(Qv Q)
+{
+    double mx = 0;
+    for (int j = 0; j < Q.cols; ++j) {
+        double s = 0;
+        for (int i = 0; i < Q.cols; ++i) {
+            double d = 0;
+            for (int l = 0; l < Q.rows; ++l)
+                d += (double)Q(l, i) * Q(l, j);
+            s += std::abs(d - (i == j ? 1.0 : 0.0));
+        }
+        mx = std::max(mx, s);
+    }
+    return mx;
+}
+
 // Deviation of Q's columns from orthonormality, max |(Q^T Q - I)(i,j)| over
 // the upper triangle (Q^T Q is symmetric), accumulated in double so the gate
-// does not inherit float rounding. Shared by the orgqr suites.
+// does not inherit float rounding. The MKL orgqr suite's gate.
 template <class Qv> double orth_error(Qv Q)
 {
     double e = 0;
@@ -157,9 +274,9 @@ template <> struct compact<T> {                                                 
     static constexpr const char *name = label;                                             \
     static int geqrf(char lay, int m, int n, T *a, int ld, T *tau, int V, int nm)          \
     { return p##geqrf_compact(lay, m, n, a, ld, tau, V, nm); }                             \
-    static int ormqr(char tr, int m, int nrhs, int k, const T *a, int lda, const T *tau,   \
-                     T *b, int ldb, int V, int nm)                                         \
-    { return p##ormqr_compact(tr, m, nrhs, k, a, lda, tau, b, ldb, V, nm); }               \
+    static int ormqr(char lay, char si, char tr, int m, int n, int k, const T *a,        \
+                     int lda, const T *tau, T *c, int ldc, int V, int nm)                  \
+    { return p##ormqr_compact(lay, si, tr, m, n, k, a, lda, tau, c, ldc, V, nm); }         \
     static int orgqr(char lay, int m, int n, int k, T *a, int lda, const T *tau,           \
                      int V, int nm)                                                        \
     { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \
@@ -343,12 +460,18 @@ template <class T> void gen_tri(MatrixView<T> A, bool upper)
 // dimension ldp -- the one place the ng * gstride sizing is written. For a
 // buffer the kernel fills (tau, say), use it directly; for one packed from a
 // batch, the pack_compact/pack_tau overloads below return it filled.
+//
+// Never empty: an operand with a zero extent is still an argument the routine
+// may require present (Fortran semantics -- ?posv's bp at nrhs = 0, ?gels's A
+// at m = 0 -- asserted in cbk.cpp), so the buffer keeps one element, the
+// dummy a Fortran caller would pass.
 template <class T>
 std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
                               bool rowmajor = false)
 {
     const int ng = (nm + V - 1) / V;
-    return std::vector<T>((std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V));
+    return std::vector<T>(std::max<std::size_t>(
+        1, (std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V)));
 }
 
 template <class T>
@@ -437,6 +560,18 @@ template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
     assert(tau.cols() == 1);
     unpack_compact(tau, tp, tau.rows(), V);
 }
+
+// ----------------------- the small-dimension sweep -------------------
+// LAPACK's linear-equation suites take M and N from a list that starts
+// 0 1 2 3 5 (TESTING/dtest.in) and run every path over the full M x N cross
+// product, so the empty operand, the single row or column, and the orders
+// just below and above a register block are exercised in every routine, not
+// only where someone thought of them. The suites' sweeps take their extents
+// from this list and hand each shape to their own run_case: a zero extent is
+// the routine's quick return, and the case checks exactly that (info = 0 and
+// every error 0). The leading dimension of an empty operand is 1, as LAPACK's
+// ld >= max(1, m) requires; the sweeps spell it max(1, extent).
+constexpr int small_dims[] = {0, 1, 2, 3, 5};
 
 // ----------------------- shared checks and epilogues -----------------
 
