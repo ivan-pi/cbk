@@ -108,6 +108,21 @@ listed in `examples.md`.
   moved into the portable suites, on every stack. Where a reference is
   LAPACK's blocked driver the gate is relative to the operand norms at a
   multiple of `n eps`; only `?geqr2` stays an elementwise `~eps` comparison.
+- **Inverses (not started).** Compact equivalents of `?potri` and `?sytri`
+  would close the Cholesky and LDL^T families the way `orgqr` closes QR.
+  Both reduce to the same pieces: `?potri` is LAPACK's `?trtri` on the
+  factor followed by `?lauum` (`U^-1 U^-T`, or `L^-T L^-1`); an unpivoted
+  `?sytrinp` (named after `mkl_?getrinp_compact`, since LAPACK's `?sytri`
+  is defined on the pivoted factorization) is the unit-triangular `?trtri`,
+  the diagonal reciprocals, and a `lauum`-like product `L^-T D^-1 L^-1`.
+  A `?trtri_compact` group kernel is therefore the building block to write
+  first, and the `lauum` step can reuse the register-tiled trailing update
+  of `potrf`/`sytrfnp`. MKL has no compact `potri`, `sytri`, or `trtri`
+  (its only compact inverse is `?getrinp`). QR has no LAPACK counterpart:
+  there is no `?geqri`, and the inverse (or pseudo-inverse) from a QR
+  factorization is `R^-1 Q^T`, which the same `?trtri` on `R` plus the
+  existing `ormqr` already compose; the explicit `orgqr` is done. So the QR
+  family needs nothing beyond `?trtri`.
 - **LAPACK-style test coverage.** Adopt the testing approaches of the
   reference LAPACK repository (its `TESTING/LIN` drivers): `?latms`-style
   generators with prescribed condition number and spectral distribution, and
