@@ -7,6 +7,8 @@ release may change the API.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-15
+
 ### Changed
 
 - **Breaking:** the portable `?ormqr_compact` takes `layout`, `side` and
@@ -72,4 +74,5 @@ and the solves built on them, for many small matrices in the compact
   assumed well conditioned and within range. Deferred to a later release.
 - Tested on x86-64 Linux with GCC and Clang, against Intel MKL 2020.4 (lp64 and ilp64).
 
+[0.2.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.2.0
 [0.1.0]: https://github.com/ivan-pi/cbk/releases/tag/v0.1.0

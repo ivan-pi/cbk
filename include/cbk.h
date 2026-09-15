@@ -58,12 +58,12 @@
 
 /* Version. The macros describe the header; cbk_get_version() the library
  * linked, as CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 +
- * CBK_VERSION_PATCH (0.1.0 -> 100), so a consumer can check the two agree.
+ * CBK_VERSION_PATCH (0.2.0 -> 200), so a consumer can check the two agree.
  * Macros, not an enum: this is a C header, and a consumer must be able to
  * test the version in the preprocessor (#if CBK_VERSION >= ...). */
 /* NOLINTBEGIN(modernize-macro-to-enum) */
 #define CBK_VERSION_MAJOR 0
-#define CBK_VERSION_MINOR 1
+#define CBK_VERSION_MINOR 2
 #define CBK_VERSION_PATCH 0
 #define CBK_VERSION                                                                      \
     (CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 + CBK_VERSION_PATCH)

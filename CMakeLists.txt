@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 project(cbk
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION "Compact Batch Kernels: batched QR, Cholesky and LDL^T for small matrices in the compact (interleaved) format"
   LANGUAGES CXX)
 
@@ -73,7 +73,7 @@ target_compile_definitions(cbk PRIVATE
 if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(cbk PRIVATE OpenMP::OpenMP_CXX)
 endif()
-# libcbk.so.<0.1.0> with soname libcbk.so.<0>, from project(... VERSION) above.
+# libcbk.so.<0.2.0> with soname libcbk.so.<0>, from project(... VERSION) above.
 set_target_properties(cbk PROPERTIES
   VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 add_library(cbk::cbk ALIAS cbk)
