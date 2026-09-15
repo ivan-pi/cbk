@@ -43,7 +43,7 @@ scalar, `0` on success).
 | `src/cbk_sytrfnp_compact.hpp` | Unpivoted LDL^T kernel (the square-root-free `potf2`), over the same transposed views as `potrf`. |
 | `src/cbk_sytrsnp_compact.hpp` | The LDL^T solve: two unit-diagonal `trsm` group sweeps around a diagonal solve. |
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
-| `src/cbk_trsm_compact.hpp` | Triangular-solve kernels: the tuned column-major `side='L'` row-dot path and the general strided kernel, behind the per-group `trsm_compact_group` the fused solves compose. |
+| `src/cbk_trsm_compact.hpp` | Triangular-solve kernels: the tuned `side='L'` path (layout a template parameter, `side='R'` transposed onto it) and the general strided fallback, behind the per-group `trsm_compact_group` the fused solves compose. |
 | `src/cbk_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf, ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
 | `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
 | `src/cbk_compat.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |

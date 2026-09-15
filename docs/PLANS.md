@@ -91,10 +91,11 @@ listed in `examples.md`.
   to `side = 'L'` on the transposed views with `uplo` flipped -- the identity
   that already makes `ormqr`'s `side = 'R'` and `gels`'s LQ case the kernels
   they had. The strided `BatchView` kernel is now only the fallback for a view
-  with no unit stride. Row-major used to take that kernel, which has no
-  blocking or register tiling, and ran 2-4x slower than MKL at several
-  right-hand sides; it is now at or ahead of MKL in three of its four
-  `(uplo, transa)` cases.
+  with no unit stride. Row-major used to take that kernel, which has
+  no blocking or register tiling; it now takes the same tuned sweeps as
+  column-major, and the portable suite gates both layouts at blocked orders.
+  How the two layouts compare against MKL is *not* measured by anything in the
+  tree -- `bench_trs_compact` has no layout knob (below).
   The non-unit diagonal is inverted once per pivot row and multiplied, not
   divided per `(row, RHS column)` -- the divider port is not pipelined, and at
   many right-hand sides the divides were the kernel at the small orders. From
@@ -104,7 +105,7 @@ listed in `examples.md`.
   effect on the rows still to come applied as one register-tiled update.
   That update sweeps RHS columns outermost, so the panel of already-solved
   pivot rows stays L1-resident while the row tiles stream past it --
-  row-outermost collapsed from about 2.5 to 1.4 G vector-FMA/s at 16 columns.
+  row-outermost lost close to half its rate from 16 columns up.
   Above `trsm_block_min` the sweep is *left-looking* (`trsm_left_lazy`): a row
   block pulls in everything already solved in one reduction as long as the rows
   behind it and solves its own diagonal block without leaving registers, so
@@ -125,14 +126,15 @@ listed in `examples.md`.
 - **Open:** `transa = 'N'` with the *lower* triangle -- and, by the side
   identity, the `side = 'R'` upper case that reduces to it -- is the one
   configuration of the eight not reliably at or above `mkl_?trsm_compact`.
-  Left-looking closed most of it: measured interleaved against MKL in one
-  process (this machine's run-to-run spread reaches 30%, so separate runs do
-  not settle 10% questions), it is 0.98-1.63 of MKL at one right-hand side,
-  0.89-0.97 at four and 0.85-0.94 at sixteen, against 0.63-0.85 before. MKL
-  keeps one hand-tuned kernel here -- per configuration it runs at 3.6-4.2
-  G vector-FMA/s for `'N'`-lower and 1.2-1.5 for the other seven, where this
-  kernel is uniform at 3.3-3.9 and the machine's ceiling for the tile's
-  instruction mix is 5.4. Closing the last 10% means a deeper micro-kernel;
+  Left-looking closed most of it -- it is ahead at one right-hand side and
+  within about a tenth at four and sixteen, where it used to trail by a third
+  (`bench_trs_compact`; measure it interleaved in one process, since this
+  class of machine drifts enough between runs to swamp a ten-percent
+  question). MKL keeps one hand-tuned kernel here: per configuration its
+  `'N'`-lower path runs several times faster than its other seven, where this
+  kernel is uniform across all eight and reaches roughly two thirds of the
+  machine's ceiling for the tile's instruction mix. Closing the rest means a
+  deeper micro-kernel;
   operand packing was tried and lost at every size (0.5-1.0x), as did every
   fixed pivot-block width and every block wider than 3 rows. `__restrict` on
   the operands was tried too and is a no-op, verifiably so: the object file is
@@ -140,10 +142,16 @@ listed in `examples.md`.
   the stores being hoisted past the reduction, so there is no aliasing hazard
   for it to remove. `-funroll-loops` measured slightly *worse*, and the gcc
   optimisation reports confirm every small operand loop is already unrolled
-  and the reduction loop spills nothing (25 instructions, 12 fused
-  multiply-adds, 7 loads). Per-micro-architecture tuning of the tile is
-  deliberately not on this list. Also open: per-group overhead at the smallest
-  orders.
+  and the reduction loop spills nothing. Per-micro-architecture tuning of the tile is
+  deliberately not on this list. `bench_trs_compact` has no layout knob, so no
+  benchmark here measures the row-major path it now has; add one before making
+  any claim about it. The left-looking/right-looking crossover budgets the
+  solved panel at the full `trsm_rhs_block` width, but the sweep falls to
+  1-wide blocks below four right-hand sides, so for `nrhs < 4` -- the
+  `potrs`/`sytrsnp`/`gels` shapes -- the estimate is up to 4x too large and
+  hands those to the right-looking sweep earlier than the cache argument
+  warrants; `m * min(n, trsm_rhs_block)` is the fix, and it needs measuring.
+  Also open: per-group overhead at the smallest orders.
 
 ## gels
 

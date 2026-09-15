@@ -42,9 +42,11 @@ using namespace cbk::test;
 // Column-major; A is the order-s triangular factor, B is m x n.
 
 template <class T, int V>
-static int run_case(char side, char uplo, char transa, char diag, int nm, int m, int n)
+static int run_case(char side, char uplo, char transa, char diag, int nm, int m, int n,
+                    char layout = 'C')
 {
     const bool left = (side == 'L');
+    const bool rowmajor = (layout == 'R');
     const int s = left ? m : n;
     const T alpha = T(0.5) + frand<T>(); // a non-trivial, non-zero scalar
 
@@ -69,15 +71,17 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     }
 
     // pack, solve with the routine under test, unpack
-    const int lda = std::max(1, s), ldb = std::max(1, m);
-    std::vector<T> ap = pack_compact(A, lda, V);
-    std::vector<T> bp = pack_compact(B, ldb, V);
+    // A is s x s, so its leading dimension is s in either layout; B is m x n,
+    // so its spans m column-major and n row-major.
+    const int lda = std::max(1, s), ldb = std::max(1, rowmajor ? n : m);
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
 
-    int info = compact<T>::trsm('C', side, uplo, transa, diag, m, n, alpha, ap.data(),
+    int info = compact<T>::trsm(layout, side, uplo, transa, diag, m, n, alpha, ap.data(),
                                 lda, bp.data(), ldb, V, nm);
 
     MatrixBatch<T> Bout(nm, m, n);
-    unpack_compact(Bout, bp.data(), ldb, V);
+    unpack_compact(Bout, bp.data(), ldb, V, rowmajor);
 
     // Three gates, LAPACK's TR path's: dget04's forward error against the
     // exact solution alpha X and against the library's solution, both
@@ -113,9 +117,10 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     }
 
     const bool ok = passes(r_fwd) && passes(r_ref) && passes(r_res);
-    std::printf("  T=%-6s V=%-2d side=%c uplo=%c tr=%c diag=%c nm=%-2d m=%-3d n=%-3d | "
+    std::printf("  T=%-6s V=%-2d lay=%c side=%c uplo=%c tr=%c diag=%c nm=%-2d m=%-3d "
+                "n=%-3d | "
                 "fwd %-5.2g %s ref %-5.2g %s res %-5.2g %s info=%d %s\n",
-                compact<T>::name, V, side, uplo, transa, diag, nm, m, n, r_fwd,
+                compact<T>::name, V, layout, side, uplo, transa, diag, nm, m, n, r_fwd,
                 verdict(r_fwd), r_ref, verdict(r_ref), r_res, verdict(r_res), info,
                 (ok && info == 0) ? "OK" : "FAIL");
 
@@ -185,6 +190,44 @@ int main()
     fails += run_case<float, 8>('L', 'U', 'N', 'N', 16, 16, 4);
     fails += run_case<float, 16>('R', 'L', 'N', 'U', 32, 10, 7);
     fails += run_case<double, 4>('L', 'U', 'N', 'N', 40, 16, 4); // 10 groups: OpenMP path
+
+    // The blocked sweeps. Everything above stays under trsm_block_min (40), so
+    // without these the substitution never leaves the unblocked row-dot and the
+    // left-looking and recursive right-looking sweeps go unexercised. The
+    // left-looking one runs while its solved panel fits a first-level cache
+    // (trsm_lazy_max_bytes: m <= 128 for a 64-byte pack, 256 for 32, 512 for
+    // 16), the right-looking recursion past that -- so the m = 160 cases below
+    // are at V = 8, where 160 clears the 128 boundary. Both uplo and both
+    // transa, since the sweep direction and the op(A) addressing differ.
+    for (char uplo : {'U', 'L'})
+        for (char tr : {'N', 'T'}) {
+            fails += run_case<double, 8>('L', uplo, tr, 'N', 8, 64, 5);  // left-looking
+            fails += run_case<double, 8>('L', uplo, tr, 'N', 8, 160, 3); // right-looking
+        }
+    // one right-hand side at a blocked order: the shape potrs/sytrsnp/gels use
+    fails += run_case<double, 8>('L', 'L', 'N', 'N', 8, 64, 1);
+    fails += run_case<double, 8>('L', 'L', 'T', 'U', 8, 64, 1);
+    // and side='R', which the router transposes onto the same sweeps
+    fails += run_case<double, 8>('R', 'U', 'N', 'N', 8, 6, 64);
+
+    // Row-major. The tuned path carries the layout as a template parameter, so
+    // every sweep above has a second instantiation that nothing here reached --
+    // the portable suite was column-major throughout. Both uplo and both
+    // transa, unblocked and blocked, plus the alpha pre-scaling the blocked
+    // sweeps do (alpha is never 1 in these cases), whose loop nest turns over
+    // with the layout.
+    for (char uplo : {'U', 'L'})
+        for (char tr : {'N', 'T'})
+            for (char di : {'N', 'U'})
+                fails += run_case<double, 4>('L', uplo, tr, di, 8, 12, 5, 'R');
+    for (char uplo : {'U', 'L'})
+        for (char tr : {'N', 'T'}) {
+            fails += run_case<double, 8>('L', uplo, tr, 'N', 8, 64, 5, 'R');
+            fails += run_case<double, 8>('L', uplo, tr, 'N', 8, 160, 3, 'R');
+        }
+    fails += run_case<double, 8>('L', 'L', 'N', 'N', 8, 64, 1, 'R');
+    fails += run_case<float, 8>('L', 'U', 'N', 'N', 11, 20, 4, 'R'); // padded group
+    fails += run_case<double, 8>('R', 'L', 'T', 'U', 8, 5, 64, 'R');
 
     // few-RHS no-transpose left (n = 1,2,3): the column-axpy kernel route
     // (n >= 4 above routes to the row-dot kernel), across uplo / diag / width

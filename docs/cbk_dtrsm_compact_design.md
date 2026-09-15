@@ -215,7 +215,8 @@ of rows pulls in everything already solved, in one reduction as long as the rows
 behind it, and its accumulators never leave registers -- *including* through the
 diagonal block, which is solved in place and so needs no separate unblocked
 pass at all. That matters because the tile's rate rises steeply with reduction
-length (measured 1.7 G vector-FMA/s at 8, 3.9 at 64). It is the same arithmetic
+length -- better than twofold between a reduction of 8 and one of 64
+(`bench_trs_compact`). It is the same arithmetic
 in the same order, so the two sweeps agree bit for bit.
 
 The block is **3 rows x 4 RHS columns**, measured the fastest of 2, 3, 4, 5 and
@@ -247,24 +248,15 @@ bit-identical with and without it, because the hot loop holds only loads, the
 stores being hoisted past the reduction, so there is no aliasing hazard for it
 to remove.
 
-**A blocked sweep above `trsm_block_min`.** Unblocked, the substitution is a
-chain of rank-1 passes: every pivot row touches all the rows still to come,
-once. From order 40 up the sweep instead takes the pivots in blocks of
-`trsm_nb`, solving each block's own small triangle with the row-dot and
-applying its whole effect on the rows still to come as one **register-tiled
-rank-`NB` update** -- the same structure the blocked `potrf` uses for its
-trailing update. The tile is **2 rows x 4 RHS columns**: `2*4` accumulators
-plus `2 + 4` operands is 14 vectors live, which fits the *16* architectural
-vector registers of SSE and AVX as well as AVX-512's 32, and the kernel is
-instantiated at all three widths. A 4x4 tile is faster where 32 registers
-exist and spills where only 16 do (built for an AVX2 target it lost about 40%
-at `V = 4`, 16 right-hand sides, order 128), so the smaller tile is the one
-that holds across CPU generations; tuning a tile per micro-architecture is
-explicitly out of scope. The blocked sweep is used when there is something for
-the tile to amortize over -- a second RHS column, or `op(A) = A^T`, whose
-unblocked form reduces each row into a single accumulator and runs at FMA
-latency. A single column of `op(A) = A` is already the contiguous axpy above
-and stays there.
+**The right-looking sweep, past the left-looking one's range.** Above
+`trsm_lazy_max_bytes` the pivot range is split recursively instead: the left
+half solved, its whole effect on the right half applied as one register-tiled
+update, then the right half. No fixed block width beat that split (4, 8, 16, 32
+and 64 were all measured), because widening one lengthens the updates'
+reduction but grows the share left to the unblocked leaf. The update tile is
+**4 rows x 4 RHS columns** where `trsm_wide_regs` holds and **2 x 4** where it
+does not -- see the register-file note above.
+
 
 ### 6.3 Layouts and sides: one kernel, four routes
 

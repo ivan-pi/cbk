@@ -68,10 +68,16 @@ template <bool ROW, typename Int> constexpr Int trsm_ix(Int i, Int j, Int ld) no
  * single-column row-dot would prefetch poorly. bj is the column, scaled first. */
 template <bool UPPER, bool UNIT, typename T, int V, typename Int>
 inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
-                          typename pack<T, V>::type *bj,
-                          const typename pack<T, V>::type &va)
+                          typename pack<T, V>::type *bj, T alpha)
 {
     using VT = typename pack<T, V>::type;
+    /* alpha arrives as a scalar and is broadcast here rather than taken as a
+     * pack by reference: the referent of a pack reference is loaded at the
+     * natural vector alignment once the call is not inlined, which faults on a
+     * buffer the typedef only guarantees alignof(T) for (.claude/CLAUDE.md).
+     * The broadcast is loop-invariant, so it costs nothing. */
+    VT va;
+    broadcast<T, V>(va, alpha);
     for (Int i = 0; i < m; ++i)
         bj[i] = bj[i] * va;
     for (Int t = 0; t < m; ++t) {
@@ -97,10 +103,13 @@ inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
 template <int JB, bool ROW, bool UPPER, bool TRAN, bool UNIT, typename T, int V,
           typename Int>
 inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
-                           typename pack<T, V>::type *B, Int ldbp, Int j0,
-                           const typename pack<T, V>::type &va)
+                           typename pack<T, V>::type *B, Int ldbp, Int j0, T alpha)
 {
     using VT = typename pack<T, V>::type;
+    /* as in trsm_axpy_col: a scalar in, broadcast here, never a pack across a
+     * call that may not inline (.claude/CLAUDE.md) */
+    VT va;
+    broadcast<T, V>(va, alpha);
     /* back-substitute (sweep rows high -> low) when op(A) is upper-triangular:
      * A upper & no-trans, or A lower & trans (its transpose is upper). */
     constexpr bool back = (UPPER != TRAN);
@@ -135,6 +144,51 @@ inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
     }
 }
 
+/* RHS columns per block of the tuned sweeps. It is also the width of the
+ * already-solved panel the left-looking sweep re-reads, so trsm_lazy_max_bytes
+ * below budgets against it: naming it once keeps the budget provably tracking
+ * the blocking. */
+constexpr int trsm_rhs_block = 4;
+
+/* Does the pack width imply a 32-entry vector register file? A pack of 64 bytes
+ * or more is a zmm, and the only instruction set with one also has 32
+ * registers; a narrower pack may be running where there are 16 (SSE, AVX2).
+ * Both block widths below are chosen from this, so the rule is stated once --
+ * it is a property of the template arguments, not of any CPU. */
+template <typename T, int V> constexpr bool trsm_wide_regs = sizeof(T) * V >= 64;
+
+/* One unblocked sweep over every RHS column, in descending 4/2/1 blocks: the
+ * 1-3 leftover columns still reuse each op(A) load instead of streaming it per
+ * column as a 4-only split with a one-column remainder would, which is what
+ * lifts the awkward counts to parity with the multiples of 4.
+ *
+ * AXPY_TAIL picks the single-column form: the contiguous column-axpy where
+ * op(A) = A is read down a column (column-major, no transpose), the 1-wide
+ * row-dot otherwise. It is a template parameter because the two accumulate in
+ * different orders -- they are not interchangeable at runtime. */
+template <bool AXPY_TAIL, bool ROW, bool UPPER, bool TRAN, bool UNIT, typename T, int V,
+          typename Int>
+inline void trsm_dot_cols(Int m, Int n, const typename pack<T, V>::type *A, Int ldap,
+                          typename pack<T, V>::type *B, Int ldbp, T alpha)
+{
+    Int j = 0;
+    for (; j + trsm_rhs_block <= n; j += trsm_rhs_block)
+        trsm_dot_block<trsm_rhs_block, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B,
+                                                                          ldbp, j, alpha);
+    if (n - j >= 2) {
+        trsm_dot_block<2, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B, ldbp, j,
+                                                             alpha);
+        j += 2;
+    }
+    if (n - j >= 1) {
+        if constexpr (AXPY_TAIL)
+            trsm_axpy_col<UPPER, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, alpha);
+        else
+            trsm_dot_block<1, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B, ldbp, j,
+                                                                 alpha);
+    }
+}
+
 /* Pivot-block width of the blocked sweep below, and the order from which that
  * sweep is used at all. Under the block width the substitution is the plain
  * row-dot above; above it, a block of pivots is solved and its effect on the
@@ -155,9 +209,9 @@ constexpr int trsm_leaf = CBK_TRSM_LEAF;
  * the recursion instead of by m. The crossover is stated in bytes and compared
  * against the pack width, so it lands at the right order for every format
  * rather than at a fixed n: 32 KiB is the conservative first-level size x86 has
- * had for two decades (this machine has 48), which puts it at m = 128 for a
- * 64-byte pack, and measurement bears that out -- left-looking led through 128,
- * tied at 170-192 and lost at 256. Override for an unusual cache. */
+ * had for two decades, which puts the crossover at m = 128 for a 64-byte pack,
+ * and bench_trs_compact bears that out -- left-looking leads up to there, ties
+ * just past it, and loses well beyond. Override for an unusual cache. */
 #ifndef CBK_TRSM_LAZY_MAX_BYTES
 #define CBK_TRSM_LAZY_MAX_BYTES 32768
 #endif
@@ -203,16 +257,11 @@ inline void trsm_update_tile(const typename pack<T, V>::type *A, Int ldap,
  * operands live, so it has to fit the target's *architectural* vector
  * registers: 4x4 needs 24, 2x4 needs 14.
  *
- * Which of those is available follows from the pack width, not from any
- * particular CPU. A pack of 64 bytes or more is a zmm, and the only
- * instruction set that has one also has 32 vector registers; a narrower pack
- * may well be running on a machine with 16 (SSE, AVX2), where a 4x4 tile
- * spills -- built for an AVX2 target it lost about 40% at V = 4, 16
- * right-hand sides, order 128. So the tile is chosen by the register file the
- * pack width implies, which is a compile-time property of the template
- * arguments; nothing here is tuned to a micro-architecture, and a machine with
- * 32 registers running a narrow pack simply gets the conservative tile. */
-template <typename T, int V> constexpr int trsm_tile_rows = (sizeof(T) * V >= 64) ? 4 : 2;
+ * Where trsm_wide_regs does not hold, a 4x4 tile spills: built for an AVX2
+ * target it lost close to half its rate at V = 4 and many right-hand sides. A
+ * machine with 32 registers running a narrow pack simply gets the conservative
+ * tile, which is the safe direction. */
+template <typename T, int V> constexpr int trsm_tile_rows = trsm_wide_regs<T, V> ? 4 : 2;
 
 /* The pivots [k0,k1) applied to every row in [r0,r1) and every RHS column, in
  * IB x 4 tiles with IB x 1 / 1 x 4 / 1 x 1 edges. */
@@ -225,9 +274,9 @@ void trsm_update(Int r0, Int r1, Int n, const typename pack<T, V>::type *A, Int 
      * panel wants to stay in L1 while the rows stream past it. Sweeping the
      * rows outermost instead makes the resident set the *whole* k by n panel,
      * which stops fitting as soon as there are many right-hand sides: measured
-     * on this update alone, row-outermost collapsed from about 2.5 to 1.4
-     * G vector-FMA/s at 16 columns and a 64-pivot block, and to 1.35 at 64
-     * columns, while column-outermost held its rate across every shape. */
+     * on this update alone, row-outermost lost close to half its rate from 16
+     * right-hand sides up, while column-outermost held across every shape
+     * (bench_trs_compact). */
     constexpr int IB = trsm_tile_rows<T, V>;
     Int j = 0;
     for (; j + 4 <= n; j += 4) {
@@ -250,12 +299,12 @@ void trsm_update(Int r0, Int r1, Int n, const typename pack<T, V>::type *A, Int 
  * every order and right-hand-side count tried. Not for the reason one would
  * guess -- IB = 4 and 5 hold more accumulators (24 and 29 vectors live against
  * 19) and have the better arithmetic intensity (2.00 and 2.22 fused
- * multiply-adds per load against 1.71), and the disassembly shows they spill
- * nothing, their reduction loops being a clean 30 and 35 instructions. They
- * are simply slower, so what binds is neither register pressure nor the
- * load-to-arithmetic ratio. Where the pack width does not imply AVX-512's 32
- * registers, 2 is the only width that fits 16. */
-template <typename T, int V> constexpr int trsm_ll_rows = (sizeof(T) * V >= 64) ? 3 : 2;
+ * multiply-adds per load against 1.71), and their reduction loops are
+ * spill-free too -- a clean 30 and 35 instructions. They are simply slower, so
+ * what binds is neither register pressure nor the
+ * load-to-arithmetic ratio. Where trsm_wide_regs does not hold, 2 is the only
+ * width that fits 16 registers. */
+template <typename T, int V> constexpr int trsm_ll_rows = trsm_wide_regs<T, V> ? 3 : 2;
 
 /* One left-looking block: the IB x JB corner of X at pivot positions
  * [p0, p0+IB) and RHS columns [j0, j0+JB).
@@ -265,12 +314,15 @@ template <typename T, int V> constexpr int trsm_ll_rows = (sizeof(T) * V >= 64) 
  * loaded and stored once per pivot block that reaches it, and each update
  * reduces over only that block. Left-looking inverts it: a row block pulls in
  * everything already solved, in one reduction as long as the rows behind it,
- * and its accumulators never leave registers -- including through the diagonal
- * block, which is solved in place with no memory traffic at all and so needs no
- * separate leaf pass. One accumulator round trip for the whole solve instead of
+ * and its accumulators stay put through the diagonal block, which is solved in
+ * place and so needs no separate leaf pass. (GCC still stages the accumulator
+ * array through the stack on entry and exit -- it does not scalarize an array
+ * live across a loop -- so "in registers" holds for the reduction loop, which
+ * is spill-free, not for the block's prologue and epilogue.) One accumulator
+ * round trip for the whole solve instead of
  * one per pivot block, and the longest reduction the problem allows: the tile's
- * rate rises steeply with reduction length (measured 1.7 G vector-FMA/s at 8,
- * 3.9 at 64), which is what this buys.
+ * rate rises steeply with reduction length -- better than twofold between a
+ * reduction of 8 and one of 64 -- which is what this buys.
  *
  * It is the same arithmetic in the same order as the right-looking sweep, so
  * the two agree bit for bit; only the loop structure differs.
@@ -307,7 +359,7 @@ inline void trsm_ll_block(Int p0, Int m, Int j0, const typename pack<T, V>::type
             for (int c = 0; c < JB; ++c)
                 acc[r][c] -= u[r] * w[c];
     }
-    /* the IB x IB diagonal block, entirely in registers */
+    /* the IB x IB diagonal block, solved in place off the accumulators */
     for (int k = 0; k < IB; ++k) {
         const Int ik = row(k);
         if (!UNIT) {
@@ -386,26 +438,10 @@ void trsm_left_blocked(Int p0, Int p1, Int m, Int n, const typename pack<T, V>::
     constexpr bool back = (UPPER != TRAN);
     const Int len = p1 - p0;
     if (len <= trsm_leaf) {
-        /* broadcast here rather than carry a pack across this recursive call:
-         * a pack parameter taken by reference is loaded at the natural vector
-         * alignment once the call is not inlined (.claude/CLAUDE.md) */
-        VT one;
-        broadcast<T, V>(one, T(1));
         const Int d0 = back ? m - p1 : p0;
-        const VT *Ad = A + trsm_ix<ROW, Int>(d0, d0, ldap);
-        VT *Bd = B + trsm_ix<ROW, Int>(d0, Int(0), ldbp);
-        Int j = 0;
-        for (; j + 4 <= n; j += 4)
-            trsm_dot_block<4, ROW, UPPER, TRAN, UNIT, T, V, Int>(len, Ad, ldap, Bd, ldbp,
-                                                                 j, one);
-        if (n - j >= 2) {
-            trsm_dot_block<2, ROW, UPPER, TRAN, UNIT, T, V, Int>(len, Ad, ldap, Bd, ldbp,
-                                                                 j, one);
-            j += 2;
-        }
-        if (n - j >= 1)
-            trsm_dot_block<1, ROW, UPPER, TRAN, UNIT, T, V, Int>(len, Ad, ldap, Bd, ldbp,
-                                                                 j, one);
+        trsm_dot_cols<false, ROW, UPPER, TRAN, UNIT, T, V, Int>(
+            len, n, A + trsm_ix<ROW, Int>(d0, d0, ldap), ldap,
+            B + trsm_ix<ROW, Int>(d0, Int(0), ldbp), ldbp, T(1));
         return;
     }
     const Int pm = p0 + len / 2;
@@ -417,28 +453,25 @@ void trsm_left_blocked(Int p0, Int p1, Int m, Int n, const typename pack<T, V>::
     trsm_left_blocked<ROW, UPPER, TRAN, UNIT, T, V, Int>(pm, p1, m, n, A, ldap, B, ldbp);
 }
 
-/* One group, side='L', column-major, fully specialized on uplo/trans/diag:
- * the RHS columns are swept in 4/2/1 blocks so the 1-3 leftover columns still
- * reuse each A load (2- and 1-wide tails), instead of a one-column-at-a-time
- * remainder. The driver handles alpha = 0 (B := 0); alpha is nonzero here. */
+/* One group, side='L', fully specialized on layout/uplo/trans/diag: the
+ * unblocked sweep below trsm_block_min, the left-looking sweep above it while
+ * its panel fits a first-level cache, the recursive right-looking sweep past
+ * that. The driver handles alpha = 0 (B := 0); alpha is nonzero here. */
 template <bool ROW, bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
 void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int ldbp)
 {
     using VT = typename pack<T, V>::type;
     static_assert(std::is_floating_point_v<T>,
                   "trsm_compact is defined for real float/double");
-    /* Column-major: A's columns and B's columns are contiguous, so both leading
-     * dimensions span the other extent. Row-major: they span the rows. n = 1
+    /* A is square of order m, so its leading dimension spans m in either
+     * layout; B's spans m column-major and n row-major. n = 1
      * never steps to a second RHS column, so ldbp is unused then -- the routing
      * in trsm_compact_group reaches here with ldbp = 1 for a one-column
      * row-major B, whose unit row stride is a valid column-major column. */
-    assert((ROW ? ldap >= m : ldap >= m) && (n <= 1 || (ROW ? ldbp >= n : ldbp >= m)));
+    assert(ldap >= m && (n <= 1 || (ROW ? ldbp >= n : ldbp >= m)));
 
     const VT *A = reinterpret_cast<const VT *>(a_);
     VT *B = reinterpret_cast<VT *>(b_);
-
-    VT va;
-    broadcast<T, V>(va, alpha);
 
     /* The blocked sweep pays when the tile has something to amortize over: a
      * second RHS column, or the transposed sweep, whose unblocked form reduces
@@ -446,12 +479,26 @@ void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int l
      * column of op(A) = A is already the contiguous column-axpy below, and
      * blocking it only adds passes (measured, both compilers). */
     if (m >= trsm_block_min && (TRAN || n >= 2)) {
-        if (alpha != T(1))
-            for (Int j = 0; j < n; ++j)
+        if (alpha != T(1)) {
+            VT va;
+            broadcast<T, V>(va, alpha);
+            /* Walk B the way it is stored: the contiguous index is the row
+             * column-major and the column row-major, so the nest has to turn
+             * over with the layout. One nest for both would stride one of them
+             * by ldbp through every element -- and below a cache line per pack
+             * (V = 2 or 4) that multiplies the lines touched, as well as
+             * defeating the prefetcher at every width. The scalings are
+             * independent, so either order gives the same bits. */
+            if constexpr (ROW)
                 for (Int i = 0; i < m; ++i)
-                    B[trsm_ix<ROW, Int>(i, j, ldbp)] =
-                        B[trsm_ix<ROW, Int>(i, j, ldbp)] * va;
-        if ((std::size_t)m * 4 * V * sizeof(T) <= trsm_lazy_max_bytes)
+                    for (Int j = 0; j < n; ++j)
+                        B[i * ldbp + j] = B[i * ldbp + j] * va;
+            else
+                for (Int j = 0; j < n; ++j)
+                    for (Int i = 0; i < m; ++i)
+                        B[j * ldbp + i] = B[j * ldbp + i] * va;
+        }
+        if ((std::size_t)m * trsm_rhs_block * V * sizeof(T) <= trsm_lazy_max_bytes)
             trsm_left_lazy<ROW, UPPER, TRAN, UNIT, T, V, Int>(m, n, A, ldap, B, ldbp);
         else
             trsm_left_blocked<ROW, UPPER, TRAN, UNIT, T, V, Int>(Int(0), m, m, n, A, ldap,
@@ -459,24 +506,12 @@ void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int l
         return;
     }
 
-    Int j = 0;
-    for (; j + 4 <= n; j += 4)
-        trsm_dot_block<4, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B, ldbp, j, va);
-    if (n - j >= 2) {
-        trsm_dot_block<2, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B, ldbp, j, va);
-        j += 2;
-    }
-    if (n - j >= 1) {
-        /* The single leftover column: column-major with op(A)=A would stream A
-         * strided with no reuse, so use the contiguous column-axpy instead.
-         * op(A)=A^T reads A down a column already, and row-major has no
-         * contiguous single column to walk, so both take the dot 1-block. */
-        if constexpr (!TRAN && !ROW)
-            trsm_axpy_col<UPPER, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, va);
-        else
-            trsm_dot_block<1, ROW, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B, ldbp, j,
-                                                                 va);
-    }
+    /* The single leftover column takes the contiguous column-axpy only where
+     * op(A) = A is read down a column: column-major, no transpose. op(A) = A^T
+     * reads A down a column already, and row-major has no contiguous single
+     * column to walk, so both take the dot 1-block. */
+    trsm_dot_cols<(!TRAN && !ROW), ROW, UPPER, TRAN, UNIT, T, V, Int>(m, n, A, ldap, B,
+                                                                      ldbp, alpha);
 }
 
 /* Runtime (layout, uplo, trans, diag) -> the compile-time-specialized driver. */
@@ -511,13 +546,16 @@ inline void trsm_left_dot(bool upper, bool tran, bool unit, Int m, Int n, T alph
         trsm_left_dot_t<ROW, false, T, V, Int>(tran, unit, m, n, alpha, a, ldap, b, ldbp);
 }
 
-/* One group, fully general: any side / layout via BatchView strides. Same
- * substitution as the tuned path; only the addressing changes (it lives in the
- * two BatchViews). side='L' sweeps a row of X at a time, side='R' a column. */
+/* One group, fully general, through the two BatchViews: the same substitution
+ * as the tuned path, with the addressing left in the views' runtime strides.
+ * Reached only when neither of a view's strides is unit, which nothing in the
+ * library currently constructs (make_view always pins one to 1, and
+ * transposed()/as_const() preserve that) -- it is the fallback that keeps the
+ * routing total, not a path any test exercises. side='L' only: the caller
+ * transposes side='R' away first. */
 template <typename T, int V, typename Int = int>
-void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int m, Int n,
-                                T alpha, ConstBatchView<T, V, Int> A,
-                                BatchView<T, V, Int> B)
+void trsm_compact_group_strided(bool upper, bool tran, bool unit, Int m, Int n, T alpha,
+                                ConstBatchView<T, V, Int> A, BatchView<T, V, Int> B)
 {
     using VT = typename pack<T, V>::type;
     static_assert(std::is_floating_point_v<T>,
@@ -528,41 +566,18 @@ void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int
     VT va;
     broadcast<T, V>(va, alpha);
 
-    if (left) {
-        /* solve op(A) X = alpha B column by column; A is m x m */
-        const bool back = (upper != tran);
-        for (Int j = 0; j < n; ++j)
-            for (Int t = 0; t < m; ++t) {
-                const Int i = back ? m - 1 - t : t;
-                VT w = B(i, j) * va;
-                const Int lo = back ? i + 1 : 0;
-                const Int hi = back ? m : i;
-                for (Int l = lo; l < hi; ++l)
-                    w -= (tran ? A(l, i) : A(i, l)) * B(l, j);
-                B(i, j) = unit ? w : w / A(i, i);
-            }
-    }
-    else {
-        /* solve X op(A) = alpha B, one column of X at a time; A is n x n */
-        const bool fwd = (upper != tran);
-        for (Int t = 0; t < n; ++t) {
-            const Int j = fwd ? t : n - 1 - t;
-            for (Int i = 0; i < m; ++i)
-                B(i, j) = B(i, j) * va; /* scale this column of X */
-            const Int lo = fwd ? 0 : j + 1;
-            const Int hi = fwd ? j : n;
-            for (Int l = lo; l < hi; ++l) {
-                const VT c = tran ? A(j, l) : A(l, j);
-                for (Int i = 0; i < m; ++i)
-                    B(i, j) -= c * B(i, l);
-            }
-            if (!unit) {
-                const VT d = A(j, j);
-                for (Int i = 0; i < m; ++i)
-                    B(i, j) = B(i, j) / d;
-            }
+    /* solve op(A) X = alpha B column by column; A is m x m */
+    const bool back = (upper != tran);
+    for (Int j = 0; j < n; ++j)
+        for (Int t = 0; t < m; ++t) {
+            const Int i = back ? m - 1 - t : t;
+            VT w = B(i, j) * va;
+            const Int lo = back ? i + 1 : 0;
+            const Int hi = back ? m : i;
+            for (Int l = lo; l < hi; ++l)
+                w -= (tran ? A(l, i) : A(i, l)) * B(l, j);
+            B(i, j) = unit ? w : w / A(i, i);
         }
-    }
 }
 
 /* One group, any side / layout, alpha != 0, through the views. Every operand
@@ -613,11 +628,11 @@ inline void trsm_compact_group(bool left, bool upper, bool tran, bool unit, Int 
                                        reinterpret_cast<const T *>(A.data), A.sj,
                                        reinterpret_cast<T *>(B.data), B.si);
     else
-        trsm_compact_group_strided<T, V, Int>(left, upper, tran, unit, m, n, alpha, A, B);
+        trsm_compact_group_strided<T, V, Int>(upper, tran, unit, m, n, alpha, A, B);
 }
 
-/* The same on packed pointers in a layout: side='L' column-major reaches the
- * tuned path, the other three side/layout combinations the strided kernel. */
+/* The same on packed pointers in a layout: builds the two views and routes as
+ * above, so every side and layout reaches the tuned kernel. */
 template <typename T, int V, typename Int = int>
 inline void trsm_compact_group(bool left, bool upper, bool rowmajor, bool tran, bool unit,
                                Int m, Int n, T alpha, const T *a, Int ldap, T *b,
