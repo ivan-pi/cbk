@@ -57,7 +57,14 @@ listed in `examples.md`.
   a further gain at moderate orders but changes the rounding order (LAPACK's
   potf2 + trsm), so it waits on a numerics decision. The strided
   (column-major upper / row-major lower) cases run the same blocked code but
-  were not tuned or measured separately.
+  were not tuned or measured separately. `potrs` at a single right-hand side
+  is behind MKL's compact `trsm` pair from the low tens of orders on
+  (`bench_trs_compact`): with one column the sweeps have no factor reuse and
+  run bandwidth-bound, and the tuned path falls back to its single-column
+  tails -- `trsm_axpy_col` for `op(A) = A`, the 1-wide dot block for the
+  transpose. At `nrhs >= 2` the register-blocked path takes over and the gap
+  closes. Blocking the two sweeps over the factor rather than over the
+  right-hand sides is the untried direction.
 
 ## sytrfnp / sytrsnp / sysvnp
 
@@ -68,8 +75,11 @@ listed in `examples.md`.
   `A = U^T D U` (design 6.3), not `?sytrf`'s `U D U^T`. MKL has no compact
   `sytrf`; the `np` naming follows its `mkl_?getrfnp_compact`.
 - **Open:** the blocking was tuned on the contiguous case; the strided cases
-  run the same code untuned. The solve is the plain sweeps. No
-  factorization-only benchmark (the `potrf` harness would port).
+  run the same code untuned. The solve is the plain sweeps, and shares
+  `potrs`'s single-right-hand-side bandwidth bound above -- measured with it
+  by `bench_trs_compact`, where the two run within a few percent of each other
+  (`sytrsnp` slightly ahead: `n` reciprocals against `potrs`'s `2n` divides).
+  No factorization-only benchmark (the `potrf` harness would port).
 
 ## trsm
 

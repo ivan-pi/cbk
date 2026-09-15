@@ -18,6 +18,7 @@ LAPACK, so it doubles as an integration test (CTest-registered on a small pool).
 | [`bench_qr_compact`](#bench_qr_compact) | end-to-end QR *solve* `AX = B` | fully-open compact pipeline (three steps, and the one-call `gels`) vs MKL's pipeline vs per-matrix LAPACK (the three-step chain, and `LAPACKE_dgels`) |
 | [`bench_posv_compact`](#bench_posv_compact) | end-to-end SPD *solve* `AX = B` | `cbk_dposv_compact` (fused Cholesky) vs its own `potrf + potrs` two-step vs MKL's compact `potrf + trsm x2` pipeline vs per-matrix `LAPACKE_dposv` |
 | [`bench_sysvnp_compact`](#bench_sysvnp_compact) | end-to-end symmetric *solve* `AX = B` (indefinite) | `cbk_dsysvnp_compact` (fused unpivoted LDL^T) vs per-matrix `LAPACKE_dsysv` |
+| [`bench_trs_compact`](#bench_trs_compact) | the *substitution stage alone*, on a factor already in hand | `cbk_dpotrs_compact` vs `mkl_dtrsm_compact x2` vs `LAPACKE_dpotrs`; `cbk_dsytrsnp_compact` vs `LAPACKE_dsytrs` |
 
 The worked, self-validating solver `solve_qr_compact` (not a benchmark) lives in
 the same folder; see [`docs/examples.md`](../docs/examples.md).
@@ -34,6 +35,7 @@ cmake --build build -j
 ./build/bench_qr_compact         # end-to-end QR solve
 ./build/bench_posv_compact       # end-to-end SPD (Cholesky) solve
 ./build/bench_sysvnp_compact     # end-to-end symmetric (LDL^T) solve
+./build/bench_trs_compact        # the substitution stage on its own
 ```
 
 **Build with `-march=native` for a fair comparison.** This library sets no
@@ -222,6 +224,48 @@ Two codegen prerequisites decide what this benchmark measures
 under clang and icpx (set by the kernel headers), which the blocked
 factorization's register-tiled update depends on. A build missing either
 compiles the same kernel to slower code.
+
+## `bench_trs_compact`
+
+Throughput of the *substitution stage alone* -- the solve that runs once a
+factorization is already in hand -- for both symmetric paths:
+
+* **Cholesky** -- `cbk_dpotrs_compact` (two non-unit sweeps) against
+  `mkl_dtrsm_compact` twice (MKL's compact pipeline; it ships no compact
+  `potrs`) and per-matrix `LAPACKE_dpotrs`.
+* **unpivoted LDL^T** -- `cbk_dsytrsnp_compact` (two unit sweeps and the
+  `D^-1` row scaling between them) against per-matrix `LAPACKE_dsytrs`. No MKL
+  yardstick here, for the same reason as `bench_sysvnp_compact`.
+
+The other benchmarks bracket this stage but never time it on its own:
+`bench_potrf_compact` measures the factorization, `bench_posv_compact` and
+`bench_sysvnp_compact` the whole solve. That gap is worth closing, because a
+per-routine rate *inferred* from a whole-solve time is not the kernel's:
+dividing the substitution's `2 n^2 nrhs` by a time that also contains the
+factorization's `n^3/3` gives a number that falls off with `n` for reasons that
+have nothing to do with the sweeps. Here the pool is packed **and factored**
+once, up front and untimed, and only the substitution is measured -- the factor
+is read-only, so it stays put across passes and only the right-hand sides are
+restored. Both paths are checked against the known solution `X(:,j) = j + 1`,
+so the error columns are forward errors; the pools are `bench_posv_compact`'s
+SPD fill and `bench_sysvnp_compact`'s indefinite one. LAPACK's `?sytrf` is
+Bunch-Kaufman, so the unbatched LDL^T baseline does not solve with the same
+factor -- the same "two ways to solve the batch" comparison
+`bench_sysvnp_compact` makes.
+
+```
+bench_trs_compact [--nrhs=k] [--size-sweep=nmin:nmax[:stride]] [--simdlen=2|4|8] [nmat] [reps]
+```
+
+`--size-sweep` runs both routines cbk-only across the range and prints the
+pool's size in MiB next to the rates, which is the column to read first: at one
+right-hand side the substitution touches as much of the factor as it does
+arithmetic on it (`n^2` reads for `n^2` flops), so it is bandwidth-bound, and
+its rate turns over where the pool stops fitting a level of cache. The knee
+therefore moves with `nmat`, not with `n` -- halve the pool and it moves to a
+larger order. Reuse of the factor across right-hand sides is what lifts the
+stage off that bound: `--nrhs=k` feeds the tuned path's 4/2/1-column blocking,
+and the rate rises several-fold between `k = 1` and `k = 4`.
 
 ## Notes
 

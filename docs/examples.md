@@ -45,6 +45,13 @@ MKL's compact kernels and LAPACKE.
   same square-size range on indefinite but diagonally dominant pools, both paths
   checked against the known solution. No MKL yardstick: MKL has no compact
   `sytrf`.
+* `bench_trs_compact [--nrhs=k] [nmat] [reps]` - the *substitution stage alone*,
+  on a factor already in hand: `cbk_dpotrs_compact` vs `mkl_dtrsm_compact` twice
+  vs per-matrix `LAPACKE_dpotrs`, and `cbk_dsytrsnp_compact` vs per-matrix
+  `LAPACKE_dsytrs`. The pool is packed *and factored* untimed, so only the
+  sweeps are measured -- the rate the other solve benchmarks cannot isolate,
+  since their timings also contain the factorization. Both paths are checked
+  against the known solution.
 
 The factorization and solve benchmarks share the `--size-sweep=nmin:nmax[:stride]`
 and `--simdlen=2|4|8` flags. For a fair comparison against MKL, build with
@@ -61,4 +68,5 @@ results are documented in detail in
 All programs are registered with CTest, on a small pool, so they double as
 integration tests: `example_solve_qr_compact`, `bench_qr_compact_integration`,
 `bench_geqrf_compact_integration`, `bench_potrf_compact_integration`,
-`bench_posv_compact_integration`, `bench_sysvnp_compact_integration`.
+`bench_posv_compact_integration`, `bench_sysvnp_compact_integration`,
+`bench_trs_compact_integration`.

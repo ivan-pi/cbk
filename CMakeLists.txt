@@ -92,12 +92,12 @@ if(CBK_WITH_MKL)
   # MKL types appear in the public header (no link dependency).
   target_link_libraries(cbk PUBLIC MKL::CompactHeaders)
 
-  # Examples: the worked batched solve and the five throughput benchmarks
+  # Examples: the worked batched solve and the six throughput benchmarks
   # (examples/BENCHMARKS.md). All link MKL for the pack/unpack routines and the
   # per-matrix LAPACK baselines; the benchmarks parallelize their outer loop
   # with OpenMP when available.
   foreach(prog solve_qr_compact bench_qr_compact bench_geqrf_compact bench_potrf_compact
-               bench_posv_compact bench_sysvnp_compact)
+               bench_posv_compact bench_sysvnp_compact bench_trs_compact)
     add_executable(${prog} examples/${prog}.cpp)
     target_link_libraries(${prog} PRIVATE cbk MKL::Compact)
     # src/ for the internal header-only helpers the examples share with the
@@ -150,7 +150,7 @@ if(CBK_BUILD_TESTS)
     # SIMD width, so the padded last group is exercised too.
     add_test(NAME example_solve_qr_compact COMMAND solve_qr_compact)
     foreach(prog bench_qr_compact bench_geqrf_compact bench_potrf_compact
-                 bench_posv_compact bench_sysvnp_compact)
+                 bench_posv_compact bench_sysvnp_compact bench_trs_compact)
       add_test(NAME ${prog}_integration COMMAND ${prog} 33 1)
       set_tests_properties(${prog}_integration PROPERTIES LABELS "integration")
     endforeach()
