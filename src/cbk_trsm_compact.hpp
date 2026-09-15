@@ -18,9 +18,11 @@
  * format stores element (i,j) of all V contiguously, so it lifts verbatim with
  * double -> V-wide vector, one lane per matrix (no data-dependent branch). The
  * tuned side='L' path is templated on the RHS block width and on
- * layout/uplo/trans/diag; from trsm_block_min up it splits the pivots
- * recursively, with each half's effect on the rows still to come applied as one
- * register-tiled update instead of a chain of rank-1 passes. Layout is a
+ * layout/uplo/trans/diag; from trsm_block_min up it is left-looking -- a block
+ * of rows pulls in everything already solved in one long register-tiled
+ * reduction and solves its own diagonal block without leaving registers --
+ * falling back above trsm_lazy_max_bytes to a right-looking sweep that splits
+ * the pivots recursively. Layout is a
  * template parameter of that one body rather than a second kernel, and
  * side='R' reduces to side='L' on the transposed views, so every side/layout
  * combination reaches it; the strided kernel over BatchViews is the fallback
@@ -141,14 +143,25 @@ inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
  * trsm_block_min the blocking costs more in per-block overhead than the
  * tiling saves (measured under both gcc and clang, which agree on where the
  * crossing is). */
-#ifndef CBK_TRSM_NB
-#define CBK_TRSM_NB 32
-#endif
-constexpr int trsm_nb = CBK_TRSM_NB;
 #ifndef CBK_TRSM_LEAF
 #define CBK_TRSM_LEAF 8
 #endif
 constexpr int trsm_leaf = CBK_TRSM_LEAF;
+
+/* Above trsm_block_min the sweep is left-looking (trsm_left_lazy) while the
+ * panel of already-solved right-hand sides each block re-reads -- m rows by the
+ * 4 columns of a block, one pack each -- still fits a first-level cache; past
+ * that it goes back to the right-looking sweep, whose working set is bounded by
+ * the recursion instead of by m. The crossover is stated in bytes and compared
+ * against the pack width, so it lands at the right order for every format
+ * rather than at a fixed n: 32 KiB is the conservative first-level size x86 has
+ * had for two decades (this machine has 48), which puts it at m = 128 for a
+ * 64-byte pack, and measurement bears that out -- left-looking led through 128,
+ * tied at 170-192 and lost at 256. Override for an unusual cache. */
+#ifndef CBK_TRSM_LAZY_MAX_BYTES
+#define CBK_TRSM_LAZY_MAX_BYTES 32768
+#endif
+constexpr std::size_t trsm_lazy_max_bytes = CBK_TRSM_LAZY_MAX_BYTES;
 #ifndef CBK_TRSM_BLOCK_MIN
 #define CBK_TRSM_BLOCK_MIN 40
 #endif
@@ -230,6 +243,115 @@ void trsm_update(Int r0, Int r1, Int n, const typename pack<T, V>::type *A, Int 
             trsm_update_tile<IB, 1, ROW, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
         for (; i < r1; ++i)
             trsm_update_tile<1, 1, ROW, TRAN, T, V, Int>(A, ldap, B, ldbp, i, j, k0, k1);
+    }
+}
+
+/* Rows per left-looking block. The block holds IB*4 accumulators plus IB + 4
+ * operands live -- 19 vectors at IB = 3 -- and unlike the right-looking tile it
+ * must also hold them across the diagonal solve, which needs a temporary or
+ * two of its own. IB = 4 (24 live) spills there and measured erratic; IB = 3
+ * leaves headroom and was the fastest of 2, 3 and 4 at every order and every
+ * right-hand-side count tried. Where the pack width does not imply AVX-512's
+ * 32 registers, 2 is the only width that fits 16. */
+template <typename T, int V> constexpr int trsm_ll_rows = (sizeof(T) * V >= 64) ? 3 : 2;
+
+/* One left-looking block: the IB x JB corner of X at pivot positions
+ * [p0, p0+IB) and RHS columns [j0, j0+JB).
+ *
+ * The right-looking sweep above walks the pivots forward and pushes each
+ * block's contribution onto every row still to come, so a row's accumulator is
+ * loaded and stored once per pivot block that reaches it, and each update
+ * reduces over only that block. Left-looking inverts it: a row block pulls in
+ * everything already solved, in one reduction as long as the rows behind it,
+ * and its accumulators never leave registers -- including through the diagonal
+ * block, which is solved in place with no memory traffic at all and so needs no
+ * separate leaf pass. One accumulator round trip for the whole solve instead of
+ * one per pivot block, and the longest reduction the problem allows: the tile's
+ * rate rises steeply with reduction length (measured 1.7 G vector-FMA/s at 8,
+ * 3.9 at 64), which is what this buys.
+ *
+ * It is the same arithmetic in the same order as the right-looking sweep, so
+ * the two agree bit for bit; only the loop structure differs.
+ *
+ * Pivot p touches row i = m-1-p when op(A) is upper-triangular and p when it is
+ * lower, so a run of pivots is a contiguous run of rows either way -- d0 below
+ * is its lowest row index, and the diagonal block is solved in pivot order,
+ * which runs down the block when back-substituting. */
+template <int IB, int JB, bool ROW, bool UPPER, bool TRAN, bool UNIT, typename T, int V,
+          typename Int>
+inline void trsm_ll_block(Int p0, Int m, Int j0, const typename pack<T, V>::type *A,
+                          Int ldap, typename pack<T, V>::type *B, Int ldbp)
+{
+    using VT = typename pack<T, V>::type;
+    constexpr bool back = (UPPER != TRAN);
+    /* row of pivot p0 + r, and the contiguous run the block occupies */
+    const Int d0 = back ? m - p0 - IB : p0;
+    const auto row = [&](int r) { return back ? d0 + (IB - 1 - r) : d0 + r; };
+    /* the pivots already solved: rows [m-p0, m) back-substituting, [0, p0) not */
+    const Int q0 = back ? m - p0 : Int(0), q1 = back ? m : p0;
+
+    VT acc[IB][JB];
+    for (int r = 0; r < IB; ++r)
+        for (int c = 0; c < JB; ++c)
+            acc[r][c] = B[trsm_ix<ROW, Int>(row(r), j0 + c, ldbp)];
+    for (Int l = q0; l < q1; ++l) {
+        VT u[IB], w[JB];
+        for (int r = 0; r < IB; ++r)
+            u[r] = TRAN ? A[trsm_ix<ROW, Int>(l, row(r), ldap)]
+                        : A[trsm_ix<ROW, Int>(row(r), l, ldap)];
+        for (int c = 0; c < JB; ++c)
+            w[c] = B[trsm_ix<ROW, Int>(l, j0 + c, ldbp)];
+        for (int r = 0; r < IB; ++r)
+            for (int c = 0; c < JB; ++c)
+                acc[r][c] -= u[r] * w[c];
+    }
+    /* the IB x IB diagonal block, entirely in registers */
+    for (int k = 0; k < IB; ++k) {
+        const Int ik = row(k);
+        if (!UNIT) {
+            const VT rcp = T(1) / A[trsm_ix<ROW, Int>(ik, ik, ldap)];
+            for (int c = 0; c < JB; ++c)
+                acc[k][c] = acc[k][c] * rcp;
+        }
+        for (int r = k + 1; r < IB; ++r) {
+            const Int ir = row(r);
+            const VT av = TRAN ? A[trsm_ix<ROW, Int>(ik, ir, ldap)]
+                               : A[trsm_ix<ROW, Int>(ir, ik, ldap)];
+            for (int c = 0; c < JB; ++c)
+                acc[r][c] -= av * acc[k][c];
+        }
+    }
+    for (int r = 0; r < IB; ++r)
+        for (int c = 0; c < JB; ++c)
+            B[trsm_ix<ROW, Int>(row(r), j0 + c, ldbp)] = acc[r][c];
+}
+
+/* The left-looking sweep: RHS columns outermost (as in trsm_update, so the
+ * solved panel each block reads stays resident), pivots in blocks of IB with a
+ * 1-wide tail. */
+template <bool ROW, bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
+void trsm_left_lazy(Int m, Int n, const typename pack<T, V>::type *A, Int ldap,
+                    typename pack<T, V>::type *B, Int ldbp)
+{
+    constexpr int IB = trsm_ll_rows<T, V>;
+    Int j = 0;
+    for (; j + 4 <= n; j += 4) {
+        Int p = 0;
+        for (; p + IB <= m; p += IB)
+            trsm_ll_block<IB, 4, ROW, UPPER, TRAN, UNIT, T, V, Int>(p, m, j, A, ldap, B,
+                                                                    ldbp);
+        for (; p < m; ++p)
+            trsm_ll_block<1, 4, ROW, UPPER, TRAN, UNIT, T, V, Int>(p, m, j, A, ldap, B,
+                                                                   ldbp);
+    }
+    for (; j < n; ++j) {
+        Int p = 0;
+        for (; p + IB <= m; p += IB)
+            trsm_ll_block<IB, 1, ROW, UPPER, TRAN, UNIT, T, V, Int>(p, m, j, A, ldap, B,
+                                                                    ldbp);
+        for (; p < m; ++p)
+            trsm_ll_block<1, 1, ROW, UPPER, TRAN, UNIT, T, V, Int>(p, m, j, A, ldap, B,
+                                                                   ldbp);
     }
 }
 
@@ -327,8 +449,11 @@ void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int l
                 for (Int i = 0; i < m; ++i)
                     B[trsm_ix<ROW, Int>(i, j, ldbp)] =
                         B[trsm_ix<ROW, Int>(i, j, ldbp)] * va;
-        trsm_left_blocked<ROW, UPPER, TRAN, UNIT, T, V, Int>(Int(0), m, m, n, A, ldap, B,
-                                                             ldbp);
+        if ((std::size_t)m * 4 * V * sizeof(T) <= trsm_lazy_max_bytes)
+            trsm_left_lazy<ROW, UPPER, TRAN, UNIT, T, V, Int>(m, n, A, ldap, B, ldbp);
+        else
+            trsm_left_blocked<ROW, UPPER, TRAN, UNIT, T, V, Int>(Int(0), m, m, n, A, ldap,
+                                                                 B, ldbp);
         return;
     }
 

@@ -207,6 +207,38 @@ axpy tail so a column's answer does not depend on which block of the 4/2/1
 split it landed in. It costs one extra rounding per solved entry, which the
 suites' test ratios cover.
 
+**Left-looking above `trsm_block_min`.** A right-looking sweep walks the pivots
+forward and pushes each block's contribution onto every row still to come, so a
+row's accumulators are loaded and stored once per pivot block that reaches it,
+and each update reduces over only that block. Left-looking inverts it: a block
+of rows pulls in everything already solved, in one reduction as long as the rows
+behind it, and its accumulators never leave registers -- *including* through the
+diagonal block, which is solved in place and so needs no separate unblocked
+pass at all. That matters because the tile's rate rises steeply with reduction
+length (measured 1.7 G vector-FMA/s at 8, 3.9 at 64). It is the same arithmetic
+in the same order, so the two sweeps agree bit for bit.
+
+The block is **3 rows x 4 RHS columns**: unlike the right-looking tile it must
+hold its accumulators through the diagonal solve too, which needs a temporary
+or two, and 4 x 4 (24 live) spills there and measured erratic while 3 x 4 (19)
+has headroom. It was the fastest of 2, 3 and 4 at every order and right-hand-side
+count tried.
+
+Left-looking pays while the panel of solved right-hand sides each block re-reads
+-- `m` rows by the 4 columns of a block -- still fits a first-level cache; past
+that its working set grows with `m` and the right-looking sweep, whose working
+set the recursion bounds, wins again. The crossover is stated in bytes against
+the pack width (`trsm_lazy_max_bytes`, a conservative 32 KiB) so it lands at the
+right order for every format: `m = 128` for a 64-byte pack, and measurement
+bears that out -- left-looking led by 1.1-1.4x through 128, tied at 170 and lost
+at 256.
+
+Two approaches were measured and rejected. Packing the `A` row panel
+contiguously (the classic GEMM move, on the theory that its stride-`ldap` walk
+was thrashing the TLB) cost more than it saved at every size -- 0.5-1.0x of the
+unpacked sweep. And a fixed pivot-block width, scanned at 4, 8, 16, 32 and 64,
+never beat the recursion.
+
 **A blocked sweep above `trsm_block_min`.** Unblocked, the substitution is a
 chain of rank-1 passes: every pivot row touches all the rows still to come,
 once. From order 40 up the sweep instead takes the pivots in blocks of

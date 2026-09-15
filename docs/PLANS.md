@@ -105,6 +105,15 @@ listed in `examples.md`.
   That update sweeps RHS columns outermost, so the panel of already-solved
   pivot rows stays L1-resident while the row tiles stream past it --
   row-outermost collapsed from about 2.5 to 1.4 G vector-FMA/s at 16 columns.
+  Above `trsm_block_min` the sweep is *left-looking* (`trsm_left_lazy`): a row
+  block pulls in everything already solved in one reduction as long as the rows
+  behind it and solves its own diagonal block without leaving registers, so
+  there is one accumulator round trip for the whole solve and no separate
+  unblocked leaf. Same arithmetic in the same order, bit for bit. It is used
+  while the solved panel it re-reads still fits a first-level cache
+  (`trsm_lazy_max_bytes`, stated in bytes against the pack width, so `m = 128`
+  for a 64-byte pack); past that the right-looking sweep's bounded working set
+  wins again.
   The tile is 4 rows x 4 RHS columns where the pack width implies AVX-512's 32
   vector registers and 2 x 4 where it may be 16 (a property of the instruction
   set the pack width requires, not a micro-architecture tuning; a 4x4 tile
@@ -113,18 +122,21 @@ listed in `examples.md`.
   `op(A) = A^T`. Together these put the Cholesky substitution (the `potrs`
   sweep pair) ahead of MKL's compact `trsm` pair at 4 and 16 right-hand sides
   across the range below 128, and at near-parity at one (`bench_trs_compact`).
-- **Open:** one configuration of the eight is still behind
-  `mkl_?trsm_compact`: `transa = 'N'` with the *lower* triangle -- and, by the
-  side identity, the `side = 'R'` upper case that reduces to it. Measured per
-  configuration in vector-FMA/s this kernel is uniform (about 1.6-1.9 across
-  all eight) while MKL is not: its `'N'`-lower path runs at 2.0-3.0 and every
-  other one at 0.5-0.9, one hand-tuned kernel for the canonical post-Cholesky
-  forward substitution. So the remaining gap is a better micro-kernel there
-  (packing the operands, a deeper reduction), not more blocking -- the block
-  width, the leaf width and the recursion have all been scanned. It is worst
-  between orders 24 and 40, where the blocked and the unblocked path both sit
-  near 0.6 of MKL. Per-micro-architecture tuning of the tile is deliberately
-  not on this list. Also open: per-group overhead at the smallest orders.
+- **Open:** `transa = 'N'` with the *lower* triangle -- and, by the side
+  identity, the `side = 'R'` upper case that reduces to it -- is the one
+  configuration of the eight not reliably at or above `mkl_?trsm_compact`.
+  Left-looking closed most of it: measured interleaved against MKL in one
+  process (this machine's run-to-run spread reaches 30%, so separate runs do
+  not settle 10% questions), it is 0.98-1.63 of MKL at one right-hand side,
+  0.89-0.97 at four and 0.85-0.94 at sixteen, against 0.63-0.85 before. MKL
+  keeps one hand-tuned kernel here -- per configuration it runs at 3.6-4.2
+  G vector-FMA/s for `'N'`-lower and 1.2-1.5 for the other seven, where this
+  kernel is uniform at 3.3-3.9 and the machine's ceiling for the tile's
+  instruction mix is 5.4. Closing the last 10% means a deeper micro-kernel;
+  operand packing was tried and lost at every size (0.5-1.0x), as did every
+  fixed pivot-block width. Per-micro-architecture tuning of the tile is
+  deliberately not on this list. Also open: per-group overhead at the smallest
+  orders.
 
 ## gels
 
