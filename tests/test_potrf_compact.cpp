@@ -20,6 +20,8 @@
 //      ?posv_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?posv_compact still factors (LAPACK ?posv), bit-identical to
 //      ?potrf_compact, with a 1-element dummy bp (never referenced)
+//   6. ?potrs_compact == the two ?trsm_compact sweeps it is built from
+//      (dget04 of the one solution against the other)
 // over the suite's orders and the small-dimension sweep (small_dims: every
 // order from 0 to 5 through the factorization checks, n x nrhs through the
 // solve pipeline, the empty operand included), plus LAPACK-style argument
@@ -66,19 +68,23 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
     const auto F = mat_view(Fs.data(), n, n), Rec = mat_view(Recs.data(), n, n);
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx), Ain = A.view(idx);
-        // check 1: named-triangle factor vs LAPACKE_?potrf, relative to the
-        // reference factor's L1 norm (the unique SPD factor: a sharp signal)
+        // check 1: named-triangle factor vs LAPACKE_?potrf, the 1-norm of the
+        // difference over the triangle relative to the reference factor's
+        // (the unique SPD factor: a sharp signal)
         // check 3: strictly-opposite triangle unchanged from the input A
         double el = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (named)
-                    el = std::max(el, (double)std::abs(Fac(i, j) - Ref(i, j)));
+                    cs += std::abs((double)Fac(i, j) - Ref(i, j));
                 else
                     e_untouched =
                         std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
             }
+            el = std::max(el, cs);
+        }
         r_fac = std::max(r_fac, test_ratio<T>(el, n, norm1(Ref)));
 
         // check 2: reconstruction of A from the named triangle's factor, by
@@ -92,9 +98,7 @@ static int run_case(int nm, int n, char uplo, char layout, double cond = 0.0)
             tri_apply('R', 'L', 'T', 'N', Fac, F, Rec);
         else
             tri_apply('L', 'U', 'T', 'N', Fac, F, Rec);
-        r_rec = std::max(r_rec,
-                         test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)n * n),
-                                       n, norm1(Ain)));
+        r_rec = std::max(r_rec, test_ratio<T>(diff_norm1(Rec, Ain), n, norm1(Ain)));
     }
 
     const bool ok_f = passes(r_fac), ok_r = passes(r_rec);
@@ -154,6 +158,59 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
         compact<T>::name, V, uplo, layout, nm, n, nrhs, r_res, verdict(r_res), r_fwd,
         verdict(r_fwd), fused_same ? "yes" : "NO", info_f, info_s, info_v,
         ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// ------------- potrs vs the two trsm sweeps it is built from ----------
+// ?potrs_compact is two ?trsm_compact sweeps on the factor (lower: L z = B,
+// L^T X = z; upper: U^T z = B, U X = z), so the public trsm entry point must
+// solve the same system from the same factor -- the consistency between
+// related routines LAPACK's drivers check through their shared ratios.
+// Gated as dget04's forward error of the one solution against the other
+// (rcond(A)); whether the two are bit-identical is reported, not gated.
+
+template <class T, int V>
+static int run_compose(int nm, int n, int nrhs, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    const bool upper = (uplo == 'U' || uplo == 'u');
+    const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
+
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_spd(A.view(idx));
+        matmul(A.view(idx), X, B.view(idx));
+    }
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
+    std::vector<T> bp2 = bp;
+
+    int bad = (compact<T>::potrf(layout, uplo, n, ap.data(), lda, V, nm) != 0);
+    bad += (compact<T>::potrs(layout, uplo, n, nrhs, ap.data(), lda, bp.data(), ldb, V,
+                              nm) != 0);
+    // the same solve as two trsm sweeps on the factor
+    const char t1 = upper ? 'T' : 'N', t2 = upper ? 'N' : 'T';
+    bad += (compact<T>::trsm(layout, 'L', uplo, t1, 'N', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+    bad += (compact<T>::trsm(layout, 'L', uplo, t2, 'N', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+
+    MatrixBatch<T> X1(nm, n, nrhs), X2(nm, n, nrhs);
+    unpack_compact(X1, bp.data(), ldb, V, rowmajor);
+    unpack_compact(X2, bp2.data(), ldb, V, rowmajor);
+    double r = 0;
+    for (int idx = 0; idx < nm; ++idx)
+        r = std::max(r, forward_ratio(X1.view(idx), X2.view(idx), rcond1(A.view(idx))));
+    const bool same = (bp == bp2);
+
+    const bool ok = passes(r) && (bad == 0);
+    std::printf(
+        "T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d potrs vs trsm+trsm | "
+        "%-5.2g %s bit-identical:%s %s\n",
+        compact<T>::name, V, uplo, layout, nm, n, nrhs, r, verdict(r),
+        same ? "yes" : "no", ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -228,7 +285,8 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
     bool bad_poisoned = false; // the non-SPD lane must carry NaN/Inf
     for (int idx = 0; idx < nm; ++idx) {
         double el = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (!named) continue;
@@ -238,8 +296,10 @@ template <class T, int V> static int run_nonspd(int n, char uplo, char layout)
                     continue;
                 }
                 spd_finite = spd_finite && std::isfinite((double)x);
-                el = std::max(el, (double)std::abs(x - Aref(idx, i, j)));
+                cs += std::abs((double)x - Aref(idx, i, j));
             }
+            el = std::max(el, cs);
+        }
         if (idx != badlane) // vs LAPACKE_?potrf, relative to its factor's norm
             r_spd = std::max(r_spd, test_ratio<T>(el, n, norm1(Aref.view(idx))));
     }
@@ -304,6 +364,13 @@ int main()
             fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
+        }
+
+    // potrs against the two trsm sweeps it is built from, over uplo/layout.
+    for (char u : uplos)
+        for (char l : lays) {
+            fails += run_compose<double, 4>(8, 30, 5, u, l);
+            fails += run_compose<float, 8>(11, 24, 3, u, l); // padded partial group
         }
 
     // The small-dimension sweep (small_dims): every order over uplo x layout,

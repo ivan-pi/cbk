@@ -81,13 +81,12 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
      * to 1, the norm of an orthogonal matrix) */
     double r1 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        r1 = std::max(r1,
-                      test_ratio<T>(max_abs_diff(Qout[kk], Qref[kk], Qout.stride()), m));
+        r1 = std::max(r1, test_ratio<T>(diff_norm1(Qout.view(kk), Qref.view(kk)), m));
 
-    /* check 2: Q^T Q = I, formed densely (dqrt02's ||I - Q^T Q|| / (m eps)) */
+    /* check 2: Q^T Q = I, formed densely (dqrt02's ||I - Q^T Q||_1 / (m eps)) */
     double r2 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        r2 = std::max(r2, test_ratio<T>(orth_error(Qout.view(kk)), m));
+        r2 = std::max(r2, test_ratio<T>(orth_norm1(Qout.view(kk)), m));
 
     /* check 3: Q(:, 0:k-1) R = A0, R = triu of the factorization, relative
      * to ||A0|| */
@@ -101,9 +100,8 @@ static int run_case(int nm, int m, int n, int k, bool rowmajor = false)
                 for (int i = 0; i < k; ++i)
                     R(i, j) = (i <= j) ? Afac(kk, i, j) : T(0);
             matmul(leading(Qout.view(kk), m, k), R, Rec);
-            r3 = std::max(r3,
-                          test_ratio<T>(max_abs_diff(Recs.data(), A0[kk], (size_t)m * k),
-                                        m, norm1(A0.view(kk))));
+            r3 = std::max(
+                r3, test_ratio<T>(diff_norm1(Rec, A0.view(kk)), m, norm1(A0.view(kk))));
         }
     }
 

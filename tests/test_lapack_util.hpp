@@ -426,10 +426,11 @@ template <class Av> double rcond1(Av A)
 }
 
 // The end-to-end solve gate every solving suite closes with, as test ratios:
-// dget02's residual ||B - A Xhat|| / (n ||A|| ||Xhat|| eps), formed by ?gemm
-// so a solver bug cannot hide behind the factorization that produced Xhat,
-// and dget04's forward error ||Xhat - X|| rcond(A) / (||X|| eps) against the
-// known X. The worst over the batch of each.
+// dget02's / dpot02's residual, per right-hand side, ||b_j - A xhat_j||_1 /
+// (||A||_1 ||xhat_j||_1 eps), the residual formed by ?gemm so a solver bug
+// cannot hide behind the factorization that produced Xhat; and dget04's
+// forward error against the known X, discounted by rcond(A). The worst over
+// the batch of each.
 struct SolveRatios {
     double res, fwd;
 };
@@ -440,18 +441,17 @@ SolveRatios solve_ratios(const MatrixBatch<T> &A, const MatrixBatch<T> &B,
 {
     assert(B.rows() == Xhat.rows() && B.cols() == Xhat.cols() && X.rows == Xhat.rows() &&
            X.cols == Xhat.cols());
-    const int n = A.rows();
-    const size_t sB = Xhat.stride();
-    std::vector<T> AXs(sB);
-    const auto AX = mat_view(AXs.data(), Xhat.rows(), Xhat.cols());
-    const double nX = norm1(X);
+    std::vector<T> Rs(Xhat.stride());
+    const auto R = mat_view(Rs.data(), Xhat.rows(), Xhat.cols());
     SolveRatios r{0, 0};
     for (int v = 0; v < Xhat.count(); ++v) {
-        matmul(A.view(v), Xhat.view(v), AX);
-        r.res = std::max(r.res, test_ratio<T>(max_abs_diff(AXs.data(), B[v], sB), n,
-                                              norm1(A.view(v)) * norm1(Xhat.view(v))));
-        r.fwd = std::max(r.fwd, forward_ratio<T>(max_abs_diff(Xhat[v], X.data, sB), nX,
-                                                 rcond1(A.view(v))));
+        const auto Av = A.view(v), Bv = B.view(v), Xv = Xhat.view(v);
+        matmul(Av, Xv, R); // R := B - A Xhat
+        for (int j = 0; j < R.cols; ++j)
+            for (int i = 0; i < R.rows; ++i)
+                R(i, j) = Bv(i, j) - R(i, j);
+        r.res = std::max(r.res, residual_ratio(norm1(Av), R, Xv));
+        r.fwd = std::max(r.fwd, forward_ratio(Xv, X, rcond1(Av)));
     }
     return r;
 }

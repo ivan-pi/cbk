@@ -65,17 +65,14 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     unpack_compact(Bout, bp.data(), ld, V);
     double r1 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        r1 =
-            std::max(r1, test_ratio<T>(max_abs_diff(Bout[kk], Bref[kk], (size_t)m * nrhs),
-                                       m, norm1(Bref.view(kk))));
+        r1 = std::max(r1, test_ratio<T>(diff_norm1(Bout.view(kk), Bref.view(kk)), m,
+                                        norm1(Bref.view(kk))));
 
     /* check 2: solve recovers X (dget04, discounted by rcond(A)) */
     double r2 = 0;
     for (int kk = 0; kk < nm; ++kk) {
         ref_trsm_upper(Afac.view(kk), Bout.view(kk));
-        r2 = std::max(
-            r2, forward_ratio<T>(max_abs_diff(Bout[kk], Xs.data(), (size_t)m * nrhs),
-                                 norm1(X), rcond1(A.view(kk))));
+        r2 = std::max(r2, forward_ratio(Bout.view(kk), X, rcond1(A.view(kk))));
     }
 
     /* check 3: 'N' undoes 'T', relative to ||B||_1 */
@@ -83,8 +80,8 @@ template <class T, int V> static int run_case(int nm, int m, int nrhs)
     unpack_compact(Bout, bp.data(), ld, V);
     double r3 = 0;
     for (int kk = 0; kk < nm; ++kk)
-        r3 = std::max(r3, test_ratio<T>(max_abs_diff(Bout[kk], B[kk], (size_t)m * nrhs),
-                                        m, norm1(B.view(kk))));
+        r3 = std::max(r3, test_ratio<T>(diff_norm1(Bout.view(kk), B.view(kk)), m,
+                                        norm1(B.view(kk))));
 
     const bool ok1 = passes(r1), ok2 = passes(r2), ok3 = passes(r3);
     std::printf(
@@ -139,9 +136,7 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
         for (int j = 0; j < nrhs; ++j)
             for (int i = 0; i < m; ++i)
                 x(jpvt[kk][i], j) = y(i, j);
-        r = std::max(
-            r, forward_ratio<T>(max_abs_diff(xs.data(), Xs.data(), (size_t)m * nrhs),
-                                norm1(X), rcond1(A.view(kk))));
+        r = std::max(r, forward_ratio(x, X, rcond1(A.view(kk))));
     }
 
     const bool ok = passes(r);

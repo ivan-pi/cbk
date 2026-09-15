@@ -21,6 +21,8 @@
 //      ?sysvnp_compact reproduces that factor and X bit-for-bit
 //   5. nrhs = 0: ?sysvnp_compact still factors (LAPACK ?sysv), bit-identical
 //      to ?sytrfnp_compact, with a 1-element dummy bp (never referenced)
+//   6. ?sytrsnp_compact == the unit-diagonal ?trsm_compact sweeps around
+//      D^-1 it is built from (dget04 of the one solution against the other)
 // over the suite's orders and the small-dimension sweep (small_dims: every
 // order from 0 to 5 through the factorization checks, n x nrhs through the
 // solve pipeline, the empty operand included), plus:
@@ -96,8 +98,7 @@ template <class T> static int test_reference(int n, char uplo)
         for (int i = 0; i < n; ++i)
             W(i, j) = (i == j) ? L(j, j) : (i > j) ? L(i, j) * L(j, j) : T(0); // L D
     tri_apply('R', 'L', 'T', 'U', L, W, R); // (L D) L^T
-    const double r =
-        test_ratio<T>(max_abs_diff(Rs.data(), As.data(), As.size()), n, norm1(A));
+    const double r = test_ratio<T>(diff_norm1(R, A), n, norm1(A));
     const bool ok = passes(r);
     std::printf("T=%-6s reference ref_sytf2np uplo=%c n=%-3d | ||LDL^T-A||/(n ||A|| eps) "
                 "%-5.2g %s\n",
@@ -131,27 +132,29 @@ template <class T, int V> static int run_case(int nm, int n, char uplo, char lay
     for (int idx = 0; idx < nm; ++idx) {
         const auto Ain = A.view(idx), Fac = Aout.view(idx), Ref = Aref.view(idx);
         const double na = norm1(Ain);
-        // check 1: named-triangle factor vs scalar reference (elementwise, the
-        // same operation sequence; relative to ||A||)
+        // check 1: named-triangle factor vs scalar reference (the same
+        // operation sequence; the 1-norm of the difference over the triangle,
+        // relative to ||A||)
+        // check 2: reconstruction of A from the named triangle's (D, L|U):
+        // dsyt01's ||L D L^T - A||_1 / (n ||A||_1 eps)
         // check 3: strictly-opposite triangle unchanged from the input A
         double e_fac = 0, e_rec = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs_fac = 0, cs_rec = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (named)
-                    e_fac = std::max(e_fac, (double)std::abs(Fac(i, j) - Ref(i, j)));
+                    cs_fac += std::abs((double)Fac(i, j) - Ref(i, j));
                 else
                     e_untouched =
                         std::max(e_untouched, (double)std::abs(Fac(i, j) - Ain(i, j)));
+                cs_rec +=
+                    std::abs(ldlt_reconstruct(Fac, i, j, upper) - (double)Ain(i, j));
             }
+            e_fac = std::max(e_fac, cs_fac);
+            e_rec = std::max(e_rec, cs_rec);
+        }
         r_fac = std::max(r_fac, test_ratio<T>(e_fac, n, na));
-
-        // check 2: reconstruction of A from the named triangle's (D, L|U):
-        // ||L D L^T - A|| / (n ||A|| eps), dsyt01's form
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j)
-                e_rec = std::max(e_rec, std::abs(ldlt_reconstruct(Fac, i, j, upper) -
-                                                 (double)Ain(i, j)));
         r_rec = std::max(r_rec, test_ratio<T>(e_rec, n, na));
     }
 
@@ -214,6 +217,66 @@ static int run_solve(int nm, int n, int nrhs, char uplo, char layout)
         compact<T>::name, V, uplo, layout, nm, n, nrhs, r_res, verdict(r_res), r_fwd,
         verdict(r_fwd), fused_same ? "yes" : "NO", info_f, info_s, info_v,
         ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// ------------- sytrsnp vs the trsm sweeps it is built from ------------
+// ?sytrsnp_compact is two unit-diagonal ?trsm_compact sweeps around a
+// division by D (lower: L z = B, z := D^-1 z, L^T X = z; upper: U^T z = B,
+// z := D^-1 z, U X = z), so the public trsm entry point, with the diagonal
+// scaling done densely in between, must solve the same system from the same
+// factor. Gated as dget04's forward error of the one solution against the
+// other (rcond(A)); the two are not expected bit-identical (the kernel's
+// scaling is its own), so only the ratio is gated.
+
+template <class T, int V>
+static int run_compose(int nm, int n, int nrhs, char uplo, char layout)
+{
+    const bool rowmajor = (layout == 'R' || layout == 'r');
+    const bool upper = (uplo == 'U' || uplo == 'u');
+    const int lda = std::max(1, n), ldb = std::max(1, rowmajor ? nrhs : n);
+
+    MatrixBatch<T> A(nm, n, n), B(nm, n, nrhs);
+    const std::vector<T> Xs = known_solution<T>(n, nrhs);
+    const auto X = mat_view(Xs.data(), n, nrhs);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_sym_ldlt(A.view(idx));
+        matmul(A.view(idx), X, B.view(idx));
+    }
+    std::vector<T> ap = pack_compact(A, lda, V, rowmajor);
+    std::vector<T> bp = pack_compact(B, ldb, V, rowmajor);
+    std::vector<T> bp2 = bp;
+
+    int bad = (compact<T>::sytrfnp(layout, uplo, n, ap.data(), lda, V, nm) != 0);
+    bad += (compact<T>::sytrsnp(layout, uplo, n, nrhs, ap.data(), lda, bp.data(), ldb, V,
+                                nm) != 0);
+    // the same solve as two unit-diagonal trsm sweeps around D^-1
+    const char t1 = upper ? 'T' : 'N', t2 = upper ? 'N' : 'T';
+    bad += (compact<T>::trsm(layout, 'L', uplo, t1, 'U', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+    MatrixBatch<T> F(nm, n, n), Z(nm, n, nrhs);
+    unpack_compact(F, ap.data(), lda, V, rowmajor);
+    unpack_compact(Z, bp2.data(), ldb, V, rowmajor);
+    for (int idx = 0; idx < nm; ++idx)
+        for (int j = 0; j < nrhs; ++j)
+            for (int i = 0; i < n; ++i)
+                Z(idx, i, j) /= F(idx, i, i);
+    pack_compact(Z, bp2.data(), ldb, V, rowmajor);
+    bad += (compact<T>::trsm(layout, 'L', uplo, t2, 'U', n, nrhs, T(1), ap.data(), lda,
+                             bp2.data(), ldb, V, nm) != 0);
+
+    MatrixBatch<T> X1(nm, n, nrhs), X2(nm, n, nrhs);
+    unpack_compact(X1, bp.data(), ldb, V, rowmajor);
+    unpack_compact(X2, bp2.data(), ldb, V, rowmajor);
+    double r = 0;
+    for (int idx = 0; idx < nm; ++idx)
+        r = std::max(r, forward_ratio(X1.view(idx), X2.view(idx), rcond1(A.view(idx))));
+
+    const bool ok = passes(r) && (bad == 0);
+    std::printf("T=%-6s V=%-2d uplo=%c lay=%c nm=%-2d n=%-3d nrhs=%d sytrsnp vs "
+                "trsm+D+trsm | %-5.2g %s %s\n",
+                compact<T>::name, V, uplo, layout, nm, n, nrhs, r, verdict(r),
+                ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -293,13 +356,16 @@ template <class T, int V> static int run_zerodiag(char uplo, char layout)
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx);
         double e = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (!named) continue;
                 if (!std::isfinite((double)Fac(i, j))) finite = false;
-                e = std::max(e, (double)std::abs(Fac(i, j) - Ref(i, j)));
+                cs += std::abs((double)Fac(i, j) - Ref(i, j));
             }
+            e = std::max(e, cs);
+        }
         r = std::max(r, test_ratio<T>(e, n, norm1(A.view(idx))));
     }
     const bool ok = finite && passes(r) && (info == 0);
@@ -354,7 +420,8 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
     for (int idx = 0; idx < nm; ++idx) {
         const auto Fac = Aout.view(idx), Ref = Aref.view(idx);
         double e_sib = 0;
-        for (int j = 0; j < n; ++j)
+        for (int j = 0; j < n; ++j) {
+            double cs = 0;
             for (int i = 0; i < n; ++i) {
                 const bool named = upper ? (i <= j) : (i >= j);
                 if (!named) continue;
@@ -364,9 +431,11 @@ template <class T, int V> static int run_zeropivot(int n, char uplo, char layout
                 }
                 else {
                     if (!std::isfinite((double)x)) sib_finite = false;
-                    e_sib = std::max(e_sib, (double)std::abs(x - Ref(i, j)));
+                    cs += std::abs((double)x - Ref(i, j));
                 }
             }
+            e_sib = std::max(e_sib, cs);
+        }
         if (idx != badlane)
             r_sib = std::max(r_sib, test_ratio<T>(e_sib, n, norm1(A.view(idx))));
     }
@@ -436,6 +505,13 @@ int main()
             fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
+        }
+
+    // sytrsnp against the trsm sweeps it is built from, over uplo/layout.
+    for (char u : uplos)
+        for (char l : lays) {
+            fails += run_compose<double, 4>(8, 30, 5, u, l);
+            fails += run_compose<float, 8>(11, 24, 3, u, l); // padded partial group
         }
 
     // The small-dimension sweep (small_dims): every order over uplo x layout,

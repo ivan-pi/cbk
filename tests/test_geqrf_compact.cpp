@@ -67,10 +67,11 @@ template <class T, int V> static int run_case(int nm, int m, int n)
     double r_h = 0, r_t = 0, r_rec = 0;
     for (int idx = 0; idx < nm; ++idx) {
         const double na = norm1(A.view(idx));
-        r_h = std::max(
-            r_h, test_ratio<T>(max_abs_diff(Aout[idx], Aref[idx], (size_t)m * n), m, na));
-        r_t = std::max(
-            r_t, test_ratio<T>(max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)k), m));
+        r_h = std::max(r_h,
+                       test_ratio<T>(diff_norm1(Aout.view(idx), Aref.view(idx)), m, na));
+        r_t = std::max(r_t, test_ratio<T>(diff_norm1(mat_view(tau_out[idx], k, 1),
+                                                     mat_view(tau_ref[idx], k, 1)),
+                                          m));
 
         std::vector<T> Recs((size_t)m * n, T(0)); // start from R
         const auto Rec = mat_view(Recs.data(), m, n);
@@ -78,9 +79,7 @@ template <class T, int V> static int run_case(int nm, int m, int n)
             for (int i = 0; i <= std::min(j, k - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
         ref_ormqr('N', k, Aout.view(idx), tau_out[idx], Rec);
-        r_rec = std::max(
-            r_rec,
-            test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)m * n), m, na));
+        r_rec = std::max(r_rec, test_ratio<T>(diff_norm1(Rec, A.view(idx)), m, na));
     }
 
     // check 3: solve A X = B with the produced reflectors (square only), using
@@ -102,9 +101,8 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         r_solve = 0;
         for (int idx = 0; idx < nm; ++idx) {
             ref_trsm_upper(Aout.view(idx), Bo.view(idx));
-            r_solve = std::max(r_solve, forward_ratio<T>(max_abs_diff(Bo[idx], Xs.data(),
-                                                                      (size_t)n * nrhs),
-                                                         norm1(X), rcond1(A.view(idx))));
+            r_solve =
+                std::max(r_solve, forward_ratio(Bo.view(idx), X, rcond1(A.view(idx))));
         }
     }
 
@@ -182,14 +180,12 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
         ref_orgqr(k, Q, tau[idx]);
 
         // residual R - Q^T A, R = triu(H) (k x n): dqrt01's
-        // ||R - Q^T A|| / (m ||A|| eps)
+        // ||R - Q^T A||_1 / (m ||A||_1 eps)
         matmul(Q.transposed(), Am, QtA);
-        double resid = 0;
         for (int j = 0; j < n; ++j)
             for (int i = 0; i < k; ++i)
-                resid = std::max(
-                    resid, (double)std::abs(((i <= j) ? Hm(i, j) : T(0)) - QtA(i, j)));
-        r_res = std::max(r_res, test_ratio<T>(resid, m, norm1(Am)));
+                QtA(i, j) = ((i <= j) ? Hm(i, j) : T(0)) - QtA(i, j);
+        r_res = std::max(r_res, test_ratio<T>(norm1(QtA), m, norm1(Am)));
 
         // orthogonality Q^T Q - I: dqrt01's ||I - Q^T Q|| / (m eps)
         matmul(Q.transposed(), Q, QtQ);
@@ -206,8 +202,9 @@ static int run_invariants(int nm, int m, int n, double cond, Structure structure
         if (structure == DENSE) {
             copy_matrix(Am, Href);
             ref_geqrf(Href, tauref.data());
-            const double el = std::max(max_abs_diff(H[idx], Hrefs.data(), A.stride()),
-                                       max_abs_diff(tau[idx], tauref.data(), (size_t)k));
+            const double el =
+                std::max(diff_norm1(Hm, Href), diff_norm1(mat_view(tau[idx], k, 1),
+                                                          mat_view(tauref.data(), k, 1)));
             r_el = std::max(r_el, test_ratio<T>(el, n, norm1(Am)));
         }
     }
@@ -296,9 +293,8 @@ template <class T, int V> static int test_underflow()
             for (int i = 0; i <= std::min(j, n - 1); ++i)
                 Rec(i, j) = Aout(idx, i, j);
         ref_ormqr('N', n, Aout.view(idx), tau[idx], Rec);
-        r_rec = std::max(r_rec,
-                         test_ratio<T>(max_abs_diff(Recs.data(), A[idx], (size_t)m * n),
-                                       m, norm1(A.view(idx))));
+        r_rec = std::max(
+            r_rec, test_ratio<T>(diff_norm1(Rec, A.view(idx)), m, norm1(A.view(idx))));
     }
     fails += !passes(r_rec);
     std::printf("T=%-6s V=%-2d underflow column: tau=0, diag kept, body 0, finite %s | "

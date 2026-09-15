@@ -84,17 +84,19 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
     double r_x = 0, r_h = 0, r_t = 0;
     for (int idx = 0; idx < nm; ++idx) {
         const double na = norm1(A.view(idx));
-        r_x = std::max(r_x, test_ratio<T>(max_abs_diff(Bout[idx], Bref[idx], B.stride()),
-                                          p, norm1(Bref.view(idx))));
-        r_h = std::max(
-            r_h, test_ratio<T>(max_abs_diff(Aout[idx], Aref[idx], A.stride()), p, na));
-        r_t = std::max(
-            r_t, test_ratio<T>(max_abs_diff(tau_out[idx], tau_ref[idx], (size_t)q), p));
+        r_x = std::max(r_x, test_ratio<T>(diff_norm1(Bout.view(idx), Bref.view(idx)), p,
+                                          norm1(Bref.view(idx))));
+        r_h = std::max(r_h,
+                       test_ratio<T>(diff_norm1(Aout.view(idx), Aref.view(idx)), p, na));
+        r_t = std::max(r_t, test_ratio<T>(diff_norm1(mat_view(tau_out[idx], q, 1),
+                                                     mat_view(tau_ref[idx], q, 1)),
+                                          p));
     }
 
     // check 3: the defining properties, formed without the reference: r_prop
-    // is the normal equations (least squares) or the residual (minimum norm),
-    // relative to ||op(A)|| ||B|| (dqrt17's scale), r_prop2 the
+    // is the normal equations (least squares: dqrt17's ||op(A)^T r|| /
+    // (||op(A)|| ||B|| max(m,n,nrhs) eps)) or the residual (minimum norm:
+    // dqrt16's ||B - op(A) X|| / (max(m,n) ||op(A)|| ||X|| eps)), r_prop2 the
     // residual-sum-of-squares rows or the Gram-formed solution
     double r_prop = 0, r_prop2 = 0;
     std::vector<T> Rs((size_t)rows_op * nrhs), Ss((size_t)cols_op * nrhs);
@@ -112,9 +114,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
                 for (int i = 0; i < rows_op; ++i)
                     R(i, j) = Bin(i, j) - R(i, j);
             matmul(Aop.transposed(), R, S);
-            for (size_t e = 0; e < Ss.size(); ++e)
-                r_prop =
-                    std::max(r_prop, test_ratio<T>(std::abs((double)Ss[e]), p, scale));
+            r_prop = std::max(r_prop, test_ratio<T>(norm1(S), std::max(p, nrhs), scale));
             // rows cols_op..rows_op-1 of B hold the residual: squared column
             // norms == ||r_j||^2 (relative to ||b_j||^2: a square system has no
             // residual rows and a zero residual). Not at min(m,n) = 0: that is
@@ -137,9 +137,8 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
             // op(A) X = B
             for (int j = 0; j < nrhs; ++j)
                 for (int i = 0; i < rows_op; ++i)
-                    r_prop = std::max(
-                        r_prop,
-                        test_ratio<T>(std::abs((double)R(i, j) - Bin(i, j)), p, scale));
+                    R(i, j) = Bin(i, j) - R(i, j);
+            r_prop = std::max(r_prop, test_ratio<T>(norm1(R), p, norm1(Aop) * norm1(X)));
             // minimum norm the other way: X = op(A)^T Z, G Z = B with the Gram
             // matrix G = op(A) op(A)^T (rows_op x rows_op, SPD), solved by the
             // LAPACKE QR references. The two solutions differ by what the
@@ -157,10 +156,7 @@ int run_case(char layout, char trans, int nm, int m, int n, int nrhs)
             ref_ormqr('T', rows_op, G, tg.data(), Z);
             ref_trsm_upper(G, Z);
             matmul(Aop.transposed(), Z, Xmn);
-            r_prop2 =
-                std::max(r_prop2, forward_ratio<T>(max_abs_diff(Xmns.data(), X.data,
-                                                                (size_t)cols_op * nrhs),
-                                                   norm1(X), rcond_g));
+            r_prop2 = std::max(r_prop2, forward_ratio(Xmn, X, rcond_g));
         }
     }
 

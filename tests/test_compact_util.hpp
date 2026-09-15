@@ -88,13 +88,20 @@ constexpr double norm_floor = 1e-300;
 // reproduction, storage the routine must not touch, the identity in the
 // padding lanes -- stay exact.
 //
-//   test_ratio<T>(err, dim, norm)   err / (max(1, dim) * norm * eps)
-//     the residual form (dqrt01, dpot01, dget02): err the worst entry of
-//     R - Q^T A, L L^T - A, B - A X, ...; dim the order it accumulates over;
-//     norm the operand(s) it is relative to (1 for an orthogonal Q)
-//   forward_ratio<T>(err, normx, rcond)   err * rcond / (normx * eps)
-//     the forward-error form (dget04): err = ||x - x_true||, discounted by
+// The three forms are LAPACK's own checkers', norms included:
+//   test_ratio<T>(err, dim, norm)     err / (max(1, dim) * norm * eps)
+//     the factorization form (dqrt01, dpot01, dsyt01, dqrt16): err the
+//     1-norm of the residual matrix R - Q^T A, L L^T - A, ... (diff_norm1,
+//     orth_norm1); dim the order it accumulates over; norm the operand(s) it
+//     is relative to (1 for an orthogonal Q)
+//   residual_ratio(anorm, R, X)       max_j ||r_j||_1 / (anorm ||x_j||_1 eps)
+//     the solve form (dget02, dpot02, dtrt02): per right-hand side, R the
+//     residual B - op(A) X, anorm = ||op(A)||_1 -- no order factor
+//   forward_ratio(Xhat, X, rcond)     max_j (||xhat_j - x_j||_inf / ||x_j||_inf) rcond / eps
+//     the forward-error form (dget04): per right-hand side, discounted by
 //     rcond = 1 / (||A|| ||A^-1||), the amplification a solve is allowed
+// A zero solution column with a nonzero error is 1 / eps (a failure), as
+// in LAPACK; an empty system is 0.
 constexpr double THRESH = 30.0;
 
 template <class T> double test_ratio(double err, int dim, double norm = 1.0)
@@ -103,9 +110,44 @@ template <class T> double test_ratio(double err, int dim, double norm = 1.0)
                   (double)std::numeric_limits<T>::epsilon());
 }
 
-template <class T> double forward_ratio(double err, double normx, double rcond)
+template <class Rv, class Xv> double residual_ratio(double anorm, Rv R, Xv X)
 {
-    return test_ratio<T>(err * rcond, 1, normx);
+    using T = elem_t<Xv>;
+    assert(R.cols == X.cols);
+    const double eps = std::numeric_limits<T>::epsilon();
+    if (R.rows == 0 || R.cols == 0) return 0;
+    if (anorm <= 0) return 1.0 / eps;
+    double r = 0;
+    for (int j = 0; j < R.cols; ++j) {
+        double bnorm = 0, xnorm = 0;
+        for (int i = 0; i < R.rows; ++i)
+            bnorm += std::abs((double)R(i, j));
+        for (int i = 0; i < X.rows; ++i)
+            xnorm += std::abs((double)X(i, j));
+        r = std::max(r, xnorm <= 0 ? 1.0 : (bnorm / anorm) / xnorm);
+    }
+    return r / eps;
+}
+
+template <class Xv, class Xa> double forward_ratio(Xv Xhat, Xa X, double rcond)
+{
+    using T = elem_t<Xv>;
+    assert(Xhat.rows == X.rows && Xhat.cols == X.cols);
+    const double eps = std::numeric_limits<T>::epsilon();
+    double r = 0;
+    for (int j = 0; j < X.cols; ++j) {
+        double diff = 0, xnorm = 0;
+        for (int i = 0; i < X.rows; ++i) {
+            diff = std::max(diff, std::abs((double)Xhat(i, j) - (double)X(i, j)));
+            xnorm = std::max(xnorm, std::abs((double)X(i, j)));
+        }
+        if (xnorm <= 0) {
+            if (diff > 0) r = std::max(r, 1.0);
+        }
+        else
+            r = std::max(r, (diff / xnorm) * rcond);
+    }
+    return r / eps;
 }
 
 inline bool passes(double ratio)
@@ -147,9 +189,41 @@ template <class Mv> double norm1(Mv M)
     return mx;
 }
 
+// ||A - B||_1 of two same-shaped views, in double: the residual norm LAPACK's
+// checkers take of a reconstruction (dqrt01, dpot01, dsyt01) or a comparison.
+template <class Av, class Bv> double diff_norm1(Av A, Bv B)
+{
+    assert(A.rows == B.rows && A.cols == B.cols);
+    double mx = 0;
+    for (int j = 0; j < A.cols; ++j) {
+        double s = 0;
+        for (int i = 0; i < A.rows; ++i)
+            s += std::abs((double)A(i, j) - (double)B(i, j));
+        mx = std::max(mx, s);
+    }
+    return mx;
+}
+
+// ||Q^T Q - I||_1, formed in double: dqrt02's orthogonality residual.
+template <class Qv> double orth_norm1(Qv Q)
+{
+    double mx = 0;
+    for (int j = 0; j < Q.cols; ++j) {
+        double s = 0;
+        for (int i = 0; i < Q.cols; ++i) {
+            double d = 0;
+            for (int l = 0; l < Q.rows; ++l)
+                d += (double)Q(l, i) * Q(l, j);
+            s += std::abs(d - (i == j ? 1.0 : 0.0));
+        }
+        mx = std::max(mx, s);
+    }
+    return mx;
+}
+
 // Deviation of Q's columns from orthonormality, max |(Q^T Q - I)(i,j)| over
 // the upper triangle (Q^T Q is symmetric), accumulated in double so the gate
-// does not inherit float rounding. Shared by the orgqr suites.
+// does not inherit float rounding. The MKL orgqr suite's gate.
 template <class Qv> double orth_error(Qv Q)
 {
     double e = 0;

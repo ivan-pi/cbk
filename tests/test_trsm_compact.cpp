@@ -10,10 +10,12 @@
 //      contract of the portable entry points.
 //   2. Numerical correctness over side / uplo / transa / diag, precisions and
 //      interleave widths (column-major, the tuned path), as test ratios
-//      against THRESH (test_compact_util.hpp): dget04's forward error vs the
-//      library's solve, plus the solve's own residual ||op(A) X - alpha B||
-//      formed with the library's triangular multiply (so a bug shared by the
-//      reference and the kernel cannot pass unseen), over the suite's shapes
+//      against THRESH (test_compact_util.hpp), LAPACK's TR path's: dget04's
+//      forward error vs the exact solution (B = op(A) X for a random X, as
+//      dlarhs) and vs the library's solve, plus dtrt02's residual
+//      ||alpha B - op(A) X|| formed with the library's triangular multiply
+//      (so a bug shared by the reference and the kernel cannot pass unseen),
+//      over the suite's shapes
 //      and the small-dimension cross product (small_dims: m x n from 0 to 5,
 //      the empty operand and the 1/2/3-column route included).
 //
@@ -53,11 +55,15 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     for (int idx = 0; idx < nm; ++idx)
         gen_tri(A.view(idx), up);
 
-    // random B (m x n) and its reference solution
-    MatrixBatch<T> B(nm, m, n), Xref(nm, m, n);
+    // a random solution X (dlarhs's), the right-hand side B = op(A) X (side
+    // 'L') or X op(A) ('R') by the library's triangular multiply -- so the
+    // solve of op(A) X = alpha B has the exact solution alpha X -- and the
+    // library's own solution of the same system
+    MatrixBatch<T> X(nm, m, n), B(nm, m, n), Xref(nm, m, n);
     for (int idx = 0; idx < nm; ++idx) {
         for (size_t e = 0; e < (size_t)m * n; ++e)
-            B[idx][e] = frand<T>();
+            X[idx][e] = frand<T>();
+        tri_apply(side, uplo, transa, diag, A.view(idx), X.view(idx), B.view(idx));
         std::copy(B[idx], B[idx] + (size_t)m * n, Xref[idx]);
         ref_trsm(side, uplo, transa, diag, alpha, A.view(idx), Xref.view(idx));
     }
@@ -73,39 +79,44 @@ static int run_case(char side, char uplo, char transa, char diag, int nm, int m,
     MatrixBatch<T> Bout(nm, m, n);
     unpack_compact(Bout, bp.data(), ldb, V);
 
-    // Two gates: (1) the forward error vs the library's solve -- dget04's,
-    // discounted by rcond of the operator actually applied, op(A) with the
-    // unit diagonal honored (E, formed by the library's triangular multiply
-    // of the identity) -- and (2) the solve's own defining residual
-    // ||op(A) X - alpha B|| / (s ||op(A)|| ||X|| eps), dtrt02's, formed with
-    // the same multiply -- so a bug shared by ref_trsm and the kernel cannot
-    // slip through (the ?trsm analogue of the reconstruction / round-trip
-    // identities the geqrf/potrf/ormqr self-tests check).
-    double r_fwd = 0, r_res = 0;
-    std::vector<T> Rs((size_t)m * n), aBs((size_t)m * n), Is((size_t)s * s, T(0)),
+    // Three gates, LAPACK's TR path's: dget04's forward error against the
+    // exact solution alpha X and against the library's solution, both
+    // discounted by rcond of the operator actually applied -- E = op(A) with
+    // the unit diagonal honored, formed by the library's triangular multiply
+    // of the identity -- and dtrt02's residual, per right-hand side,
+    // ||alpha b_j - op(A) x_j||_1 / (||op(A)||_1 ||x_j||_1 eps), formed with
+    // the same multiply, so a bug shared by ref_trsm and the kernel cannot
+    // slip through. Side 'R' is the transposed system op(A)^T X^T = alpha B^T:
+    // its right-hand sides are the rows, read through transposed views, and
+    // its operator op(A)^T.
+    double r_fwd = 0, r_ref = 0, r_res = 0;
+    std::vector<T> Rs((size_t)m * n), aXs((size_t)m * n), Is((size_t)s * s, T(0)),
         Es((size_t)s * s);
-    const auto R = mat_view(Rs.data(), m, n), aB = mat_view(aBs.data(), m, n);
+    const auto R = mat_view(Rs.data(), m, n), aX = mat_view(aXs.data(), m, n);
     const auto I = mat_view(Is.data(), s, s), E = mat_view(Es.data(), s, s);
     for (int d = 0; d < s; ++d)
         I(d, d) = T(1);
+    const auto sys = [left](MatrixView<T> M) { return left ? M : M.transposed(); };
     for (int idx = 0; idx < nm; ++idx) {
         tri_apply('L', uplo, transa, diag, A.view(idx), I, E); // E = op(A)
-        r_fwd = std::max(
-            r_fwd, forward_ratio<T>(max_abs_diff(Bout[idx], Xref[idx], (size_t)m * n),
-                                    norm1(Xref.view(idx)), rcond1(E)));
+        const auto Eop = sys(E);
+        const double rc = rcond1(Eop), anorm = norm1(Eop);
+        for (size_t e = 0; e < (size_t)m * n; ++e)
+            aXs[e] = alpha * X[idx][e];
+        r_fwd = std::max(r_fwd, forward_ratio(sys(Bout.view(idx)), sys(aX), rc));
+        r_ref =
+            std::max(r_ref, forward_ratio(sys(Bout.view(idx)), sys(Xref.view(idx)), rc));
         tri_apply(side, uplo, transa, diag, A.view(idx), Bout.view(idx), R);
         for (size_t e = 0; e < (size_t)m * n; ++e)
-            aBs[e] = alpha * B[idx][e];
-        r_res = std::max(r_res,
-                         test_ratio<T>(max_abs_diff(Rs.data(), aBs.data(), (size_t)m * n),
-                                       s, norm1(E) * norm1(Bout.view(idx))));
+            Rs[e] = alpha * B[idx][e] - Rs[e]; // alpha B - op(A) Xhat
+        r_res = std::max(r_res, residual_ratio(anorm, sys(R), sys(Bout.view(idx))));
     }
 
-    const bool ok = passes(r_fwd) && passes(r_res);
+    const bool ok = passes(r_fwd) && passes(r_ref) && passes(r_res);
     std::printf("  T=%-6s V=%-2d side=%c uplo=%c tr=%c diag=%c nm=%-2d m=%-3d n=%-3d | "
-                "fwd %-5.2g %s res %-5.2g %s info=%d %s\n",
+                "fwd %-5.2g %s ref %-5.2g %s res %-5.2g %s info=%d %s\n",
                 compact<T>::name, V, side, uplo, transa, diag, nm, m, n, r_fwd,
-                verdict(r_fwd), r_res, verdict(r_res), info,
+                verdict(r_fwd), r_ref, verdict(r_ref), r_res, verdict(r_res), info,
                 (ok && info == 0) ? "OK" : "FAIL");
 
     return (info != 0) + !ok;
