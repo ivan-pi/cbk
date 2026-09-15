@@ -274,9 +274,9 @@ template <> struct compact<T> {                                                 
     static constexpr const char *name = label;                                             \
     static int geqrf(char lay, int m, int n, T *a, int ld, T *tau, int V, int nm)          \
     { return p##geqrf_compact(lay, m, n, a, ld, tau, V, nm); }                             \
-    static int ormqr(char tr, int m, int nrhs, int k, const T *a, int lda, const T *tau,   \
-                     T *b, int ldb, int V, int nm)                                         \
-    { return p##ormqr_compact(tr, m, nrhs, k, a, lda, tau, b, ldb, V, nm); }               \
+    static int ormqr(char lay, char si, char tr, int m, int n, int k, const T *a,        \
+                     int lda, const T *tau, T *c, int ldc, int V, int nm)                  \
+    { return p##ormqr_compact(lay, si, tr, m, n, k, a, lda, tau, c, ldc, V, nm); }         \
     static int orgqr(char lay, int m, int n, int k, T *a, int lda, const T *tau,           \
                      int V, int nm)                                                        \
     { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \

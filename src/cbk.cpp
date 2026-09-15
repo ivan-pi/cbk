@@ -78,23 +78,28 @@ int geqrf(char layout, int m, int n, T *ap, int ldap, T *taup, int V, int nm)
 }
 
 template <typename T>
-int ormqr(char trans, int m, int nrhs, int k, const T *ap, int ldap, const T *taup, T *bp,
-          int ldbp, int V, int nm)
+int ormqr(char layout, char side, char trans, int m, int n, int k, const T *ap, int ldap,
+          const T *taup, T *cp, int ldcp, int V, int nm)
 {
-    if (!opt(trans, 'T') && !opt(trans, 'N')) return -1;
-    if (m < 0) return -2;
-    if (nrhs < 0) return -3;
-    if (k < 0 || k > m) return -4;
-    if (ldap < max1(m)) return -6;
-    if (ldbp < max1(m)) return -9;
-    if (!vlen_ok(V)) return -10;
-    if (nm < 0) return -11;
-    if (m == 0 || nrhs == 0 || k == 0 || nm == 0) return 0;
-    assert(ap != nullptr && taup != nullptr && bp != nullptr);
+    const bool col = opt(layout, 'C'), row = opt(layout, 'R');
+    const bool left = opt(side, 'L'), right = opt(side, 'R');
+    const int nq = left ? m : n; /* the order of Q, and the rows of A */
+    if (!col && !row) return -1;
+    if (!left && !right) return -2;
+    if (!opt(trans, 'T') && !opt(trans, 'N')) return -3;
+    if (m < 0) return -4;
+    if (n < 0) return -5;
+    if (k < 0 || k > nq) return -6;
+    if (ldap < max1(row ? k : nq)) return -8;
+    if (ldcp < max1(row ? n : m)) return -11;
+    if (!vlen_ok(V)) return -12;
+    if (nm < 0) return -13;
+    if (m == 0 || n == 0 || k == 0 || nm == 0) return 0;
+    assert(ap != nullptr && taup != nullptr && cp != nullptr);
 
     for_vlen(V, [&](auto v) {
-        cbk::detail::ormqr_compact<T, decltype(v)::value>(true, false, trans, m, nrhs, k,
-                                                          ap, ldap, taup, bp, ldbp, nm);
+        cbk::detail::ormqr_compact<T, decltype(v)::value>(left, row, trans, m, n, k, ap,
+                                                          ldap, taup, cp, ldcp, nm);
     });
     return 0;
 }
@@ -326,10 +331,11 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
     {                                                                                    \
         return geqrf(layout, m, n, ap, ldap, taup, V, nm);                               \
     }                                                                                    \
-    int p##ormqr_compact(char trans, int m, int nrhs, int k, const T *ap, int ldap,      \
-                         const T *taup, T *bp, int ldbp, int V, int nm)                  \
+    int p##ormqr_compact(char layout, char side, char trans, int m, int n, int k,        \
+                         const T *ap, int ldap, const T *taup, T *cp, int ldcp, int V,   \
+                         int nm)                                                         \
     {                                                                                    \
-        return ormqr(trans, m, nrhs, k, ap, ldap, taup, bp, ldbp, V, nm);                \
+        return ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, V, nm);     \
     }                                                                                    \
     int p##orgqr_compact(char layout, int m, int n, int k, T *ap, int ldap,              \
                          const T *taup, int V, int nm)                                   \

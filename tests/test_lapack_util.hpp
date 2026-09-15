@@ -240,16 +240,25 @@ template <class T> void ref_geqrf(MatrixView<T> A, T *tau)
     lapack<T>::geqrf(lapack_layout(A), A.rows, A.cols, A.data, lapack_ld(A), tau);
 }
 
-// ?ormqr, side='L': B := Q^T B (trans 'T') or Q B ('N') from (H, tau), with
-// k reflectors read from A (m x k or wider) and applied to B (m x nrhs).
+// ?ormqr: C := op(Q) C (side 'L') or C op(Q) ('R'), op(Q) = Q ('N') or Q^T
+// ('T'), from (H, tau) with k reflectors read from A (nq x k or wider, nq = m
+// for 'L' and n for 'R') and applied to C (m x n).
+template <class T, class Av>
+void ref_ormqr(char side, char trans, int k, Av A, const T *tau, MatrixView<T> C)
+{
+    const bool left = (side == 'L' || side == 'l');
+    assert(A.rows == (left ? C.rows : C.cols) && k <= std::min(A.rows, A.cols));
+    if (is_empty(C) || k == 0) return;
+    const Staged<T> Cs(C, is_rowmajor(A));
+    lapack<T>::ormqr(lapack_layout(A), side, trans, C.rows, C.cols, k, A.data,
+                     lapack_ld(A), tau, Cs.data(), Cs.ld());
+}
+
+// The common case, side 'L': B := Q^T B (trans 'T') or Q B ('N').
 template <class T, class Av>
 void ref_ormqr(char trans, int k, Av A, const T *tau, MatrixView<T> B)
 {
-    assert(A.rows == B.rows && k <= std::min(A.rows, A.cols));
-    if (is_empty(B) || k == 0) return;
-    const Staged<T> Bs(B, is_rowmajor(A));
-    lapack<T>::ormqr(lapack_layout(A), 'L', trans, B.rows, B.cols, k, A.data,
-                     lapack_ld(A), tau, Bs.data(), Bs.ld());
+    ref_ormqr('L', trans, k, A, tau, B);
 }
 
 // ?orgqr: generate the first n columns of Q = H(0)..H(k-1) in place over the

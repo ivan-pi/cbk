@@ -94,8 +94,8 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         for (int idx = 0; idx < nm; ++idx)
             matmul(A.view(idx), X, B.view(idx)); /* B = A X */
         std::vector<T> bp = pack_compact(B, lda, V);
-        compact<T>::ormqr('T', n, nrhs, k, ap.data(), lda, tp.data(), bp.data(), lda, V,
-                          nm);
+        compact<T>::ormqr('C', 'L', 'T', n, nrhs, k, ap.data(), lda, tp.data(), bp.data(),
+                          lda, V, nm);
         MatrixBatch<T> Bo(nm, n, nrhs);
         unpack_compact(Bo, bp.data(), lda, V);
         r_solve = 0;

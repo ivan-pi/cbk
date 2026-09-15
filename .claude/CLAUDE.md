@@ -271,7 +271,9 @@ workspace contract, or the benchmarks' threading.
   untouched storage, identity padding lanes) are exact. Related routines are
   also checked against each other, as LAPACK's paths do: `posv == potrf +
   potrs` and `sysvnp == sytrfnp + sytrsnp` bit-for-bit, `potrs` against the two
-  `trsm` sweeps it is built from, `sytrsnp` against `trsm`, `D^-1`, `trsm`.
+  `trsm` sweeps it is built from, `sytrsnp` against `trsm`, `D^-1`, `trsm`,
+  `ormqr` in every layout / side / trans against the explicit Q of `orgqr`
+  (dqrt03).
   The MKL suites still carry their own relative gates.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
