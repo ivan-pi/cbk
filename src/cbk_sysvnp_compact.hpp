@@ -2,7 +2,7 @@
  *
  * Compact (interleaved-batch) symmetric solve A X = B in one pass, without
  * pivoting: the unpivoted LDL^T factorization of cbk_sytrfnp_compact.hpp fused
- * with the three-sweep solve of cbk_sytrsnp_compact.hpp, per group. The LAPACK
+ * with the solve of cbk_sytrsnp_compact.hpp, per group. The LAPACK
  * ?sysv analogue (factor, then solve), minus ipiv and workspace.
  *
  * Fusing matters for throughput, not arithmetic: the result is bit-identical

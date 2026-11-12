@@ -285,7 +285,7 @@ A(i,j) *= d * inva                    for i > j       // 1/sqrt(a) = sqrt(a)/a
 The next pivot then waits on one divide, a multiply and an FMA, and `1/sqrt(a)`
 is a multiply rather than a second divide. The update is the LDL^T step of the
 same SPD matrix (`d = a`, `l = A(:,j)/a`: `cbk_?sytrfnp_compact`'s, and the
-panel calls `sytrfnp_update_block` with `1/a` parked at `A(j,j)`), scaled to
+panel calls `potrf_update_block` with `1/a` parked at `A(j,j)`), scaled to
 the Cholesky factor once the column is done -- as backward stable as `potf2`,
 the unique factor agreeing with `LAPACKE_?potrf` to a few `n eps` (the suites'
 `20 n eps` gate, section 7). Above the smallest orders the trailing update
@@ -360,13 +360,12 @@ deliberate scope of this routine:
 ### 6.7 The solve: two non-unit `trsm` sweeps
 
 `cbk_?potrs_compact` completes the batched solve from the factor. Its two
-triangular sweeps are the existing compact `trsm` *group* kernels invoked with a
+triangular sweeps are the compact `trsm` *group* kernel invoked with a
 *non-unit* diagonal -- `L z = B; L^T X = z` for the lower factor, `U^T z = B;
-U X = z` for the upper -- so column-major runs on `trsm`'s tuned side-left
-row-dot path and row-major on its strided kernel (a single right-hand side,
-contiguous in either layout, reaches the tuned path in both), exactly as for
-`cbk_?sytrsnp_compact` (whose diagonal-solve middle step Cholesky does not
-need: the factor's diagonal is the divisor of the sweeps themselves). No
+U X = z` for the upper -- in every layout, exactly as for
+`cbk_?sytrsnp_compact` (whose diagonal solve Cholesky does not need: the
+factor's diagonal is the divisor of the sweeps themselves, applied as its
+reciprocal). No
 workspace is needed and `B` is overwritten in place.
 
 A caller who prefers to compose the solve manually can equally run
@@ -458,7 +457,7 @@ The end-to-end contract of section 7.3, run through the packaged routines over
 both `uplo` and both layouts: `B = A X` for known `X`, then
 `cbk_?potrf_compact -> cbk_?potrs_compact` must recover `X` (forward
 error and system residual gated at `100 * n * eps`, as in suite 3), including
-padded partial groups and RHS counts that exercise `trsm`'s 4/2/1 column
+padded partial groups and RHS counts that exercise `trsm`'s leftover column
 blocks. On the same packed input `cbk_?posv_compact` must reproduce the
 two-step factor and `X` **bit-for-bit** over the whole compact buffers, padded
 lanes included (section 6.8). Both suites also gate the `nrhs = 0` contract of

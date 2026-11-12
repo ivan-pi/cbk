@@ -90,8 +90,7 @@ differ in elimination order (top-down vs bottom-up); the dual keeps all four
 routine fixes the convention, the choice follows the existing compact Cholesky.
 
 `cbk_?sytrsnp_compact` then solves `A X = B` for each matrix from that
-factor, overwriting the `n x nrhs` RHS block `B` with `X` via three in-place
-substitution sweeps:
+factor, overwriting the `n x nrhs` RHS block `B` with `X` in place:
 
 ```
 L z = B;    D w = z;    L^T X = w      (MKL_LOWER)
@@ -195,33 +194,51 @@ waits on one divide, a multiply and an FMA (the pivot order `potrf`'s design
 6.2 adopts). Compared with Cholesky at the same size the flop count is the
 same to `O(n^2)`: `n` reciprocals in place of `n` square roots.
 
-The sweep is blocked exactly as `potrf`'s, for the reason its design 6.1
-gives: the plain rank-1 sweep is one FMA per pack loaded and stored, and once
-a group outgrows the L1 it streams the trailing matrix through the L2 once per
-pivot. The columns are split in halves at `NB`-column boundaries down to
-panels of at most `NB` pivots (`sytrfnp_nb`, default 8; `-DCBK_SYTRFNP_NB`
-overrides). A panel runs the sweep above with each pivot's rank-1 update
-confined to the panel's remaining columns. A wider range factors its left
-half, applies it to the right half as one register-tiled rank-`K` update,
+Run as written, that sweep is one FMA per pack loaded and stored: bound by
+memory traffic, not by the FMA units. The kernel instead does the same
+arithmetic **left-looking, in register tiles** (`sytrfnp_compact_panel`). The
+columns are taken four at a time; for the block at columns `jj .. jj+3`, every
+`4 x 4` tile of it is loaded once, takes the rank-`K` update by the `K` columns
+of the panel to its left,
+
+```
+A(i,c) -= sum_k L(i,k) * (D(k) * L(c,k))
+```
+
+in registers, then its own four pivots' steps, and is stored once:
+
+* the **diagonal tile** is factored in registers by the sweep above and stored
+  with the reciprocals of its four pivots parked on its diagonal;
+* each **tile below** it is finished against that block -- the four pivots'
+  rank-1 updates of its rows, in pivot order on the unscaled entries, then the
+  scaling by the parked reciprocals -- which is the same sequence of operations
+  on the same operands the sweep performs on those rows;
+* the pivots go back onto the diagonal as `D` when the block is done.
+
+The parked reciprocals are how the tiles below get `1/d` without a pack
+crossing a call by reference (`.claude/CLAUDE.md`) and without a second
+divide. The `4 x 4` tile's 16 accumulators, its unscaled and scaled weights,
+the pivot and one loaded pack fit the 32 AVX-512 registers.
+
+A group of more than `NB` columns (`sytrfnp_nb`, default 64;
+`-DCBK_SYTRFNP_NB` overrides) is split in halves at `NB`-column boundaries, as
+`potrf`'s design 6.1 describes: the left half is factored, applied to the
+right half as one register-tiled rank-`K` update,
 
 ```
 A(mid:n, mid:j1) -= L(mid:n, j0:mid) D(j0:mid) L(mid:j1, j0:mid)^T
 ```
 
-and factors the right half.
+and the right half factored. `NB` is wide on purpose: the left-looking panel
+stores each element once, and measured ahead of the split for as long as a
+group stays cache-resident; the split bounds how far back a tile's update
+reaches once it does not. The tile and the trailing update are shared with
+`potrf` behind compile-time switches (there the columns are already scaled,
+`D = I`).
 
-The tile, the column block and the trailing update are `potrf`'s, shared
-through `cbk_sytrfnp_compact.hpp` behind one compile-time switch. Here the
-pivot `D(k)` is loaded once per `k` and folded into the tile's column weights,
-one extra multiply per weight; `potrf`'s columns are already scaled (`D = I`).
-The `4 x 4` tile's 16 accumulators, its unscaled and scaled weights, the pivot
-and one loaded pack fit the 32 AVX-512 registers.
-
-Every trailing element thus takes its updates once per split level instead of
-once per pivot, in the same pivot order. Only the association of the rank-`K`
-sums differs from the plain sweep's, within the same backward-error bound
-(section 7). The fused solve (section 6.8) calls the same group kernel and
-inherits the blocking.
+Only the association of the rank-`K` sums differs from the plain sweep's,
+within the same backward-error bound (section 7). The fused solve (section
+6.8) calls the same group kernel and inherits the blocking.
 
 ### 6.2 Zero pivots: what "no pivoting" does and does not tolerate
 
@@ -287,18 +304,18 @@ mathematical no-op and the final pack runs unmasked at full width. The same
 holds through the solve: padded factor slots are identities, so the padded
 columns of `B` pass through the sweeps unchanged (and are never read back).
 
-### 6.6 The solve: two unit `trsm` sweeps around a diagonal solve
+### 6.6 The solve: two unit `trsm` sweeps and a diagonal solve
 
 `cbk_?sytrsnp_compact` completes the batched solve from the factor. Its two
-triangular sweeps are the existing compact `trsm` *group* kernels invoked with a
-*unit* diagonal -- `?trsm` with `diag = 'U'` never reads the stored diagonal,
-which is exactly what lets `D` live there -- so column-major runs on `trsm`'s
-tuned side-left row-dot path and row-major on its strided kernel. Between them
-sits the diagonal solve `B(i,:) *= 1/D(i)`, the one step `trsm` cannot express:
-an `O(n*nrhs)` row scaling (one reciprocal per factor row, reused across the
-`nrhs` columns), negligible next to the `O(n^2*nrhs)` sweeps and therefore
-implemented once, over the views, for all layouts. No workspace is needed and
-`B` is overwritten in place.
+triangular sweeps are the compact `trsm` *group* kernel invoked with a *unit*
+diagonal -- `?trsm` with `diag = 'U'` never reads the stored diagonal, which
+is exactly what lets `D` live there -- in every layout
+(`docs/cbk_dtrsm_compact_design.md`, section 6). Between them sits the
+diagonal solve `B(i,:) *= 1/D(i)`, the one step `trsm` cannot express. It is
+folded into the second sweep (`TrsmDiag::scale`): each tile scales its rows by
+the reciprocal of the stored diagonal as it loads them, the same arithmetic as
+a separate row scaling without another pass over `B`. No workspace is needed
+and `B` is overwritten in place.
 
 A caller who prefers to compose the solve manually can equally run
 `cbk_?trsm_compact(diag = MKL_UNIT)` twice and scale the middle step --
@@ -437,8 +454,8 @@ kernels.
 
 | File | Role |
 |------|------|
-| `src/cbk_sytrfnp_compact.hpp` | Templated SIMD unpivoted-LDL^T group kernel (recursively blocked; its tiled rank-K update is also `potrf`'s) and all-groups driver (scalar `T`, width `V`). |
-| `src/cbk_sytrsnp_compact.hpp` | Templated solve: unit `trsm` group sweeps around the diagonal solve, and its driver. |
+| `src/cbk_sytrfnp_compact.hpp` | Templated SIMD unpivoted-LDL^T group kernel (left-looking register-tiled panels, split recursively above the panel width; its tile and trailing update are also `potrf`'s) and all-groups driver (scalar `T`, width `V`). |
+| `src/cbk_sytrsnp_compact.hpp` | Templated solve: two unit `trsm` group sweeps, the diagonal solve folded into the second, and its driver. |
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver over both group kernels. |
 | `src/cbk.cpp` | Portable `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` C entry points (runtime `V` dispatch, `info = -j`). |
 | `src/cbk_compat.cpp` | The MKL-style adapters (`MKL_COMPACT_PACK` -> `V`, `MKL_UPLO`/`MKL_LAYOUT` -> flags). |

@@ -14,12 +14,14 @@
  *     cbk_dormqr_compact('L','T', H, tau, B);   // B := Q^T B
  *     cbk_dtrsm_compact ('L','U','N','N', R, B) // B := R^{-1} Q^T B = X
  *
- * Algorithm: the scalar BLAS ?trsm substitution run V matrices at a time. Compact
+ * Algorithm: the BLAS ?trsm substitution run V matrices at a time. Compact
  * format stores element (i,j) of all V contiguously, so it lifts verbatim with
- * double -> V-wide vector, one lane per matrix (no data-dependent branch). The
- * tuned side='L', column-major path is templated on the RHS block width and on
- * uplo/trans/diag; the other side/layout combinations go through one strided
- * kernel over BatchViews (docs/cbk_dtrsm_compact_design.md has the details).
+ * double -> V-wide vector, one lane per matrix (no data-dependent branch).
+ * There is one kernel, the register-tiled forward substitution L X = alpha B
+ * on a lower-triangular view; every side / uplo / trans / layout reaches it by
+ * transposing or reversing the views of A and B
+ * (docs/cbk_dtrsm_compact_design.md has the details). A non-unit diagonal is
+ * solved by multiplying with its reciprocal, not by dividing.
  *
  * Compact storage (matches mkl_?gepack_compact); group g = idx/V, slot v = idx%V,
  * A the order-s (s = m left / n right) triangular batch, B the m x n batch:
@@ -43,224 +45,141 @@ CBK_KERNEL_BEGIN
 
 namespace cbk::detail {
 
-/* Single-column column-oriented (gaxpy) solve, side='L', column-major, op(A)=A:
- * reads A down columns (contiguous), for the 1-column tail where a strided
- * single-column row-dot would prefetch poorly. bj is the column, scaled first. */
-template <bool UPPER, bool UNIT, typename T, int V, typename Int>
-inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
-                          typename pack<T, V>::type *bj,
-                          const typename pack<T, V>::type &va)
-{
-    using VT = typename pack<T, V>::type;
-    for (Int i = 0; i < m; ++i)
-        bj[i] = bj[i] * va;
-    for (Int t = 0; t < m; ++t) {
-        const Int kk = UPPER ? m - 1 - t : t;
-        const VT *ak = A + kk * ldap;
-        const VT xk = UNIT ? bj[kk] : bj[kk] / ak[kk];
-        if (!UNIT) bj[kk] = xk;
-        const Int lo = UPPER ? 0 : kk + 1;
-        const Int hi = UPPER ? kk : m;
-        for (Int i = lo; i < hi; ++i)
-            bj[i] -= ak[i] * xk;
-    }
-}
+/* What a sweep does with the diagonal of its triangular operand: nothing
+ * (unit), solve with it (nonunit), or -- the LDL^T solve's second sweep, whose
+ * factor carries D on the diagonal of a unit triangle -- scale the right-hand
+ * side by its inverse first and then sweep as unit: L X = alpha D^{-1} B. */
+enum class TrsmDiag { unit, nonunit, scale };
 
-/* Row-dot solve of a fixed JB-column block, side='L', column-major. JB and the
- * uplo/trans/diag config are compile-time, so the JB accumulators land in
- * registers and the c-loops unroll. B points at the first of the JB adjacent RHS
- * columns (column c at B + c*ldbp); alpha is folded into the first load. */
-template <int JB, bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
-inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
-                           typename pack<T, V>::type *B, Int ldbp,
-                           const typename pack<T, V>::type &va)
+/* One IB x JB tile of the forward substitution L X = alpha B, L lower
+ * triangular: rows i .. i+IB-1 of the columns j .. j+JB-1 of X, the rows above
+ * i already solved. The tile is loaded once, accumulates its dot products with
+ * the solved rows in registers -- each pack of L feeds JB FMAs, each pack of X
+ * feeds IB -- is finished against its own IB x IB corner of L, and is stored
+ * once. A diagonal entry is applied as a multiply by its reciprocal, taken
+ * first so the divider runs under the accumulation instead of after it; one
+ * divide per row of a tile, not one per element. */
+template <int IB, int JB, typename T, int V, typename Int>
+inline void trsm_tile(TrsmDiag diag, T alpha, ConstBatchView<T, V, Int> L,
+                      BatchView<T, V, Int> B, Int i, Int j)
 {
     using VT = typename pack<T, V>::type;
-    /* back-substitute (sweep rows high -> low) when op(A) is upper-triangular:
-     * A upper & no-trans, or A lower & trans (its transpose is upper). */
-    constexpr bool back = (UPPER != TRAN);
-    for (Int t = 0; t < m; ++t) {
-        const Int i = back ? m - 1 - t : t;
-        VT w[JB];
-        for (int c = 0; c < JB; ++c)
-            w[c] = B[c * ldbp + i] * va;
-        const Int lo = back ? i + 1 : 0;
-        const Int hi = back ? m : i;
-        for (Int l = lo; l < hi; ++l) {
-            /* TRAN reads A(l,i) = A[i*ldap+l] (down column i, contiguous);
-             * !TRAN reads A(i,l) = A[l*ldap+i] (across row i, stride ldap). */
-            const VT av = TRAN ? A[i * ldap + l] : A[l * ldap + i];
-            for (int c = 0; c < JB; ++c)
-                w[c] -= av * B[c * ldbp + l];
+    VT inv[IB], x[IB][JB];
+    CBK_UNROLL
+    for (int r = 0; r < IB; ++r) {
+        inv[r] = diag == TrsmDiag::unit ? VT{} : T(1) / L(i + r, i + r);
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c) {
+            x[r][c] = alpha == T(1) ? B(i + r, j + c) : B(i + r, j + c) * alpha;
+            if (diag == TrsmDiag::scale) x[r][c] = x[r][c] * inv[r];
         }
-        if (!UNIT) {
-            const VT d = A[i * ldap + i];
-            for (int c = 0; c < JB; ++c)
-                w[c] = w[c] / d;
+    }
+    for (Int k = 0; k < i; ++k) {
+        VT l[IB];
+        CBK_UNROLL
+        for (int r = 0; r < IB; ++r)
+            l[r] = L(i + r, k);
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c) {
+            const VT b = B(k, j + c);
+            CBK_UNROLL
+            for (int r = 0; r < IB; ++r)
+                x[r][c] -= l[r] * b;
         }
-        for (int c = 0; c < JB; ++c)
-            B[c * ldbp + i] = w[c];
+    }
+    CBK_UNROLL
+    for (int r = 0; r < IB; ++r) {
+        CBK_UNROLL
+        for (int q = 0; q < r; ++q) {
+            const VT l = L(i + r, i + q);
+            CBK_UNROLL
+            for (int c = 0; c < JB; ++c)
+                x[r][c] -= l * x[q][c];
+        }
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c) {
+            if (diag == TrsmDiag::nonunit) x[r][c] = x[r][c] * inv[r];
+            B(i + r, j + c) = x[r][c];
+        }
     }
 }
 
-/* One group, side='L', column-major, fully specialized on uplo/trans/diag:
- * the RHS columns are swept in 4/2/1 blocks so the 1-3 leftover columns still
- * reuse each A load (2- and 1-wide tails), instead of a one-column-at-a-time
- * remainder. The driver handles alpha = 0 (B := 0); alpha is nonzero here. */
-template <bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
-void trsm_left_dot_tb(Int m, Int n, T alpha, const T *a_, Int ldap, T *b_, Int ldbp)
+/* The tile: IB * JB accumulators, IB packs of L and one of X live in the
+ * inner loop, so 4 x 6 with 32 registers and 3 x 4 with 16 (measured: a tile
+ * that does not fit runs slower than a smaller one that does). */
+constexpr int trsm_ib = simd_registers >= 32 ? 4 : 3;
+constexpr int trsm_jb = simd_registers >= 32 ? 6 : 4;
+
+/* The JB columns j .. j+JB-1 of X, top to bottom in trsm_ib-row tiles, the
+ * leftover rows as one shorter tile. */
+template <int JB, typename T, int V, typename Int>
+inline void trsm_cols(TrsmDiag diag, Int m, T alpha, ConstBatchView<T, V, Int> L,
+                      BatchView<T, V, Int> B, Int j)
 {
-    using VT = typename pack<T, V>::type;
-    static_assert(std::is_floating_point_v<T>,
-                  "trsm_compact is defined for real float/double");
-    /* n = 1 never steps to a second RHS column, so ldbp is unused then: the
-     * routing in trsm_compact_group reaches here with ldbp = 1 for a one-column
-     * row-major B, whose unit row stride is a valid column-major column. */
-    assert(ldap >= m && (n <= 1 || ldbp >= m));
-
-    const VT *A = reinterpret_cast<const VT *>(a_);
-    VT *B = reinterpret_cast<VT *>(b_);
-
-    VT va;
-    broadcast<T, V>(va, alpha);
-    Int j = 0;
-    for (; j + 4 <= n; j += 4)
-        trsm_dot_block<4, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, ldbp,
-                                                        va);
-    if (n - j >= 2) {
-        trsm_dot_block<2, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, ldbp,
-                                                        va);
-        j += 2;
-    }
-    if (n - j >= 1) {
-        /* The single leftover column: for op(A)=A the row-dot would stream A
-         * strided with no reuse, so use the contiguous column-axpy instead;
-         * op(A)=A^T reads A down a column already, so the dot 1-block is fine. */
-        if constexpr (!TRAN)
-            trsm_axpy_col<UPPER, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp, va);
-        else
-            trsm_dot_block<1, UPPER, TRAN, UNIT, T, V, Int>(m, A, ldap, B + j * ldbp,
-                                                            ldbp, va);
-    }
+    Int i = 0;
+    for (; i + trsm_ib <= m; i += trsm_ib)
+        trsm_tile<trsm_ib, JB, T, V, Int>(diag, alpha, L, B, i, j);
+    for_remainder<trsm_ib>(m - i, [&](auto ib) {
+        trsm_tile<ib.value, JB, T, V, Int>(diag, alpha, L, B, i, j);
+    });
 }
 
-/* Runtime (uplo, trans, diag) -> the compile-time-specialized driver. */
-template <bool UPPER, bool TRAN, typename T, int V, typename Int>
-inline void trsm_left_dot_u(bool unit, Int m, Int n, T alpha, const T *a, Int ldap, T *b,
-                            Int ldbp)
-{
-    if (unit)
-        trsm_left_dot_tb<UPPER, TRAN, true, T, V, Int>(m, n, alpha, a, ldap, b, ldbp);
-    else
-        trsm_left_dot_tb<UPPER, TRAN, false, T, V, Int>(m, n, alpha, a, ldap, b, ldbp);
-}
-template <bool UPPER, typename T, int V, typename Int>
-inline void trsm_left_dot_t(bool tran, bool unit, Int m, Int n, T alpha, const T *a,
-                            Int ldap, T *b, Int ldbp)
-{
-    if (tran)
-        trsm_left_dot_u<UPPER, true, T, V, Int>(unit, m, n, alpha, a, ldap, b, ldbp);
-    else
-        trsm_left_dot_u<UPPER, false, T, V, Int>(unit, m, n, alpha, a, ldap, b, ldbp);
-}
+/* One group, forward substitution L X = alpha B through the views: L lower
+ * triangular of order m, B m x n, alpha nonzero. Column blocks outermost, so
+ * a block's columns stay cache-resident while L streams past them once:
+ * trsm_jb-column blocks, then the leftover columns as one narrower block. */
 template <typename T, int V, typename Int>
-inline void trsm_left_dot(bool upper, bool tran, bool unit, Int m, Int n, T alpha,
-                          const T *a, Int ldap, T *b, Int ldbp)
+void trsm_lower_group(TrsmDiag diag, Int m, Int n, T alpha, ConstBatchView<T, V, Int> L,
+                      BatchView<T, V, Int> B)
 {
-    if (upper)
-        trsm_left_dot_t<true, T, V, Int>(tran, unit, m, n, alpha, a, ldap, b, ldbp);
-    else
-        trsm_left_dot_t<false, T, V, Int>(tran, unit, m, n, alpha, a, ldap, b, ldbp);
-}
-
-/* One group, fully general: any side / layout via BatchView strides. Same
- * substitution as the tuned path; only the addressing changes (it lives in the
- * two BatchViews). side='L' sweeps a row of X at a time, side='R' a column. */
-template <typename T, int V, typename Int = int>
-void trsm_compact_group_strided(bool left, bool upper, bool tran, bool unit, Int m, Int n,
-                                T alpha, ConstBatchView<T, V, Int> A,
-                                BatchView<T, V, Int> B)
-{
-    using VT = typename pack<T, V>::type;
     static_assert(std::is_floating_point_v<T>,
                   "trsm_compact is defined for real float/double");
+    assert(L.si && L.sj && B.si && B.sj);
 
-    assert(A.si && A.sj && B.si && B.sj);
-
-    VT va;
-    broadcast<T, V>(va, alpha);
-
-    if (left) {
-        /* solve op(A) X = alpha B column by column; A is m x m */
-        const bool back = (upper != tran);
-        for (Int j = 0; j < n; ++j)
-            for (Int t = 0; t < m; ++t) {
-                const Int i = back ? m - 1 - t : t;
-                VT w = B(i, j) * va;
-                const Int lo = back ? i + 1 : 0;
-                const Int hi = back ? m : i;
-                for (Int l = lo; l < hi; ++l)
-                    w -= (tran ? A(l, i) : A(i, l)) * B(l, j);
-                B(i, j) = unit ? w : w / A(i, i);
-            }
-    }
-    else {
-        /* solve X op(A) = alpha B, one column of X at a time; A is n x n */
-        const bool fwd = (upper != tran);
-        for (Int t = 0; t < n; ++t) {
-            const Int j = fwd ? t : n - 1 - t;
-            for (Int i = 0; i < m; ++i)
-                B(i, j) = B(i, j) * va; /* scale this column of X */
-            const Int lo = fwd ? 0 : j + 1;
-            const Int hi = fwd ? j : n;
-            for (Int l = lo; l < hi; ++l) {
-                const VT c = tran ? A(j, l) : A(l, j);
-                for (Int i = 0; i < m; ++i)
-                    B(i, j) -= c * B(i, l);
-            }
-            if (!unit) {
-                const VT d = A(j, j);
-                for (Int i = 0; i < m; ++i)
-                    B(i, j) = B(i, j) / d;
-            }
-        }
-    }
+    Int j = 0;
+    for (; j + trsm_jb <= n; j += trsm_jb)
+        trsm_cols<trsm_jb, T, V, Int>(diag, m, alpha, L, B, j);
+    for_remainder<trsm_jb>(
+        n - j, [&](auto jb) { trsm_cols<jb.value, T, V, Int>(diag, m, alpha, L, B, j); });
 }
 
-/* One group, any side / layout, alpha != 0, through the views. Routes to the
- * tuned trsm_left_dot when it applies -- side='L' with B's rows contiguous
- * (unit row stride) and A either column-major (unit row stride) or stored as
- * its transpose (unit column stride: A is then M^T for the column-major M of
- * leading dimension A.si, so uplo and transa flip -- the case of a QR factor
- * reached through a transposed view, as gels's LQ path does) -- and to the
- * strided kernel otherwise. One branch per group, outside every kernel loop.
- * The per-group entry point the fused solves (gels, and through the pointer
- * form below, the Cholesky and LDL^T solves) compose their sweeps from. */
+/* One group, any side / uplo / trans / layout, alpha != 0: every case is the
+ * forward substitution above on the right views. side='R' is the left solve
+ * of the transposed system, op(A)^T X^T = alpha B^T; the operator M of that
+ * left solve is A or A^T by a stride swap; and an upper-triangular M is lower
+ * triangular with its rows and columns reversed, which turns the back
+ * substitution into the same forward sweep (X's columns come out reversed
+ * too, harmlessly: they are independent). The per-group entry point the
+ * fused solves (gels, and through the pointer form below, the Cholesky and
+ * LDL^T solves) compose their sweeps from. */
 template <typename T, int V, typename Int = int>
-inline void trsm_compact_group(bool left, bool upper, bool tran, bool unit, Int m, Int n,
-                               T alpha, ConstBatchView<T, V, Int> A,
+inline void trsm_compact_group(bool left, bool upper, bool tran, TrsmDiag diag, Int m,
+                               Int n, T alpha, ConstBatchView<T, V, Int> A,
                                BatchView<T, V, Int> B)
 {
-    if (left && B.si == 1 && A.si == 1)
-        trsm_left_dot<T, V, Int>(upper, tran, unit, m, n, alpha,
-                                 reinterpret_cast<const T *>(A.data), A.sj,
-                                 reinterpret_cast<T *>(B.data), B.sj);
-    else if (left && B.si == 1 && A.sj == 1)
-        trsm_left_dot<T, V, Int>(!upper, !tran, unit, m, n, alpha,
-                                 reinterpret_cast<const T *>(A.data), A.si,
-                                 reinterpret_cast<T *>(B.data), B.sj);
-    else
-        trsm_compact_group_strided<T, V, Int>(left, upper, tran, unit, m, n, alpha, A, B);
+    if (m == 0 || n == 0) return;
+    if (!left) {
+        B = B.transposed();
+        const Int t = m;
+        m = n;
+        n = t;
+    }
+    const bool flip = (tran == left); /* M = A^T */
+    if (flip) A = A.transposed();
+    if (upper != flip) { /* M upper */
+        A = A.reversed(m, m);
+        B = B.reversed(m, n);
+    }
+    trsm_lower_group<T, V, Int>(diag, m, n, alpha, A, B);
 }
 
-/* The same on packed pointers in a layout: side='L' column-major reaches the
- * tuned path, the other three side/layout combinations the strided kernel. */
+/* The same on packed pointers in a layout. */
 template <typename T, int V, typename Int = int>
-inline void trsm_compact_group(bool left, bool upper, bool rowmajor, bool tran, bool unit,
-                               Int m, Int n, T alpha, const T *a, Int ldap, T *b,
-                               Int ldbp)
+inline void trsm_compact_group(bool left, bool upper, bool rowmajor, bool tran,
+                               TrsmDiag diag, Int m, Int n, T alpha, const T *a, Int ldap,
+                               T *b, Int ldbp)
 {
-    trsm_compact_group<T, V, Int>(left, upper, tran, unit, m, n, alpha,
+    trsm_compact_group<T, V, Int>(left, upper, tran, diag, m, n, alpha,
                                   make_const_view<T, V, Int>(a, rowmajor, ldap),
                                   make_view<T, V, Int>(b, rowmajor, ldbp));
 }
@@ -282,16 +201,17 @@ void trsm_compact(bool left, bool upper, bool rowmajor, bool tran, bool unit, In
     const std::size_t str_b = group_stride(rowmajor, ldbp, m, n, V);
 
     /* alpha == 0 is the BLAS ?trsm fast path: B := 0 with A untouched. Handle it
-     * once here -- both group kernels then assume alpha != 0. */
+     * once here -- the group kernel then assumes alpha != 0. */
     if (alpha == T(0)) {
         zero_compact<T, V, Int>(rowmajor, m, n, bp, ldbp, nm);
         return;
     }
 
+    const TrsmDiag diag = unit ? TrsmDiag::unit : TrsmDiag::nonunit;
     for_each_group<V>(
         nm,
         [&](Int g) {
-            trsm_compact_group<T, V, Int>(left, upper, rowmajor, tran, unit, m, n, alpha,
+            trsm_compact_group<T, V, Int>(left, upper, rowmajor, tran, diag, m, n, alpha,
                                           ap + (std::size_t)g * str_a, ldap,
                                           bp + (std::size_t)g * str_b, ldbp);
         },

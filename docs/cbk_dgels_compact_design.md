@@ -128,11 +128,10 @@ if `m < n`; `p = max(m, n)`, `q = min(m, n)` -- `geqrf_compact_group` over
 
 Every step is an existing group kernel over views: `geqrf` for the
 factorization, `ormqr` (backward sweep) for `Q B`, `trsm` for the triangular
-solves. `trsm`'s group kernel routes on the views and reaches its tuned
-row-dot path whenever `B`'s rows are contiguous -- for column-major `F`
-directly, and for `m < n` through the transposed view, where `R` is the lower
-triangle `L = R^T` of `A`'s own storage and the solve flips `uplo` and
-`transa`. Row-major goes through the strided kernel.
+solves. `trsm`'s group kernel takes the views as they are -- column-major or
+row-major `F`, and for `m < n` the transposed view, where `R` is the lower
+triangle `L = R^T` of `A`'s own storage -- and runs its one tiled kernel on
+all of them.
 
 ### 6.2 The three steps per group
 

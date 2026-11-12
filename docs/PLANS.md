@@ -53,34 +53,44 @@ listed in `examples.md`.
   reciprocal off the pivot chain would move it, and that is AVX-512-specific
   and not bit-reproducible against the divide. The rows below a panel's
   diagonal block are a triangular solve done as the rank-1 sweep,
-  store-bound; solving them against the finished block in registers measured
-  a further gain at moderate orders but changes the rounding order (LAPACK's
-  potf2 + trsm), so it waits on a numerics decision. The strided
+  store-bound; `sytrfnp`'s left-looking panel solves them against the
+  finished block in registers and would port (its tile has the switch), but
+  for Cholesky that changes the rounding order (LAPACK's potf2 + trsm), so
+  it waits on a numerics decision. The strided
   (column-major upper / row-major lower) cases run the same blocked code but
   were not tuned or measured separately.
 
 ## sytrfnp / sytrsnp / sysvnp
 
-- **Done:** design 6-8; blocked recursively like `potrf`, sharing its
-  register-tiled trailing update with the pivot folded into the tile's
-  weights; `sytrsnp` as two unit-diagonal `trsm` sweeps around a diagonal
-  solve; `sysvnp` the fused per-group driver. The upper convention is
+- **Done:** design 6-8; left-looking register-tiled panels (each tile
+  loaded and stored once, its update and its own pivots' steps in between),
+  split recursively above the panel width with `potrf`'s tiled trailing
+  update, the pivot folded into the tile's weights; `sytrsnp` as two
+  unit-diagonal `trsm` sweeps with the diagonal solve folded into the second;
+  `sysvnp` the fused per-group driver. The upper convention is
   `A = U^T D U` (design 6.3), not `?sytrf`'s `U D U^T`. MKL has no compact
   `sytrf`; the `np` naming follows its `mkl_?getrfnp_compact`.
-- **Open:** the blocking was tuned on the contiguous case; the strided cases
-  run the same code untuned. The solve is the plain sweeps. No
-  factorization-only benchmark (the `potrf` harness would port).
+- **Open:** the factorization's tiles are `4 x 4` whatever the target; with
+  16 SIMD registers that tile does not fit (`trsm` sizes its own from
+  `simd_registers`). Each tile multiplies its column weights by the pivot
+  per panel column; keeping the panel's columns unscaled until the panel is
+  done would drop that multiply. The same left-looking panel would serve
+  `potrf` (its open item). No factorization-only benchmark (the `potrf`
+  harness would port).
 
 ## trsm
 
 - **Done:** design 2-6 and 8.1; the full `side x uplo x transa x diag`
-  matrix and the `alpha = 0` fast path. Column-major `side = 'L'` is the
-  tuned 4/2/1 register-blocked path; the group kernel routes on views, so a
-  transposed column-major view reaches it too (`gels` does). Every other
-  combination is the strided kernel.
-- **Open:** per-group overhead at the smallest orders, where it is behind
-  `mkl_?trsm_compact`; reciprocal-multiplying the diagonal in the blocked
-  paths; tuning the strided kernel.
+  matrix and the `alpha = 0` fast path, as one register-tiled forward
+  substitution that every side, uplo, trans and layout reaches through view
+  transposes and reversals; the tile sized to the target's register count;
+  the diagonal applied as a reciprocal multiply with the divide off the
+  accumulation path.
+- **Open:** a tile's update reads the whole solved part of `X` above it and
+  the matching rows of `A`, which stops being cache-resident for large
+  orders; a recursive split of the rows would bound it. A power-of-two
+  `ldap` puts a row of `A` on few cache sets (the no-transpose sweeps). No
+  `trsm` benchmark; it is measured only through the solve benchmarks.
 
 ## gels
 
@@ -89,7 +99,7 @@ listed in `examples.md`.
   case is `geqrf` over the transposed view). The fused factor-and-apply
   kernel for the least-squares case was tried and retired (design 6.2): no
   arithmetic saved, and it evicted `B` from L1 at mid sizes.
-- **Open:** row-major runs through the strided kernels. A whole-batch,
+- **Open:** row-major `geqrf`/`ormqr` run through the strided kernels. A whole-batch,
   library-threaded `gels` call has not been benchmarked against the
   caller-threaded per-group loop. The blocked factorization is `geqrf`'s open
   item.

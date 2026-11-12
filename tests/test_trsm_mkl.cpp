@@ -184,7 +184,7 @@ template <class T> int run_suites()
                        32, 4);
     fails += suite1<T>(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, 11,
                        20, 6);
-    /* few-RHS no-transpose left (n < 4): the column-axpy kernel route */
+    /* few right-hand sides (n < 4): the leftover-column blocks alone */
     for (int nrhs : {1, 2, 3})
         for (MKL_UPLO uplo : {MKL_UPPER, MKL_LOWER})
             for (MKL_DIAG diag : {MKL_NONUNIT, MKL_UNIT})

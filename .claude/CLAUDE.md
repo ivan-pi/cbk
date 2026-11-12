@@ -163,7 +163,8 @@ workspace contract, or the benchmarks' threading.
   configuration CI uses, while the same source passed every test under gcc.
   Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
   Instead give the helper the view and the indices and let it load what it
-  needs (`sytrfnp_update_block`, which `potrf`'s panel calls too, does exactly that), or
+  needs (`potrf_update_block` and the `Solve` tiles of `sytrfnp`, which read
+  the parked reciprocal pivots back from the diagonal, do exactly that), or
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
   (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
   because they always inline.
@@ -249,8 +250,20 @@ workspace contract, or the benchmarks' threading.
   passes key on the signature, and geqrf's plain path lost 8-13% that way
   (measured). Share the step as an inline helper and give the new caller its
   own kernel. Register blocking is
-  written as a `JB`-templated block helper with `for (c < JB)` loops the
-  compiler unrolls, not as hand-expanded `w0..w3` copies.
+  written as an `IB`/`JB`-templated tile with `for (c < JB)` loops the
+  compiler unrolls (`CBK_UNROLL`), not as hand-expanded `w0..w3` copies; a
+  loop's tail runs as one narrower instantiation of the same tile
+  (`for_remainder`), not element by element. A tile has to fit the register
+  file -- its accumulators plus the packs that feed them -- or it is staged
+  through the stack and loses to a smaller one: `trsm` sizes its tile from
+  `simd_registers` (`cbk_common.hpp`).
+- **`trsm` is one kernel.** The forward substitution on a lower-triangular
+  view (`trsm_lower_group`); side, uplo, trans and layout are view
+  transposes and reversals in `trsm_compact_group` (`BatchView::reversed`
+  turns an upper triangle into a lower one, with negative strides). A
+  diagonal is applied as a multiply by its reciprocal, one divide per tile
+  row, issued before the tile's accumulation so the divider is off the FMA
+  path. Do not add per-case kernels back.
 - **Test ratios, one threshold.** The portable suites gate every numerical
   check the way LAPACK's TESTING suites do: a dimensionless test ratio in the
   exact form of LAPACK's own checker, compared against the single

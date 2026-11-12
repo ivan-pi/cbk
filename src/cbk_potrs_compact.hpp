@@ -8,11 +8,9 @@
  *     uplo lower, A = L L^T:   L z = B;    L^T X = z
  *     uplo upper, A = U^T U:   U^T z = B;  U   X = z
  *
- * Both sweeps are the compact trsm group kernels with a non-unit diagonal:
- * column-major takes trsm's tuned side='L' row-dot path, row-major the strided
- * kernel (except a single RHS column, contiguous in either layout, which the
- * view routing sends to the tuned path too). No workspace; B is overwritten
- * with X. The LAPACK ?potrs analogue.
+ * Both sweeps are the compact trsm group kernel with a non-unit diagonal, in
+ * every layout. No workspace; B is overwritten with X. The LAPACK ?potrs
+ * analogue.
  *
  * A NaN/Inf diagonal -- a lane poisoned by a non-SPD input in the factorization
  * (design section 6.2) -- propagates into that lane's solution, matching the
@@ -50,7 +48,7 @@ void potrs_compact_group(bool rowmajor, bool upper, Int n, Int nrhs, const T *a,
     /* non-unit triangular sweep with op(F) = F (tran false) or F^T (tran true) */
     const auto sweep = [&](bool tran) {
         trsm_compact_group<T, V, Int>(/*left=*/true, upper, rowmajor, tran,
-                                      /*unit=*/false, n, nrhs, T(1), a, ldap, b, ldbp);
+                                      TrsmDiag::nonunit, n, nrhs, T(1), a, ldap, b, ldbp);
     };
 
     sweep(upper);  /* L z = B   or  U^T z = B */

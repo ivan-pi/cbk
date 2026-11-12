@@ -494,17 +494,24 @@ int main()
             fails += run_case<double, 4>(3, 3, u, l);   // smallest, padded
             fails += run_case<float, 8>(16, 30, u, l);
             fails += run_case<float, 16>(17, 24, u, l); // padded partial group
+            // orders above the leaf panel width: the recursive split and its
+            // trailing update
+            fails += run_case<double, 8>(9, 70, u, l);
+            fails += run_case<float, 16>(17, 97, u, l);
         }
 
     // End-to-end solve A X = B on indefinite batches, closing the pipeline
     // (factor + sytrsnp, and the fused sysvnp), over uplo/layout/precision,
-    // padded groups, and RHS counts that exercise trsm's 4/2/1 column blocks.
+    // padded groups, and RHS counts that exercise trsm's full and leftover
+    // column blocks.
     for (char u : uplos)
         for (char l : lays) {
             fails += run_solve<double, 4>(8, 30, 5, u, l);
             fails += run_solve<double, 8>(11, 43, 4, u, l); // padded partial group
             fails += run_solve<double, 2>(6, 17, 1, u, l);  // single RHS
             fails += run_solve<float, 8>(16, 24, 3, u, l);
+            fails += run_solve<double, 8>(9, 32, 47, u, l); // many RHS
+            fails += run_solve<double, 4>(5, 70, 9, u, l);  // above the leaf width
         }
 
     // sytrsnp against the trsm sweeps it is built from, over uplo/layout.
@@ -512,6 +519,7 @@ int main()
         for (char l : lays) {
             fails += run_compose<double, 4>(8, 30, 5, u, l);
             fails += run_compose<float, 8>(11, 24, 3, u, l); // padded partial group
+            fails += run_compose<double, 8>(9, 33, 13, u, l);
         }
 
     // The small-dimension sweep (small_dims): every order over uplo x layout,
