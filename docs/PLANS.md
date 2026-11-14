@@ -13,26 +13,36 @@ listed in `examples.md`.
 
 ## geqrf
 
-- **Done:** design 6-8; unblocked, both layouts through one strided kernel.
-- **Open:** the factorization is unblocked: each reflector makes its own pass
-  over the trailing block. A blocked (compact-WY) factorization is the
-  standard next step, for `geqrf` and `gels` alike; not tried.
+- **Done:** design 6-8; blocked: `geqr2` panels of four columns, the trailing
+  update as one register-tiled block reflector (`ormqr`'s `larft` +
+  `larfb`), unblocked below three panels; both layouts through one strided
+  kernel.
+- **Open:** the panel is four columns wide, the width of the block-reflector
+  tile; a wider panel (two tiles' worth of `Y`, or a recursive panel) would
+  cut the trailing passes further at the larger orders. The in-panel
+  `larf` is the one-reflector update, store-bound; it is a small share at
+  four columns. At the smallest orders (around `n <= 12`, one right-hand
+  side) the blocked path is within noise of the unblocked one. The
+  strided (row-major) case runs the same tiles untuned.
 
 ## ormqr
 
 - **Done:** design 2-6 and 8.1; `side = 'R'` is the kernel over the
-  transposed view, `trans = 'C'` folds to `'T'`. The portable `?ormqr_compact`
-  takes layout, side and trans like the MKL-style entry point, and its suite
-  runs the layout x side x trans product against LAPACKE `?ormqr` and the
-  explicit Q of `?orgqr` (LAPACK's dqrt03) on every stack.
+  transposed view, `trans = 'C'` folds to `'T'`; the reflectors applied four
+  at a time as register-tiled block reflectors (design 6.5), one at a time
+  for a single slice. The portable `?ormqr_compact` takes layout, side and
+  trans like the MKL-style entry point, and its suite runs the layout x side
+  x trans product against LAPACKE `?ormqr` and the explicit Q of `?orgqr`
+  (LAPACK's dqrt03) on every stack.
 - **Gap:** the stress structures of design 7.3 (`cond` knob, banded /
   row-scaled / clustered-scale inputs) are only partly covered; `geqrf`'s
   suite has the rank-deficient and near-collinear cases. The LAPACK-style
   generators planned below would close it.
-- **Open:** the one-column tail of `larf` (all of `nrhs < 4`) reduces `v^T c`
-  into a single accumulator and runs at FMA latency; split it into several.
-  `larf_block` takes `tau` by reference to a pack, which is safe only while it
-  inlines (`.claude/CLAUDE.md`); pass the pointer and index instead.
+- **Open:** `Tf` is rebuilt for every call; `gels` (which forms the same
+  blocks in `geqrf`) could keep them. A single right-hand side is the
+  one-reflector sweep, bound by its dot product's dependency chain and the
+  store port; splitting the dot over several accumulators measured slower
+  (the loop is load-bound), so it stays.
 
 ## orgqr
 
@@ -101,8 +111,7 @@ listed in `examples.md`.
   arithmetic saved, and it evicted `B` from L1 at mid sizes.
 - **Open:** row-major `geqrf`/`ormqr` run through the strided kernels. A whole-batch,
   library-threaded `gels` call has not been benchmarked against the
-  caller-threaded per-group loop. The blocked factorization is `geqrf`'s open
-  item.
+  caller-threaded per-group loop.
 
 ## Project-wide
 

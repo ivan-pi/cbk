@@ -6,9 +6,13 @@
  *     A = Q R,   Q = H(0) H(1) ... H(k-1),   k = min(m, n),
  *     H(kk) = I - tau(kk) * v(kk) * v(kk)^T.
  *
- * A portable, vectorized mkl_?geqrf_compact. The algorithm is the unblocked
- * LAPACK geqr2 -- dlarfg to build each reflector, dlarf (the larf() shared with
- * ormqr) to apply it to the trailing columns -- run V matrices at a time: the
+ * A portable, vectorized mkl_?geqrf_compact. The algorithm is LAPACK's blocked
+ * geqrf with panels of larfb_nb columns: geqr2 on the panel -- dlarfg to build
+ * each reflector, dlarf (the larf() shared with ormqr) to apply it to the
+ * panel's remaining columns -- then the panel's reflectors applied to the
+ * trailing columns as one block reflector (larfb, also ormqr's), so the
+ * trailing matrix is read and written once per panel rather than once per
+ * column. All of it runs V matrices at a time: the
  * compact format stores element (i,j) of all V matrices contiguously, so the
  * scalar algorithm lifts with double -> V-wide vector, one lane per matrix. The
  * single data-dependent branch of dlarfg (xnorm == 0 -> tau = 0) becomes a lane
@@ -90,21 +94,28 @@ inline void larfg_pack(const typename pack<T, V>::type &x0,
 }
 
 /* Build H(kk) from column kk of A, rows kk..m-1: the reflector body scaled in
- * place below the diagonal, the R diagonal in A(kk,kk), tau[kk] = t (also
- * returned in t for the caller's larf). One step of geqr2. */
+ * place below the diagonal, the R diagonal in A(kk,kk), tau[kk]. One step of
+ * geqr2. The sum of squares runs on four accumulators, so it is not one chain
+ * of dependent FMAs. */
 template <typename T, int V, typename Int>
-inline void geqrf_reflector(Int kk, Int m, const BatchView<T, V, Int> &A,
-                            typename pack<T, V>::type *tau,
-                            typename pack<T, V>::type &t) noexcept
+inline void geqrf_reflector(Int kk, Int m, BatchView<T, V, Int> A,
+                            typename pack<T, V>::type *tau) noexcept
 {
     using VT = typename pack<T, V>::type;
-    VT tail = VT{};
-    for (Int i = kk + 1; i < m; ++i)
-        tail += A(i, kk) * A(i, kk);
-    VT rdiag, inv;
+    VT s[4] = {};
+    Int i = kk + 1;
+    for (; i + 4 <= m; i += 4) {
+        CBK_UNROLL
+        for (int u = 0; u < 4; ++u)
+            s[u] += A(i + u, kk) * A(i + u, kk);
+    }
+    for (; i < m; ++i)
+        s[0] += A(i, kk) * A(i, kk);
+    const VT tail = (s[0] + s[1]) + (s[2] + s[3]);
+    VT rdiag, inv, t;
     larfg_pack<T, V>(A(kk, kk), tail, rdiag, t, inv);
     tau[kk] = t;
-    for (Int i = kk + 1; i < m; ++i)
+    for (i = kk + 1; i < m; ++i)
         A(i, kk) = A(i, kk) * inv; /* reflector body */
     A(kk, kk) = rdiag;             /* R diagonal */
 }
@@ -122,11 +133,24 @@ void geqrf_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_)
     const auto Ac = A.as_const();
     const Int k = (m < n) ? m : n;
 
-    for (Int kk = 0; kk < k; ++kk) {
-        VT t;
-        geqrf_reflector<T, V, Int>(kk, m, A, tau, t);
-        /* apply H(kk) to the trailing columns kk+1 .. n-1 */
-        larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+    /* LAPACK's crossover: with two panels or fewer the block reflectors do
+     * not pay for their Tf, and the factorization runs unblocked, each
+     * reflector applied to every trailing column */
+    const bool blocked = k > 2 * larfb_nb;
+    const Int nb = blocked ? Int(larfb_nb) : k;
+    for (Int k0 = 0; k0 < k; k0 += nb) {
+        const Int k1 = k0 + nb < k ? k0 + nb : k;
+        const Int pend = blocked ? k1 : n;
+        /* the panel k0 .. k1-1 unblocked, each reflector applied to the
+         * panel's remaining columns only (to all of them, unblocked) */
+        for (Int kk = k0; kk < k1; ++kk) {
+            geqrf_reflector<T, V, Int>(kk, m, A, tau);
+            larf<T, V>(kk, m, Ac, tau_, A, kk + 1, pend);
+        }
+        /* the trailing columns k1 .. n-1: the panel's reflectors as one block
+         * reflector, H(k1-1) .. H(k0) A = Qb^T A */
+        if (blocked && k1 < n)
+            larfb_any<true, T, V, Int>(k1 - k0, k0, m, Ac, tau_, A, k1, n);
     }
 }
 

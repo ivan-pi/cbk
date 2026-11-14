@@ -166,8 +166,8 @@ workspace contract, or the benchmarks' threading.
   needs (`potrf_update_block` and the `Solve` tiles of `sytrfnp`, which read
   the parked reciprocal pivots back from the diagonal, do exactly that), or
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
-  (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
-  because they always inline.
+  (`vsqrt`, `broadcast`, `vselect`) get away with references only because
+  they always inline.
 - **clang splits 512-bit packs in half unless told otherwise.** On x86, clang
   (icpx included) legalizes vector operations to its *preferred* width, which
   its tuning for AVX-512 CPUs sets to 256 bits: a V=8 double pack becomes two
@@ -232,7 +232,11 @@ workspace contract, or the benchmarks' threading.
   compiler must reload its `data`/`si`/`sj` and redo the `i*si + j*sj`
   multiplies -- potrf's recursion measured 1.3-1.7x slower at `n <= 32` that
   way. The view is 16 bytes, two registers. The small `inline` helpers that
-  always inline may keep `const BatchView &`.
+  always inline may keep `const BatchView &` -- but a helper that grows, or
+  gains callers, stops inlining without notice: the QR reflector helpers
+  (`larf`, `larft`, `larfb`) measured a quarter to a third slower by reference
+  once the block-reflector tiles made them too large to inline, so they take
+  their views by value.
   Dense batches everywhere are `MatrixBatch` (`src/cbk_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`

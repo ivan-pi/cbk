@@ -182,8 +182,7 @@ portable `?gels_compact` of `cbk.h` is the checked surface.
 
 ### 6.6 Numerical scope
 
-Backward stable for a full-rank, well-conditioned `op(A)`, as the unblocked
-`?gels` path is. `?gels`'s rank test (`info = i > 0` on an exactly zero
+Backward stable for a full-rank, well-conditioned `op(A)`, as `?gels` is. `?gels`'s rank test (`info = i > 0` on an exactly zero
 diagonal of `R`) does not vectorize across a pack and the compact `info` is a
 scalar, so it is not performed: a zero diagonal divides through to `Inf`/`NaN`
 in that lane, as in `?trsm`. A nearly rank-deficient `op(A)` gives the same
@@ -236,7 +235,7 @@ in FP64 and FP32.
   `geqrf_compact_group`, `ormqr_compact_group` and `trsm`'s group kernel do
   the work; `gels_lwork` is the workspace rule.
 
-The routine is `?gels` minus its scaling and rank test, over the unblocked
+The routine is `?gels` minus its scaling and rank test, over the blocked
 kernels the toolkit already validates, and the `(ap, work)` it leaves behind
 interoperate with `cbk_?ormqr_compact` and `cbk_?trsm_compact` for
 anything the one call does not cover.

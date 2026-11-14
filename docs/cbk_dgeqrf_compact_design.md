@@ -85,8 +85,8 @@ interleaved matrices) at a time; `V` is derived from `format`.
   (col-major) / `>= n` (row-major).
 * **`taup`** (`double *`): output buffer of `k = min(m,n)` scalars per matrix,
   in Compact format. Sized with `mkl_?get_size_compact(min(m,n), 1, format, nm)`.
-* **`work`, `lwork`** (`double *`, `MKL_INT`): workspace. This unblocked kernel
-  needs no scratch, so `work[0]` on a query (`lwork = -1`) returns `1`. Size
+* **`work`, `lwork`** (`double *`, `MKL_INT`): workspace. This kernel needs no
+  scratch (the block reflector's small triangular factor lives on the stack), so `work[0]` on a query (`lwork = -1`) returns `1`. Size
   `work` from *this routine's own* query: requirements differ between routines
   (MKL's native `mkl_?geqrf_compact` needs about `n*V` elements), compact
   routines do not check `lwork`, and an undersized buffer is undefined behavior
@@ -109,17 +109,35 @@ interleaved matrices) at a time; `V` is derived from `format`.
 
 ## 6. Design Considerations & Compatibility
 
-### 6.1 The algorithm: vectorized unblocked Householder QR (`geqr2`)
+### 6.1 The algorithm: vectorized blocked Householder QR
 
-The batch is factored with the unblocked LAPACK algorithm (`dgeqr2`: `dlarfg`
-to build each reflector, `dlarf` to apply it to the trailing columns), executed
-`V` matrices at a time. Because Compact format interleaves the `V` matrices so
-that element `(i,j)` of all `V` is contiguous, the scalar algorithm lifts almost
+The batch is factored with LAPACK's blocked algorithm (`dgeqrf`), executed `V`
+matrices at a time. Because Compact format interleaves the `V` matrices so that
+element `(i,j)` of all `V` is contiguous, the scalar algorithm lifts almost
 verbatim with `double -> V`-wide vector: every `+`, `-`, `*`, `/` becomes a
-lane-wise SIMD operation over `V` independent matrices. Blocked (`geqrf`)
-factorization is deliberately *not* used -- for the target sizes the reflector
-panels are short, and the interleaved batch already saturates the vector units
-without the extra `larft`/`larfb` bookkeeping.
+lane-wise SIMD operation over `V` independent matrices.
+
+The columns are factored in panels of `larfb_nb = 4`. Within a panel the
+factorization is `dgeqr2` (`dlarfg` to build each reflector, `dlarf` to apply
+it to the panel's remaining columns). The panel's four reflectors are then
+applied to the trailing columns together as one block reflector
+`I - Y T Y^T` (`dlarft` forms the `4 x 4` triangular `T`, `dlarfb` applies
+it), in register tiles of four reflectors by `larfb_jb` columns (`6` with 32
+SIMD registers, `2` with 16): `W = Y^T C`, `W := T^T W`, `C -= Y W`, with `W`
+in registers. The trailing matrix is thus read and written once per panel
+instead of once per column, and each load feeds several FMAs; the
+one-reflector update stores every element it reads for one FMA, which bounds
+it by the store port at about half the FMA rate. The tile is `ormqr`'s
+(`cbk_ormqr_compact.hpp`), shared.
+
+Below three panels (`k <= 8`) the factorization is unblocked, LAPACK's
+crossover: the block reflectors' `T` does not pay for itself there. The
+blocked and unblocked results differ only in the association of the
+trailing-update sums, within the same backward-error bound (section 7).
+
+The reflector helpers take their views by value: the blocked kernels are too
+large to inline, and a view held by reference out of line is reloaded after
+every store (`.claude/CLAUDE.md`), which measured a quarter to a third slower.
 
 ### 6.2 The one hard part: a branch-free `larfg`
 
@@ -154,9 +172,8 @@ committing to the design.
 The kernel addresses `A` through a strided view (`A(i,j) = data[i*si + j*sj]`,
 strides in packs). Column-major has `si = 1`: a matrix column is contiguous in
 the compact buffer (consecutive rows one `V`-wide pack apart), so the `larfg`
-reduction, the reflector scaling, and the trailing-column update all walk
-contiguous packs, register-blocked `JB = 4` trailing columns at a time so each
-reflector load is reused. Row-major is the same code with `si = ldap`, `sj = 1`
+reduction, the reflector scaling, and the trailing-column updates all walk
+contiguous packs, register-tiled (section 6.1) so each load is reused. Row-major is the same code with `si = ldap`, `sj = 1`
 (supported for MKL compatibility; correctness-first, the strided sweep is not
 separately tuned).
 
@@ -246,7 +263,7 @@ native `mkl_dgeqrf_compact`; the two compact `ap`/`taup` buffers are compared
 elementwise at `100 * n * eps` (the agreement observed on these
 well-conditioned, `O(1)` inputs is a few `eps`). This confirms the two
 implementations match far beyond the backward-error gates -- same sign
-convention, same unblocked math -- without requiring bit-identical arithmetic.
+convention, the same reflectors -- without requiring bit-identical arithmetic.
 
 ### 7.3 Suite 3 -- End-to-end solve `AX = B`
 
@@ -260,8 +277,10 @@ must recover `X`. Gate the forward error `Xhat - X` and the residual
 
 `tests/test_geqrf_compact.cpp` validates the templated kernel directly against
 LAPACK's unblocked `?geqr2` (`LAPACKE_?geqr2` through `ref_geqr2`,
-elementwise at `~eps`) across `(T, V)` combinations and partial (padded) final
-packs, the underflow scope of 6.6 (a column whose tail underflows squared
+elementwise as a `test_ratio`: the blocked trailing update reassociates sums,
+so the agreement is to working precision, not to the bit) across `(T, V)`
+combinations and partial (padded) final packs, every `k = min(m, n)` from 1 to
+13 square, tall and wide (the panel, its tails and the crossover), the underflow scope of 6.6 (a column whose tail underflows squared
 comes back with `tau = 0`, its diagonal kept and its body zeroed, every lane
 finite, and the factorization still exact to working precision), the
 dense-LAPACK invariants of 7.1 (`Q` from `?orgqr`, residual and orthogonality
@@ -290,5 +309,5 @@ exposed through `extern "C"` for the FFI-stable surfaces, reusing the existing
   `geqrf_compact_group<T,V>` over a `BatchView` (either layout: column-major has
   unit row stride, row-major unit column stride -- same code), driven over all
   packs by `geqrf_compact<T,V>`, the entry point both C adapters
-  (`src/cbk.cpp`, `src/cbk_compat.cpp`) call. The trailing-column
-  update is ormqr's `larf`.
+  (`src/cbk.cpp`, `src/cbk_compat.cpp`) call. The in-panel update is
+  ormqr's `larf`, the trailing update its block reflector `larfb`.
