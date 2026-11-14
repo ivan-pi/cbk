@@ -34,16 +34,16 @@ scalar, `0` on success).
 | `src/cbk_common.hpp` | The `pack<T,V>` SIMD element, the `BatchView` strided group view every kernel addresses its operands through, `vsqrt`/`broadcast`, the `for_each_group` threading driver, and the runtime-`V` dispatch helper `for_vlen`. |
 | `src/cbk_matrix_view.hpp` | `MatrixView<T>`, the dense strided 2-D view the tests, benchmarks and examples address their host-side matrices through -- the non-compact counterpart of `BatchView`. Internal, not part of the public API. |
 | `src/cbk_matrix_batch.hpp` | `MatrixBatch<T>`, the owning batch of dense matrices (storage, per-matrix `view(v)`, and the `base_ptrs()` array MKL's pack/unpack routines take) the tests, benchmarks and examples share. |
-| `src/cbk_geqrf_compact.hpp` | QR factorization kernel: vectorized `geqr2` with a branch-free `larfg`, reusing ormqr's `larf` for the trailing update. |
-| `src/cbk_ormqr_compact.hpp` | Apply-Q kernel (vectorized `dorm2r`) and the shared one-reflector update `larf`. |
+| `src/cbk_geqrf_compact.hpp` | QR factorization kernel: blocked, `geqr2` panels with a branch-free `larfg`, the trailing update by ormqr's block reflector. |
+| `src/cbk_ormqr_compact.hpp` | Apply-Q kernel: block reflectors (`larft` + register-tiled `larfb`, shared with geqrf) and the one-reflector update `larf` (shared with geqrf's panel and orgqr). |
 | `src/cbk_orgqr_compact.hpp` | Form-Q kernel (vectorized `dorg2r`): backward accumulation on `larf` over the trailing columns only, unit-seeded extra columns, sweep-free column formation. |
 | `src/cbk_potrf_compact.hpp` | Cholesky kernel (vectorized `potf2`); the four `(layout, uplo)` cases are one kernel over transposed views. |
 | `src/cbk_potrs_compact.hpp` | The Cholesky solve: two non-unit `trsm` group sweeps. |
 | `src/cbk_posv_compact.hpp` | The fused Cholesky factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
 | `src/cbk_sytrfnp_compact.hpp` | Unpivoted LDL^T kernel (the square-root-free `potf2`), over the same transposed views as `potrf`. |
-| `src/cbk_sytrsnp_compact.hpp` | The LDL^T solve: two unit-diagonal `trsm` group sweeps around a diagonal solve. |
+| `src/cbk_sytrsnp_compact.hpp` | The LDL^T solve: two unit-diagonal `trsm` group sweeps, the diagonal solve folded into the second. |
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
-| `src/cbk_trsm_compact.hpp` | Triangular-solve kernels: the tuned column-major `side='L'` row-dot path and the general strided kernel, behind the per-group `trsm_compact_group` the fused solves compose. |
+| `src/cbk_trsm_compact.hpp` | Triangular solve: one register-tiled forward-substitution kernel, reached for every side / uplo / trans / layout through view transposes and reversals in the per-group `trsm_compact_group` the fused solves compose. |
 | `src/cbk_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf, ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
 | `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
 | `src/cbk_compat.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |

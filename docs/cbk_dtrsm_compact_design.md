@@ -149,58 +149,67 @@ An unrecognized `format` selects no kernel, so the call is a silent no-op.
 
 ### 6.1 The algorithm: vectorized batched substitution
 
-Each system is solved by the standard BLAS `?trsm` substitution -- scale
-`B := alpha B`, then forward- or back-substitute one row (`side = 'L'`) or one
-column (`side = 'R'`) of the solution at a time -- executed `V` matrices at once.
-Because Compact format interleaves the `V` matrices so that element `(i,j)` of
-all `V` is contiguous, the scalar algorithm lifts almost verbatim with
-`double -> V`-wide vector: every `*`, `-`, and `/` becomes a lane-wise SIMD
-operation over `V` independent matrices. There is no data-dependent branch to
-mask, so the lift is direct.
+Each system is solved by the standard BLAS `?trsm` substitution, executed `V`
+matrices at once. Because Compact format interleaves the `V` matrices so that
+element `(i,j)` of all `V` is contiguous, the scalar algorithm lifts almost
+verbatim with `double -> V`-wide vector: every `*` and `-` becomes a lane-wise
+SIMD operation over `V` independent matrices. There is no data-dependent
+branch to mask, so the lift is direct.
 
-The eight `side x uplo x transa` combinations collapse to a choice of sweep
-direction and which index of `A` is read:
+There is one kernel: the forward substitution `L X = alpha B` for a lower
+triangular `L` (`trsm_lower_group`), written over `BatchView`s. The sixteen
+`side x uplo x transa x layout` combinations reach it by choosing the views
+(`trsm_compact_group`), with no arithmetic of their own:
 
-| side | uplo  | transa | sweep over the solved index | reads      |
-|------|-------|--------|-----------------------------|------------|
-| L    | lower | N      | forward `i = 0 .. m-1`      | `A(i, r)`  |
-| L    | upper | N      | backward `i = m-1 .. 0`     | `A(i, r)`  |
-| L    | upper | T      | forward                     | `A(r, i)`  |
-| L    | lower | T      | backward                    | `A(r, i)`  |
+| case | view |
+|------|------|
+| `side = 'R'`: `X op(A) = alpha B` | the left solve of the transposed system `op(A)^T X^T = alpha B^T`: `B` transposed (a stride swap) |
+| the operator `M` of that left solve is `A^T` | `A` transposed |
+| `M` upper triangular | `A` and `B` with their index ranges reversed (`BatchView::reversed`: negative strides from the last element), which reads `M` as lower triangular and turns the back substitution into the forward sweep |
+| row-major | the strides the views were built with |
 
-`side = 'R'` mirrors these along the columns of `B` (solving one column of `X`
-per step and reading `A(r, j)` / `A(j, r)`), so the arithmetic is shared. The
-diagonal divide (`/ A(i,i)`) is skipped entirely when `diag = MKL_UNIT`.
+Reversing `B` also reverses the order of its columns; they are independent, so
+that is harmless.
 
-### 6.2 Tail-blocked register blocking, and the 1-column axpy tail
+### 6.2 Register tiles
 
-For `op(A) = A` the row-dot reads `A(i, r)` -- a *row* of `A`, strided by `ldap`
-in column-major storage -- so once `A` spills out of cache it prefetches poorly.
-Register-blocking the RHS columns amortizes that: each `A` load serves the whole
-block. The `side = 'L'` column-major path therefore sweeps the RHS in **descending
-blocks of 4, then 2, then 1** (since `n mod 4 ∈ {0,1,2,3}`, the tail is at most
-one 2-block plus one 1-block), so the 2- and 3-column tails reuse each `A` load
-rather than streaming it per column as a 4-only block with a one-column remainder
-would. `JB` and the `uplo/trans/diag` config are compile-time, so the
-accumulators land in registers, the loops unroll, and the config branches vanish.
-This lifts the awkward counts (`n = 2, 3, 5, 6, 7, ...`) to parity-or-better with
-the clean multiples of 4.
+The sweep is done in `IB x JB` tiles of `X` (rows `i .. i+IB-1` of the columns
+`j .. j+JB-1`): a tile is loaded once (scaled by `alpha` unless it is 1),
+accumulates its dot products with the rows already solved,
 
-The exception is a single **`op(A) = A` leftover column** (`n = 1` -- a single-RHS
-solve such as QR's `R x = Q^T b` -- and the 1-tail of odd `n`): with one column
-there is no reuse to amortize the strided read, so it is instead solved by a
-**column-oriented (gaxpy) sweep** (`trsm_axpy_col`) reading *column* `k` of `A`
-contiguously. `op(A) = A^T`
-reads `A(r, i)` = a column already, so it always uses the row-dot. Every path
-computes the same result -- this is a throughput choice only.
+```
+X(i+r, j+c) -= L(i+r, k) * X(k, j+c)      for k < i
+```
 
-### 6.3 Layouts: tuned column-major, strided row-major
+in registers -- each pack of `L` feeds `JB` FMAs and each pack of `X` feeds
+`IB`, against one of each per FMA for a column-at-a-time sweep -- is finished
+against its own `IB x IB` corner of `L`, and is stored once. The inner loop
+then runs at the FMA units' rate rather than the load ports'. The tile must fit
+the register file (`IB * JB` accumulators, `IB` packs of `L`, one of `X`): it is
+`4 x 6` with 32 SIMD registers and `3 x 4` with 16 (`simd_registers`); a tile
+that does not fit is staged through the stack and measured slower than a
+smaller one that does. The leftover rows and columns run as one narrower tile
+of the same kernel (`for_remainder`), so a single right-hand side is a
+`4 x 1` tile with four independent accumulators.
 
-Column-major is the tuned path: a matrix column is contiguous in the compact
-buffer, so the substitution walks contiguous packs. Row-major is supported for
-MKL compatibility through the same stride-generalized addressing (a `BatchView`
-per operand), correctness-first, mirroring how `ormqr`/`geqrf` treat the
-non-contiguous layout.
+Column blocks are the outer loop: a block's columns stay cache-resident while
+`L` streams past them once.
+
+**The diagonal** of a non-unit `A` is applied as a multiply by its reciprocal:
+one divide per row of a tile, not one per element, issued before the tile's
+accumulation so the divider runs underneath it instead of in the path of the
+result. (Dividing each element kept the whole solve waiting on the divider.)
+The result differs from the dividing substitution's in the last bit, within
+the same backward-error bound (section 7). `TrsmDiag::scale` is an internal
+third diagonal mode for the LDL^T solve: the tile scales its rows by the
+reciprocal of the stored diagonal as it loads them and then sweeps as unit.
+
+### 6.3 Layouts
+
+Every layout and side runs the same tiles; they differ only in which operand
+is walked contiguously. In the column-major left solve the right-hand side
+columns are contiguous; `op(A) = A` reads rows of `A` (strided by `ldap`) and
+`op(A) = A^T` its columns.
 
 ### 6.4 Padding and SIMD semantics
 
@@ -254,11 +263,11 @@ CTest-registered.
 the library's `?trsm` (`cblas_?trsm` through `ref_trsm`, on any LAPACKE +
 CBLAS stack: the same algorithm, one matrix at a time) over the full
 `side x uplo x transa x diag` matrix, across precisions (FP32/FP64), interleave
-widths, and padded final packs, column-major. The row-dot kernels run the
-identical operation sequence one lane per matrix and so match the reference to
-the last bit (relative error `0`); the column-axpy no-transpose kernel
-accumulates in a different (but equally backward-stable) order and agrees to
-working precision (~`1e-16`).
+widths, and padded final packs, column-major, at shapes below, at and above
+the register tile in both directions. The kernel accumulates in the
+reference's order but multiplies by the diagonal's reciprocal where the
+reference divides, so the two agree to working precision, not to the last
+bit.
 Two gates, both at a generous multiple of `eps` on the diagonal-boosted (well
 conditioned) factors: the relative forward error of `X` against the reference
 solve, and the solve's own residual `||op(A) X - alpha B||` formed with the

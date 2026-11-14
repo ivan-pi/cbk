@@ -351,6 +351,14 @@ int main()
     // rectangular
     fails += run_case<double, 4>(8, 64, 20); // tall
     fails += run_case<double, 4>(8, 20, 64); // wide
+    // every k = min(m, n) around the block-reflector panel and its crossover
+    // to the unblocked factorization, square, tall and wide (the wide ones
+    // have trailing columns beyond the last panel)
+    for (int k = 1; k <= 13; ++k) {
+        fails += run_case<double, 8>(9, k, k);
+        fails += run_case<double, 4>(5, k + 7, k);
+        fails += run_case<float, 8>(9, k, k + 7);
+    }
     // float
     fails += run_case<float, 8>(16, 30, 30);
     fails += run_case<float, 16>(32, 43, 17);

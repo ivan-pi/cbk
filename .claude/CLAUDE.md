@@ -163,10 +163,11 @@ workspace contract, or the benchmarks' threading.
   configuration CI uses, while the same source passed every test under gcc.
   Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
   Instead give the helper the view and the indices and let it load what it
-  needs (`sytrfnp_update_block`, which `potrf`'s panel calls too, does exactly that), or
+  needs (`potrf_update_block` and the `Solve` tiles of `sytrfnp`, which read
+  the parked reciprocal pivots back from the diagonal, do exactly that), or
   pass the scalar the pack was broadcast from. The tiny lane-wise helpers
-  (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
-  because they always inline.
+  (`vsqrt`, `broadcast`, `vselect`) get away with references only because
+  they always inline.
 - **clang splits 512-bit packs in half unless told otherwise.** On x86, clang
   (icpx included) legalizes vector operations to its *preferred* width, which
   its tuning for AVX-512 CPUs sets to 256 bits: a V=8 double pack becomes two
@@ -231,7 +232,11 @@ workspace contract, or the benchmarks' threading.
   compiler must reload its `data`/`si`/`sj` and redo the `i*si + j*sj`
   multiplies -- potrf's recursion measured 1.3-1.7x slower at `n <= 32` that
   way. The view is 16 bytes, two registers. The small `inline` helpers that
-  always inline may keep `const BatchView &`.
+  always inline may keep `const BatchView &` -- but a helper that grows, or
+  gains callers, stops inlining without notice: the QR reflector helpers
+  (`larf`, `larft`, `larfb`) measured a quarter to a third slower by reference
+  once the block-reflector tiles made them too large to inline, so they take
+  their views by value.
   Dense batches everywhere are `MatrixBatch` (`src/cbk_matrix_batch.hpp`):
   storage, the per-matrix `view(v)`, and the `base_ptrs()` array the MKL
   pack/unpack routines take. The benchmarks alias it as `MatrixPool`
@@ -249,8 +254,20 @@ workspace contract, or the benchmarks' threading.
   passes key on the signature, and geqrf's plain path lost 8-13% that way
   (measured). Share the step as an inline helper and give the new caller its
   own kernel. Register blocking is
-  written as a `JB`-templated block helper with `for (c < JB)` loops the
-  compiler unrolls, not as hand-expanded `w0..w3` copies.
+  written as an `IB`/`JB`-templated tile with `for (c < JB)` loops the
+  compiler unrolls (`CBK_UNROLL`), not as hand-expanded `w0..w3` copies; a
+  loop's tail runs as one narrower instantiation of the same tile
+  (`for_remainder`), not element by element. A tile has to fit the register
+  file -- its accumulators plus the packs that feed them -- or it is staged
+  through the stack and loses to a smaller one: `trsm` sizes its tile from
+  `simd_registers` (`cbk_common.hpp`).
+- **`trsm` is one kernel.** The forward substitution on a lower-triangular
+  view (`trsm_lower_group`); side, uplo, trans and layout are view
+  transposes and reversals in `trsm_compact_group` (`BatchView::reversed`
+  turns an upper triangle into a lower one, with negative strides). A
+  diagonal is applied as a multiply by its reciprocal, one divide per tile
+  row, issued before the tile's accumulation so the divider is off the FMA
+  path. Do not add per-case kernels back.
 - **Test ratios, one threshold.** The portable suites gate every numerical
   check the way LAPACK's TESTING suites do: a dimensionless test ratio in the
   exact form of LAPACK's own checker, compared against the single

@@ -94,12 +94,14 @@ void gels_compact_group(bool overdet, Int p, Int q, Int nrhs, BatchView<T, V, In
         /* F = Q [R; 0]: B := Q^T B, then R X = (Q^T B)(0:q). */
         geqrf_compact_group<T, V, Int>(p, q, F, tau_);
         ormqr_compact_group<T, V, Int>(Direction::Forward, p, nrhs, q, Fc, tau_, B);
-        trsm_compact_group<T, V, Int>(true, true, false, false, q, nrhs, T(1), Fc, B);
+        trsm_compact_group<T, V, Int>(true, true, false, TrsmDiag::nonunit, q, nrhs, T(1),
+                                      Fc, B);
     }
     else {
         /* F^T = [R^T 0] Q^T: solve R^T Y = B(0:q), then X = Q [Y; 0]. */
         geqrf_compact_group<T, V, Int>(p, q, F, tau_);
-        trsm_compact_group<T, V, Int>(true, true, true, false, q, nrhs, T(1), Fc, B);
+        trsm_compact_group<T, V, Int>(true, true, true, TrsmDiag::nonunit, q, nrhs, T(1),
+                                      Fc, B);
         zero_block<T, V, Int>(B, q, p, nrhs);
         ormqr_compact_group<T, V, Int>(Direction::Backward, p, nrhs, q, Fc, tau_, B);
     }

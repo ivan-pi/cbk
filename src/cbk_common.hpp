@@ -34,6 +34,7 @@
 #include <cmath>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -171,6 +172,12 @@ template <typename T, int V, typename Int = int, bool Const = false> struct Batc
 
     /* The same storage read as the transposed matrices: (i,j) -> (j,i). */
     BatchView transposed() const noexcept { return {data, sj, si}; }
+    /* ... and with both index ranges reversed: (i,j) -> (ni-1-i, nj-1-j), for
+     * ni, nj >= 1. An upper triangle read this way is lower. */
+    BatchView reversed(Int ni, Int nj) const noexcept
+    {
+        return {data + ((ni - 1) * si + (nj - 1) * sj), -si, -sj};
+    }
     BatchView<T, V, Int, true> as_const() const noexcept { return {data, si, sj}; }
 };
 template <typename T, int V, typename Int = int>
@@ -228,6 +235,39 @@ template <typename F> bool for_vlen(int V, F &&f)
     case 16: f(std::integral_constant<int, 16>{}); return true;
     default: return false;
     }
+}
+
+/* CBK_UNROLL before a loop over a register tile (a compile-time IB x JB block
+ * of packs) asks for it to be fully unrolled (GCC and clang both take the GCC
+ * spelling; 16 is above every tile dimension), which keeps the tile in
+ * registers under GCC, whose scalar replacement runs before it unrolls these
+ * loops and would otherwise stage the tile through the stack on entry and
+ * exit. */
+#define CBK_UNROLL _Pragma("GCC unroll 16")
+
+/* The target's SIMD register count, which sizes the register tiles: an
+ * IB x JB tile of accumulators plus the packs that feed it must fit, or the
+ * tile is staged through the stack. x86-64 has 16 registers before AVX-512
+ * and 32 with it; AArch64 has 32. */
+#if defined(__x86_64__) && !defined(__AVX512F__)
+constexpr int simd_registers = 16;
+#else
+constexpr int simd_registers = 32;
+#endif
+
+/* Runtime remainder -> compile-time block width: calls f with a
+ * std::integral_constant<int, r> for the r in 1 .. N-1 equal to rem, and does
+ * nothing for any other value (rem = 0: no remainder). The tail of a loop in
+ * steps of a compile-time N then runs as one narrower block of the same
+ * kernel instead of one element at a time. */
+template <int N, typename Int, typename F, int... R>
+inline void for_remainder_impl(Int rem, F &&f, std::integer_sequence<int, R...>)
+{
+    (void)((rem == R + 1 && (f(std::integral_constant<int, R + 1>{}), true)) || ...);
+}
+template <int N, typename Int, typename F> inline void for_remainder(Int rem, F &&f)
+{
+    for_remainder_impl<N>(rem, f, std::make_integer_sequence<int, N - 1>{});
 }
 
 /* ------------------------------------------------------------------ */

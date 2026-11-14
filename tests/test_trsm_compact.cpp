@@ -186,8 +186,19 @@ int main()
     fails += run_case<float, 16>('R', 'L', 'N', 'U', 32, 10, 7);
     fails += run_case<double, 4>('L', 'U', 'N', 'N', 40, 16, 4); // 10 groups: OpenMP path
 
-    // few-RHS no-transpose left (n = 1,2,3): the column-axpy kernel route
-    // (n >= 4 above routes to the row-dot kernel), across uplo / diag / width
+    // the full matrix again at a shape wider than one register tile in both
+    // directions with a remainder in each (the tile is at most 4 x 6), and a
+    // larger solve with many right-hand sides
+    for (char side : {'L', 'R'})
+        for (char uplo : {'U', 'L'})
+            for (char tr : {'N', 'T'})
+                for (char di : {'N', 'U'})
+                    fails += run_case<double, 8>(side, uplo, tr, di, 11, 13, 17);
+    fails += run_case<double, 8>('L', 'L', 'N', 'N', 9, 32, 47);
+    fails += run_case<float, 16>('L', 'U', 'T', 'U', 17, 33, 47);
+
+    // few right-hand sides (n = 1,2,3): the leftover-column blocks alone,
+    // across uplo / diag / width
     for (int nrhs : {1, 2, 3})
         for (char uplo : {'U', 'L'}) {
             fails += run_case<double, 4>('L', uplo, 'N', 'N', 8, 16, nrhs);

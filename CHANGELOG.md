@@ -7,6 +7,27 @@ release may change the API.
 
 ## [Unreleased]
 
+### Changed
+
+- `?trsm_compact` is one register-tiled kernel for every side, uplo, trans
+  and layout (the other cases are transposed or reversed views of the same
+  forward substitution), with the tile sized to the target's SIMD register
+  count; row-major, `side = 'R'` and few-right-hand-side solves no longer
+  take a slower path. A non-unit diagonal is applied as a multiply by its
+  reciprocal instead of a divide, so results can differ from the previous
+  release in the last bit. `?potrs_compact`, `?posv_compact`,
+  `?sytrsnp_compact`, `?sysvnp_compact` and `?gels_compact` inherit it.
+- `?geqrf_compact` is blocked: four-column `geqr2` panels, the trailing
+  columns updated by the panel's reflectors as one register-tiled block
+  reflector (compact WY), unblocked below three panels. `?ormqr_compact`
+  applies its reflectors four at a time the same way (one at a time for a
+  single right-hand side). `?gels_compact` inherits both. Throughput only; the
+  factors differ from the previous release's in rounding.
+- `?sytrfnp_compact` (and `?sysvnp_compact`) factor left-looking in register
+  tiles, each tile loaded and stored once; `?sytrsnp_compact` folds its
+  diagonal solve into the second triangular sweep. Throughput only; the
+  factor differs from the previous release's in rounding.
+
 ## [0.2.0] - 2026-09-15
 
 ### Changed

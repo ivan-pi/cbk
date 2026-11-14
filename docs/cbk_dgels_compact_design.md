@@ -128,11 +128,10 @@ if `m < n`; `p = max(m, n)`, `q = min(m, n)` -- `geqrf_compact_group` over
 
 Every step is an existing group kernel over views: `geqrf` for the
 factorization, `ormqr` (backward sweep) for `Q B`, `trsm` for the triangular
-solves. `trsm`'s group kernel routes on the views and reaches its tuned
-row-dot path whenever `B`'s rows are contiguous -- for column-major `F`
-directly, and for `m < n` through the transposed view, where `R` is the lower
-triangle `L = R^T` of `A`'s own storage and the solve flips `uplo` and
-`transa`. Row-major goes through the strided kernel.
+solves. `trsm`'s group kernel takes the views as they are -- column-major or
+row-major `F`, and for `m < n` the transposed view, where `R` is the lower
+triangle `L = R^T` of `A`'s own storage -- and runs its one tiled kernel on
+all of them.
 
 ### 6.2 The three steps per group
 
@@ -183,8 +182,7 @@ portable `?gels_compact` of `cbk.h` is the checked surface.
 
 ### 6.6 Numerical scope
 
-Backward stable for a full-rank, well-conditioned `op(A)`, as the unblocked
-`?gels` path is. `?gels`'s rank test (`info = i > 0` on an exactly zero
+Backward stable for a full-rank, well-conditioned `op(A)`, as `?gels` is. `?gels`'s rank test (`info = i > 0` on an exactly zero
 diagonal of `R`) does not vectorize across a pack and the compact `info` is a
 scalar, so it is not performed: a zero diagonal divides through to `Inf`/`NaN`
 in that lane, as in `?trsm`. A nearly rank-deficient `op(A)` gives the same
@@ -237,7 +235,7 @@ in FP64 and FP32.
   `geqrf_compact_group`, `ormqr_compact_group` and `trsm`'s group kernel do
   the work; `gels_lwork` is the workspace rule.
 
-The routine is `?gels` minus its scaling and rank test, over the unblocked
+The routine is `?gels` minus its scaling and rank test, over the blocked
 kernels the toolkit already validates, and the `(ap, work)` it leaves behind
 interoperate with `cbk_?ormqr_compact` and `cbk_?trsm_compact` for
 anything the one call does not cover.

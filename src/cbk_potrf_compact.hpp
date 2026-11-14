@@ -55,7 +55,7 @@
 #define CBK_POTRF_COMPACT_HPP
 
 #include "cbk_common.hpp"
-#include "cbk_sytrfnp_compact.hpp" /* the panel step and the tiled update */
+#include "cbk_sytrfnp_compact.hpp" /* the tiled trailing update */
 
 #include <cstddef>
 #include <cassert>
@@ -72,6 +72,33 @@ namespace cbk::detail {
 #define CBK_POTRF_NB 8
 #endif
 constexpr int potrf_nb = CBK_POTRF_NB;
+
+/* Symmetric rank-1 trailing update of the JB columns jj .. jj+JB-1 by pivot
+ * column j: A(i,c) -= A(i,j) * (A(c,j) * w) for i >= c, with the weight w
+ * still in place at A(j,j) (re-read here rather than passed, so no pack
+ * crosses a call boundary by reference -- see the alignment note in
+ * cbk_common.hpp) folded into the per-column weight w[c] = A(c,j) * w, one
+ * extra multiply per block column. In the panel sweep the column is unscaled
+ * and w = 1/a, the pivot's reciprocal. The near-diagonal corner fills in triangularly (column c touches
+ * rows i >= c); below it all JB columns take the same A(i,j), loaded once. JB
+ * is compile-time so w[] stays in registers. */
+template <int JB, typename T, int V, typename Int>
+inline void potrf_update_block(Int j, Int n, const BatchView<T, V, Int> &A, Int jj)
+{
+    using VT = typename pack<T, V>::type;
+    const VT d = A(j, j);
+    VT w[JB];
+    for (int c = 0; c < JB; ++c)
+        w[c] = A(jj + c, j) * d;
+    for (int c = 0; c < JB; ++c)
+        for (int r = c; r < JB; ++r)
+            A(jj + r, jj + c) -= A(jj + r, j) * w[c];
+    for (Int i = jj + JB; i < n; ++i) {
+        const VT av = A(i, j);
+        for (int c = 0; c < JB; ++c)
+            A(i, jj + c) -= av * w[c];
+    }
+}
 
 /* The unblocked potf2 on the panel of columns j0 .. j1-1, rows to n, already
  * updated by every column left of j0: each pivot's rank-1 update is confined
@@ -91,9 +118,9 @@ inline void potrf_compact_panel(Int j0, Int j1, Int n, BatchView<T, V, Int> A)
 
         Int jj = j + 1;
         for (; jj + 4 <= j1; jj += 4)
-            sytrfnp_update_block<4, T, V>(j, n, A, jj);
+            potrf_update_block<4, T, V>(j, n, A, jj);
         for (; jj < j1; ++jj)
-            sytrfnp_update_block<1, T, V>(j, n, A, jj);
+            potrf_update_block<1, T, V>(j, n, A, jj);
 
         VT d;
         vsqrt<T, V>(d, a);
