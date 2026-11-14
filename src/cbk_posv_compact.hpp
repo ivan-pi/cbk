@@ -39,6 +39,7 @@ void posv_compact(bool rowmajor, bool upper, Int n, Int nrhs, T *ap, Int ldap, T
                   Int ldbp, Int nm)
 {
     assert(nm >= 1 && n >= 0 && nrhs >= 0);
+    assert(ldap >= n && ldbp >= (rowmajor ? nrhs : n));
 
     /* no right-hand sides: factor anyway (LAPACK ?posv), touching only ap */
     if (nrhs == 0) {

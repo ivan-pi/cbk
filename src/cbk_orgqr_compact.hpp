@@ -94,6 +94,7 @@ void orgqr_compact(bool rowmajor, Int m, Int n, Int k, T *ap, Int ldap, const T 
                    Int nm)
 {
     assert(nm >= 1 && m >= 0 && n >= 0 && k >= 0 && k <= n && n <= m);
+    assert(ldap >= (rowmajor ? n : m));
 
     const std::size_t str_a = group_stride(rowmajor, ldap, m, n, V);
     const std::size_t str_t = (std::size_t)k * V;

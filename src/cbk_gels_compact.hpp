@@ -117,6 +117,7 @@ void gels_compact(bool rowmajor, char trans, Int m, Int n, Int nrhs, T *ap, Int 
                   T *bp, Int ldbp, T *taup, Int nm)
 {
     assert(nm >= 1 && m >= 0 && n >= 0 && nrhs >= 0);
+    assert(ldap >= (rowmajor ? n : m) && ldbp >= (rowmajor ? nrhs : (m > n ? m : n)));
 
     const bool tran = (trans == 'T' || trans == 't' || trans == 'C' || trans == 'c');
     const bool tall = (m >= n);

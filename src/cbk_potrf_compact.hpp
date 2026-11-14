@@ -174,6 +174,7 @@ template <typename T, int V, typename Int = int>
 void potrf_compact(bool rowmajor, bool upper, Int n, T *ap, Int ldap, Int nm)
 {
     assert(nm >= 1 && n >= 0);
+    assert(ldap >= n);
 
     const std::size_t str_a = group_stride(rowmajor, ldap, n, n, V);
 

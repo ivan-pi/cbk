@@ -7,6 +7,15 @@ release may change the API.
 
 ## [Unreleased]
 
+### Added
+
+- In a Debug build (assertions enabled), every routine checks its leading
+  dimensions -- at least the rows in column-major, the columns in row-major
+  -- so a bad `ld` passed to the MKL-style `cbk_*` API, which does no
+  argument checking, aborts with the failed condition instead of reading and
+  writing past each group. The portable API still returns `-j` first; no call
+  it accepts is affected, and Release builds are unchanged.
+
 ### Changed
 
 - `?trsm_compact` is one register-tiled kernel for every side, uplo, trans

@@ -348,6 +348,7 @@ void ormqr_compact(bool left, bool rowmajor, char trans, Int m, Int n, Int k, co
                    Int ldap, const T *taup, T *cp, Int ldcp, Int nm)
 {
     assert(nm >= 1 && m >= 0 && n >= 0 && k >= 0);
+    assert(ldap >= (rowmajor ? k : (left ? m : n)) && ldcp >= (rowmajor ? n : m));
 
     const bool tran = (trans == 'T' || trans == 't' || trans == 'C' || trans == 'c');
     const Direction dir = (left == tran) ? Direction::Forward : Direction::Backward;

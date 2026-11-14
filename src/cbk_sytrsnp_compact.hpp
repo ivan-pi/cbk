@@ -76,6 +76,7 @@ void sytrsnp_compact(bool rowmajor, bool upper, Int n, Int nrhs, const T *ap, In
                      T *bp, Int ldbp, Int nm)
 {
     assert(nm >= 1 && n >= 0 && nrhs >= 0);
+    assert(ldap >= n && ldbp >= (rowmajor ? nrhs : n));
 
     const std::size_t str_a = group_stride(rowmajor, ldap, n, n, V);
     const std::size_t str_b = group_stride(rowmajor, ldbp, n, nrhs, V);

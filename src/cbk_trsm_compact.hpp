@@ -192,6 +192,7 @@ void trsm_compact(bool left, bool upper, bool rowmajor, bool tran, bool unit, In
                   Int n, T alpha, const T *ap, Int ldap, T *bp, Int ldbp, Int nm)
 {
     assert(nm >= 1 && m >= 0 && n >= 0);
+    assert(ldap >= (left ? m : n) && ldbp >= (rowmajor ? n : m));
 
     /* A is the order-s triangular factor: s = m (left) or n (right). */
     const Int s = left ? m : n;

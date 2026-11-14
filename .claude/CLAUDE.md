@@ -295,7 +295,11 @@ workspace contract, or the benchmarks' threading.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cbk.h`) validates LAPACK-style, returning `-j` for a bad j-th
-  argument.
+  argument. Every all-groups driver also `assert`s its leading dimensions
+  (`ld >=` the rows in column-major, the columns in row-major), so in a Debug
+  build a bad `ld` on the MKL-style path aborts instead of overrunning a
+  group; the bounds mirror the portable API's checks, so it never trips on a
+  call that API accepts. A new driver asserts its own the same way.
 - **Workspace (`lwork`).** Size each routine's `work` from *its own* `lwork = -1`
   query, and give each routine its own buffer. The compact kernels here need no
   scratch (their query returns `1`) except the MKL-style `gels`, whose `work`
