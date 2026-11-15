@@ -160,6 +160,7 @@ template <typename T, int V, typename Int = int>
 void geqrf_compact(bool rowmajor, Int m, Int n, T *ap, Int ldap, T *taup, Int nm)
 {
     assert(nm >= 1 && m >= 0 && n >= 0);
+    assert(ldap >= (rowmajor ? n : m));
 
     const Int k = (m < n) ? m : n;
     const std::size_t str_a = group_stride(rowmajor, ldap, m, n, V);
