@@ -281,10 +281,13 @@ template <int N, typename Int, typename F> inline void for_remainder(Int rem, F 
 /* independent and equal-sized, so a static schedule balances exactly  */
 /* and no thread ever idles -- but only when the call is worth a fork: */
 /* more than one thread for at least two groups,                      */
-/* available, and total work above parallel_min_flops; the if-clause  */
-/* serializes it otherwise (a single group then costs only the gate's  */
-/* few ICV reads and an inactive one-thread region), and a single group */
-/* returns before touching the runtime at all. The work                */
+/* available, and total work above parallel_min_flops. Otherwise the  */
+/* loop runs as a plain loop after the gate's few ICV reads, never     */
+/* entering the runtime: an if-clause would, since a serialized region */
+/* still sets up a one-thread team on every call, measured costing as */
+/* much as a whole small group's solve (a refused fork is the common   */
+/* case under a caller's own parallel loop). A single group returns    */
+/* before even the ICV reads. The work                                 */
 /* estimate is optional: omit it and the call is assumed worth a fork  */
 /* whenever it has two groups and two threads.                         */
 /*                                                                     */
@@ -330,7 +333,12 @@ void for_each_group(
         ngroups < omp_get_max_threads() ? ngroups : omp_get_max_threads();
     const bool parallel = omp_get_active_level() < omp_get_max_active_levels() &&
                           nthreads > 1 && flops_per_group * ngroups >= parallel_min_flops;
-#pragma omp parallel for schedule(static) num_threads(nthreads) if (parallel)
+    if (parallel) {
+#pragma omp parallel for schedule(static) num_threads(nthreads)
+        for (Int g = 0; g < ngroups; ++g)
+            body(g);
+        return;
+    }
 #endif
     for (Int g = 0; g < ngroups; ++g)
         body(g);
