@@ -33,6 +33,10 @@ release may change the API.
   it used to open cost as much as a small group's work on every call, most
   under clang's and Intel's OpenMP runtimes. Every routine benefits; results
   are unchanged.
+- `?trsm_compact` spends less per tile on one or a few right-hand sides: the
+  diagonal mode is fixed at compile time and the update of a column-major
+  lower (or reversed upper) triangle addresses its operand off one pointer.
+  Throughput only; results are unchanged with gcc and clang.
 
 ## [0.2.0] - 2026-09-15
 
