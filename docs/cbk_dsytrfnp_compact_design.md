@@ -220,6 +220,18 @@ crossing a call by reference (`.claude/CLAUDE.md`) and without a second
 divide. The `4 x 4` tile's 16 accumulators, its unscaled and scaled weights,
 the pivot and one loaded pack fit the 32 AVX-512 registers.
 
+**Shared weights.** The scaled weights `D(k) * L(c,k)` depend on the column
+block, not on a tile's rows, yet every tile would form them anew: four plain
+multiplies and a pivot load per `k`, about one in five of a tile's FP
+operations. The block forms them once instead. The diagonal tile, which
+loads those operands anyway, records the weights in a small stack buffer
+(at most `NB x 4` packs) and the tiles below read them back. These are the
+same products of the same operands, so the factor is unchanged bit for bit.
+The trailing update of the split below shares its block's weights the same
+way, taking its update columns in slices of at most `NB` so the buffer
+stays that size whatever the order; a tile's partial sums go back to `A`
+between slices, which is exact.
+
 A group of more than `NB` columns (`sytrfnp_nb`, default 64;
 `-DCBK_SYTRFNP_NB` overrides) is split in halves at `NB`-column boundaries, as
 `potrf`'s design 6.1 describes: the left half is factored, applied to the
@@ -232,9 +244,10 @@ A(mid:n, mid:j1) -= L(mid:n, j0:mid) D(j0:mid) L(mid:j1, j0:mid)^T
 and the right half factored. `NB` is wide on purpose: the left-looking panel
 stores each element once, and measured ahead of the split for as long as a
 group stays cache-resident; the split bounds how far back a tile's update
-reaches once it does not. The tile and the trailing update are shared with
-`potrf` behind compile-time switches (there the columns are already scaled,
-`D = I`).
+reaches once it does not. The per-tile form of the tile and the trailing
+update is shared with `potrf` behind compile-time switches (there the columns
+are already scaled, `D = I`, so there are no weights to share); the
+factorization itself uses the shared-weight forms above.
 
 Only the association of the rank-`K` sums differs from the plain sweep's,
 within the same backward-error bound (section 7). The fused solve (section

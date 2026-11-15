@@ -27,6 +27,10 @@ release may change the API.
   tiles, each tile loaded and stored once; `?sytrsnp_compact` folds its
   diagonal solve into the second triangular sweep. Throughput only; the
   factor differs from the previous release's in rounding.
+- `?sytrfnp_compact` (and `?sysvnp_compact`) form each column block's
+  pivot-scaled weights once and share them across the block's tiles, in the
+  panel and in the recursive split's trailing update, instead of forming
+  them per tile. Throughput only; the factor is unchanged bit for bit.
 
 ## [0.2.0] - 2026-09-15
 

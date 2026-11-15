@@ -74,17 +74,19 @@ listed in `examples.md`.
 
 - **Done:** design 6-8; left-looking register-tiled panels (each tile
   loaded and stored once, its update and its own pivots' steps in between),
-  split recursively above the panel width with `potrf`'s tiled trailing
-  update, the pivot folded into the tile's weights; `sytrsnp` as two
+  split recursively above the panel width with a tiled trailing update, the
+  pivot folded into the weights, which each column block forms once and
+  shares across its tiles in both the panel and the trailing update (design
+  6.1, "Shared weights"); `sytrsnp` as two
   unit-diagonal `trsm` sweeps with the diagonal solve folded into the second;
   `sysvnp` the fused per-group driver. The upper convention is
   `A = U^T D U` (design 6.3), not `?sytrf`'s `U D U^T`. MKL has no compact
   `sytrf`; the `np` naming follows its `mkl_?getrfnp_compact`.
 - **Open:** the factorization's tiles are `4 x 4` whatever the target; with
   16 SIMD registers that tile does not fit (`trsm` sizes its own from
-  `simd_registers`). Each tile multiplies its column weights by the pivot
-  per panel column; keeping the panel's columns unscaled until the panel is
-  done would drop that multiply. The same left-looking panel would serve
+  `simd_registers`). A power-of-two leading dimension (`n = 256` unpadded)
+  maps a tile's column-strided loads onto few L1 sets; padding `ldap`
+  avoids it, the kernel does not. The same left-looking panel would serve
   `potrf` (its open item). No factorization-only benchmark (the `potrf`
   harness would port).
 
