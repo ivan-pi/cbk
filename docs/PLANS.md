@@ -95,12 +95,16 @@ listed in `examples.md`.
   substitution that every side, uplo, trans and layout reaches through view
   transposes and reversals; the tile sized to the target's register count;
   the diagonal applied as a reciprocal multiply with the divide off the
-  accumulation path.
+  accumulation path; the narrow blocks' per-tile overhead cut (design 6.2),
+  which brings the one-right-hand-side solve level with or ahead of MKL's
+  compact `trsm`, behind it before.
 - **Open:** a tile's update reads the whole solved part of `X` above it and
   the matching rows of `A`, which stops being cache-resident for large
   orders; a recursive split of the rows would bound it. A power-of-two
   `ldap` puts a row of `A` on few cache sets (the no-transpose sweeps). No
-  `trsm` benchmark; it is measured only through the solve benchmarks.
+  `trsm` benchmark; it is measured only through the solve benchmarks. Under
+  icpx the narrow-block measures cost a few percent with several right-hand
+  sides, where gcc and clang gain; why is not yet known.
 
 ## gels
 

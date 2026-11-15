@@ -58,35 +58,79 @@ enum class TrsmDiag { unit, nonunit, scale };
  * feeds IB -- is finished against its own IB x IB corner of L, and is stored
  * once. A diagonal entry is applied as a multiply by its reciprocal, taken
  * first so the divider runs under the accumulation instead of after it; one
- * divide per row of a tile, not one per element. */
-template <int IB, int JB, typename T, int V, typename Int>
-inline void trsm_tile(TrsmDiag diag, T alpha, ConstBatchView<T, V, Int> L,
-                      BatchView<T, V, Int> B, Int i, Int j)
+ * divide per row of a tile, not one per element. The diagonal mode D is a
+ * template argument: with one right-hand side a tile does only a few dozen
+ * FMAs, and run-time tests of the mode cost as many instructions as its
+ * arithmetic (measured). Without them the compiler inlines the narrow tiles on
+ * its own; forcing it for every tile measured slower for the wide ones at
+ * V = 4. alpha stays a run-time select, which also keeps the compiler from
+ * contracting the scaling into the first update (bit-identical results for
+ * every alpha). */
+template <TrsmDiag D, int IB, int JB, typename T, int V, typename Int>
+inline void trsm_tile(T alpha, ConstBatchView<T, V, Int> L, BatchView<T, V, Int> B, Int i,
+                      Int j)
 {
     using VT = typename pack<T, V>::type;
     VT inv[IB], x[IB][JB];
     CBK_UNROLL
     for (int r = 0; r < IB; ++r) {
-        inv[r] = diag == TrsmDiag::unit ? VT{} : T(1) / L(i + r, i + r);
+        if constexpr (D != TrsmDiag::unit) inv[r] = T(1) / L(i + r, i + r);
         CBK_UNROLL
         for (int c = 0; c < JB; ++c) {
             x[r][c] = alpha == T(1) ? B(i + r, j + c) : B(i + r, j + c) * alpha;
-            if (diag == TrsmDiag::scale) x[r][c] = x[r][c] * inv[r];
+            if constexpr (D == TrsmDiag::scale) x[r][c] = x[r][c] * inv[r];
         }
     }
-    for (Int k = 0; k < i; ++k) {
-        VT l[IB];
-        CBK_UNROLL
-        for (int r = 0; r < IB; ++r)
-            l[r] = L(i + r, k);
-        CBK_UNROLL
-        for (int c = 0; c < JB; ++c) {
-            const VT b = B(k, j + c);
+    /* The rank-i update x -= L(i:i+IB, 0:i) B(0:i, j:j+JB). When L's rows are
+     * adjacent (row stride +-1: a column-major lower L, or the reversal of an
+     * upper one) it walks one pointer into L and one into B, and the IB packs
+     * of L sit at constant offsets from the first, so each FMA's memory operand
+     * is a plain base + displacement, where a base + index operand is split
+     * into two uops on Intel cores. That pays at one right-hand side, an FMA
+     * per pack of L, once the tile is inlined (measured; the call around an
+     * out-of-line tile hid it). Any other stride keeps the indexed form, which
+     * the compiler versions for L contiguous along k (measured faster there
+     * than a pointer walk). Always inlined: it updates the caller's x in place
+     * (a pack never crosses a call by reference). */
+    const auto adjacent = [&](auto rs) __attribute__((always_inline)) {
+        constexpr int RS = decltype(rs)::value;
+        const VT *lp = &L(i, 0);
+        const VT *bp = &B(0, j);
+        const Int lsj = L.sj, bsi = B.si, bsj = B.sj;
+        for (Int k = 0; k < i; ++k) {
+            VT l[IB];
             CBK_UNROLL
             for (int r = 0; r < IB; ++r)
-                x[r][c] -= l[r] * b;
+                l[r] = lp[r * RS];
+            CBK_UNROLL
+            for (int c = 0; c < JB; ++c) {
+                const VT b = bp[c * bsj];
+                CBK_UNROLL
+                for (int r = 0; r < IB; ++r)
+                    x[r][c] -= l[r] * b;
+            }
+            lp += lsj;
+            bp += bsi;
         }
-    }
+    };
+    if (L.si == 1)
+        adjacent(std::integral_constant<int, 1>{});
+    else if (L.si == -1)
+        adjacent(std::integral_constant<int, -1>{});
+    else
+        for (Int k = 0; k < i; ++k) {
+            VT l[IB];
+            CBK_UNROLL
+            for (int r = 0; r < IB; ++r)
+                l[r] = L(i + r, k);
+            CBK_UNROLL
+            for (int c = 0; c < JB; ++c) {
+                const VT b = B(k, j + c);
+                CBK_UNROLL
+                for (int r = 0; r < IB; ++r)
+                    x[r][c] -= l[r] * b;
+            }
+        }
     CBK_UNROLL
     for (int r = 0; r < IB; ++r) {
         CBK_UNROLL
@@ -98,7 +142,7 @@ inline void trsm_tile(TrsmDiag diag, T alpha, ConstBatchView<T, V, Int> L,
         }
         CBK_UNROLL
         for (int c = 0; c < JB; ++c) {
-            if (diag == TrsmDiag::nonunit) x[r][c] = x[r][c] * inv[r];
+            if constexpr (D == TrsmDiag::nonunit) x[r][c] = x[r][c] * inv[r];
             B(i + r, j + c) = x[r][c];
         }
     }
@@ -111,23 +155,37 @@ constexpr int trsm_ib = simd_registers >= 32 ? 4 : 3;
 constexpr int trsm_jb = simd_registers >= 32 ? 6 : 4;
 
 /* The JB columns j .. j+JB-1 of X, top to bottom in trsm_ib-row tiles, the
- * leftover rows as one shorter tile. */
-template <int JB, typename T, int V, typename Int>
-inline void trsm_cols(TrsmDiag diag, Int m, T alpha, ConstBatchView<T, V, Int> L,
-                      BatchView<T, V, Int> B, Int j)
+ * leftover rows as one shorter tile. (Taller tiles for the narrow blocks, for
+ * more independent FMA chains at one right-hand side, measured slower.) */
+template <TrsmDiag D, int JB, typename T, int V, typename Int>
+inline void trsm_cols(Int m, T alpha, ConstBatchView<T, V, Int> L, BatchView<T, V, Int> B,
+                      Int j)
 {
     Int i = 0;
     for (; i + trsm_ib <= m; i += trsm_ib)
-        trsm_tile<trsm_ib, JB, T, V, Int>(diag, alpha, L, B, i, j);
+        trsm_tile<D, trsm_ib, JB, T, V, Int>(alpha, L, B, i, j);
     for_remainder<trsm_ib>(m - i, [&](auto ib) {
-        trsm_tile<ib.value, JB, T, V, Int>(diag, alpha, L, B, i, j);
+        trsm_tile<D, ib.value, JB, T, V, Int>(alpha, L, B, i, j);
     });
+}
+
+/* The sweep over column blocks for one diagonal mode: trsm_jb-column blocks,
+ * then the leftover columns as one narrower block. */
+template <TrsmDiag D, typename T, int V, typename Int>
+void trsm_lower_sweep(Int m, Int n, T alpha, ConstBatchView<T, V, Int> L,
+                      BatchView<T, V, Int> B)
+{
+    Int j = 0;
+    for (; j + trsm_jb <= n; j += trsm_jb)
+        trsm_cols<D, trsm_jb, T, V, Int>(m, alpha, L, B, j);
+    for_remainder<trsm_jb>(
+        n - j, [&](auto jb) { trsm_cols<D, jb.value, T, V, Int>(m, alpha, L, B, j); });
 }
 
 /* One group, forward substitution L X = alpha B through the views: L lower
  * triangular of order m, B m x n, alpha nonzero. Column blocks outermost, so
- * a block's columns stay cache-resident while L streams past them once:
- * trsm_jb-column blocks, then the leftover columns as one narrower block. */
+ * a block's columns stay cache-resident while L streams past them once; the
+ * diagonal mode is dispatched here, once per group. */
 template <typename T, int V, typename Int>
 void trsm_lower_group(TrsmDiag diag, Int m, Int n, T alpha, ConstBatchView<T, V, Int> L,
                       BatchView<T, V, Int> B)
@@ -136,11 +194,17 @@ void trsm_lower_group(TrsmDiag diag, Int m, Int n, T alpha, ConstBatchView<T, V,
                   "trsm_compact is defined for real float/double");
     assert(L.si && L.sj && B.si && B.sj);
 
-    Int j = 0;
-    for (; j + trsm_jb <= n; j += trsm_jb)
-        trsm_cols<trsm_jb, T, V, Int>(diag, m, alpha, L, B, j);
-    for_remainder<trsm_jb>(
-        n - j, [&](auto jb) { trsm_cols<jb.value, T, V, Int>(diag, m, alpha, L, B, j); });
+    switch (diag) {
+    case TrsmDiag::unit:
+        trsm_lower_sweep<TrsmDiag::unit, T, V, Int>(m, n, alpha, L, B);
+        break;
+    case TrsmDiag::nonunit:
+        trsm_lower_sweep<TrsmDiag::nonunit, T, V, Int>(m, n, alpha, L, B);
+        break;
+    case TrsmDiag::scale:
+        trsm_lower_sweep<TrsmDiag::scale, T, V, Int>(m, n, alpha, L, B);
+        break;
+    }
 }
 
 /* One group, any side / uplo / trans / layout, alpha != 0: every case is the

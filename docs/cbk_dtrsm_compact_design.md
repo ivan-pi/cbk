@@ -195,6 +195,23 @@ of the same kernel (`for_remainder`), so a single right-hand side is a
 Column blocks are the outer loop: a block's columns stay cache-resident while
 `L` streams past them once.
 
+**Narrow blocks.** With one right-hand side a tile does only a few dozen
+FMAs, each on its own pack of `L`, so what surrounds them counts. Every pack
+of `L` is used once: the solve is bound by streaming `L`, and only the
+per-tile overhead is left to cut. Two measures do that. The diagonal mode is
+a template argument of the tile, dispatched once per group: run-time tests
+of it inside the unrolled tile cost as many instructions as the tile's
+arithmetic. And when `L`'s rows are adjacent (row stride `+-1`: a
+column-major lower `L`, or the reversal of an upper one) the update walks one
+pointer through `L`, with the tile's `IB` packs at constant offsets from it,
+so each FMA takes a base + displacement operand instead of a base + index
+one, which Intel cores split into two uops; other strides keep the indexed
+form, which the compiler versions well for `L` contiguous along `k`. Two
+alternatives measured slower: taller tiles for the narrow blocks (more
+independent FMA chains), and forcing every tile inline, which slowed the
+wide tiles at `V = 4`. Under icpx the two measures cost a few percent with
+several right-hand sides (gcc and clang gain throughout).
+
 **The diagonal** of a non-unit `A` is applied as a multiply by its reciprocal:
 one divide per row of a tile, not one per element, issued before the tile's
 accumulation so the divider runs underneath it instead of in the path of the
