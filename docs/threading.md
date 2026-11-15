@@ -17,6 +17,12 @@ OMP_NUM_THREADS=8,2 OMP_MAX_ACTIVE_LEVELS=2 ./my_app   # 8 outer x 2 inner threa
 
 Results are independent of the thread count.
 
+A call the gate keeps serial runs its groups as a plain loop without entering
+the OpenMP runtime at all (an `if` clause would still open a one-thread
+region, which measured as costly as a small group's whole solve), so a small
+batch, or each call from inside a caller's parallel loop, costs what it would
+in a build without OpenMP.
+
 In the source, every all-groups driver is a call to
 `for_each_group<V>(nm, flops_per_group, body)` in `src/cbk_common.hpp`;
 the gate described above lives there, and no kernel threads inside a group.

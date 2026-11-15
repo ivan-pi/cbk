@@ -27,6 +27,12 @@ release may change the API.
   tiles, each tile loaded and stored once; `?sytrsnp_compact` folds its
   diagonal solve into the second triangular sweep. Throughput only; the
   factor differs from the previous release's in rounding.
+- A call that is not worth threading -- a batch below the work gate, or any
+  call from inside the caller's own parallel region -- runs its loop over
+  groups without entering the OpenMP runtime. The serialized parallel region
+  it used to open cost as much as a small group's work on every call, most
+  under clang's and Intel's OpenMP runtimes. Every routine benefits; results
+  are unchanged.
 
 ## [0.2.0] - 2026-09-15
 
