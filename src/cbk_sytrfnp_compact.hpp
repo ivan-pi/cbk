@@ -207,6 +207,152 @@ inline void sytrfnp_trailing_update(Int n, Int jend, BatchView<T, V, Int> A, Int
     }
 }
 
+/* Shared weights. Every tile of the column block jj .. jj+JB-1 takes its
+ * rank-K update by the columns k0 .. k1-1 with the same weights
+ *     W(c, k - k0) = A(jj+c, k) * D(k),     k0 <= k < k1,
+ * which depend on the block, not on the tile's rows. sytrfnp_syrk_tile forms
+ * them per tile -- JB plain multiplies (not FMAs) and a pivot load per k for
+ * every 4-row tile, one in five of its FP operations -- so the block forms them
+ * once instead: the diagonal tile, which loads the operands anyway, records
+ * them in W (a small stack buffer of the caller, sj = JB), and the tiles below
+ * read them back. Same products of the same operands, so the factor is
+ * bit-identical. Both the panel (sytrfnp_factor_cols) and the recursive
+ * split's trailing update (sytrfnp_syrk_cols_shared) do this; the per-tile
+ * sytrfnp_syrk_tile stays as it is for potrf, whose columns need no weights. */
+template <int JB, typename T, int V, typename Int>
+inline void sytrfnp_weighted_diag_tile(BatchView<T, V, Int> A, BatchView<T, V, Int> W,
+                                       Int jj, Int k0, Int k1)
+{
+    using VT = typename pack<T, V>::type;
+    VT acc[JB][JB];
+    CBK_UNROLL
+    for (int r = 0; r < JB; ++r) {
+        CBK_UNROLL
+        for (int c = 0; c <= r; ++c)
+            acc[r][c] = A(jj + r, jj + c);
+    }
+    for (Int k = k0; k < k1; ++k) {
+        VT u[JB], w[JB];
+        const VT d = A(k, k);
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c) {
+            u[c] = A(jj + c, k);
+            w[c] = u[c] * d;
+            W(c, k - k0) = w[c];
+        }
+        CBK_UNROLL
+        for (int r = 0; r < JB; ++r) {
+            CBK_UNROLL
+            for (int c = 0; c <= r; ++c)
+                acc[r][c] -= u[r] * w[c];
+        }
+    }
+    CBK_UNROLL
+    for (int r = 0; r < JB; ++r) {
+        CBK_UNROLL
+        for (int c = 0; c <= r; ++c)
+            A(jj + r, jj + c) = acc[r][c];
+    }
+}
+
+/* A tile below the diagonal block: sytrfnp_syrk_tile<IB, JB, false, true,
+ * Solve> with the weights read from W instead of formed (see above). Solve:
+ * the panel's tiles, finished against their factored diagonal block; the
+ * trailing update's are not. */
+template <int IB, int JB, bool Solve, typename T, int V, typename Int>
+inline void sytrfnp_weighted_tile(BatchView<T, V, Int> A, BatchView<T, V, Int> W, Int i,
+                                  Int jj, Int k0, Int k1)
+{
+    using VT = typename pack<T, V>::type;
+    VT acc[IB][JB];
+    CBK_UNROLL
+    for (int r = 0; r < IB; ++r) {
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c)
+            acc[r][c] = A(i + r, jj + c);
+    }
+    for (Int k = k0; k < k1; ++k) {
+        VT w[JB];
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c)
+            w[c] = W(c, k - k0);
+        CBK_UNROLL
+        for (int r = 0; r < IB; ++r) {
+            const VT av = A(i + r, k);
+            CBK_UNROLL
+            for (int c = 0; c < JB; ++c)
+                acc[r][c] -= av * w[c];
+        }
+    }
+    if constexpr (Solve) {
+        CBK_UNROLL
+        for (int c = 1; c < JB; ++c) {
+            CBK_UNROLL
+            for (int q = 0; q < c; ++q) {
+                const VT l = A(jj + c, jj + q);
+                CBK_UNROLL
+                for (int r = 0; r < IB; ++r)
+                    acc[r][c] -= acc[r][q] * l;
+            }
+        }
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c) {
+            const VT invd = A(jj + c, jj + c);
+            CBK_UNROLL
+            for (int r = 0; r < IB; ++r)
+                acc[r][c] = acc[r][c] * invd;
+        }
+    }
+    CBK_UNROLL
+    for (int r = 0; r < IB; ++r) {
+        CBK_UNROLL
+        for (int c = 0; c < JB; ++c)
+            A(i + r, jj + c) = acc[r][c];
+    }
+}
+
+/* The trailing update's column block jj .. jj+JB-1, rows jj .. n-1, by the
+ * columns k0 .. k1-1 -- sytrfnp_syrk_cols<JB, true> with shared weights. The
+ * update columns are taken in slices of at most sytrfnp_nb, so the buffer
+ * stays as small as the panel's whatever the order (K = k1 - k0 grows with
+ * n); between slices a tile's partial sums go back to A and are reloaded,
+ * which is exact, so every element still takes the same subtractions in the
+ * same order and the result is bit-identical. Costs one extra load and store
+ * of each tile per slice of up to sytrfnp_nb rank-1 steps. */
+template <int JB, typename T, int V, typename Int>
+inline void sytrfnp_syrk_cols_shared(Int n, BatchView<T, V, Int> A, Int jj, Int k0,
+                                     Int k1)
+{
+    using VT = typename pack<T, V>::type;
+    alignas(64) T wbuf[sytrfnp_nb * JB * V];
+    const BatchView<T, V, Int> W{reinterpret_cast<VT *>(wbuf), Int(1), Int(JB)};
+    for (Int ks = k0; ks < k1; ks += sytrfnp_nb) {
+        const Int ke = (k1 - ks > sytrfnp_nb) ? ks + sytrfnp_nb : k1;
+        sytrfnp_weighted_diag_tile<JB, T, V, Int>(A, W, jj, ks, ke);
+        Int i = jj + JB;
+        for (; i + 4 <= n; i += 4)
+            sytrfnp_weighted_tile<4, JB, false, T, V, Int>(A, W, i, jj, ks, ke);
+        for (; i < n; ++i)
+            sytrfnp_weighted_tile<1, JB, false, T, V, Int>(A, W, i, jj, ks, ke);
+    }
+}
+
+/* sytrfnp_trailing_update<true> with shared weights: the same column blocks. */
+template <typename T, int V, typename Int>
+inline void sytrfnp_trailing_update_shared(Int n, Int jend, BatchView<T, V, Int> A,
+                                           Int k0, Int k1)
+{
+    Int jj = k1;
+    for (; jj + 4 <= jend; jj += 4)
+        sytrfnp_syrk_cols_shared<4, T, V, Int>(n, A, jj, k0, k1);
+    switch (jend - jj) {
+    case 3: sytrfnp_syrk_cols_shared<3, T, V, Int>(n, A, jj, k0, k1); break;
+    case 2: sytrfnp_syrk_cols_shared<2, T, V, Int>(n, A, jj, k0, k1); break;
+    case 1: sytrfnp_syrk_cols_shared<1, T, V, Int>(n, A, jj, k0, k1); break;
+    default: break;
+    }
+}
+
 /* Factor the JB columns jj .. jj+JB-1, rows to n, already updated by every
  * column left of k0, left-looking: every tile takes its update by the columns
  * k0 .. jj-1 and its own factorization step in one visit, loaded and stored
@@ -219,7 +365,12 @@ template <int JB, typename T, int V, typename Int>
 inline void sytrfnp_factor_cols(Int n, BatchView<T, V, Int> A, Int jj, Int k0)
 {
     using VT = typename pack<T, V>::type;
-    sytrfnp_syrk_tile<JB, JB, true, true, false, T, V, Int>(A, jj, jj, k0, jj);
+    /* The block's weights for the panel columns k0 .. jj-1 (fewer than
+     * sytrfnp_nb: a panel is at most that wide), shared by its tiles. */
+    assert(jj - k0 < sytrfnp_nb);
+    alignas(64) T wbuf[sytrfnp_nb * JB * V];
+    const BatchView<T, V, Int> W{reinterpret_cast<VT *>(wbuf), Int(1), Int(JB)};
+    sytrfnp_weighted_diag_tile<JB, T, V, Int>(A, W, jj, k0, jj);
 
     VT d[JB], a[JB][JB];
     CBK_UNROLL
@@ -250,9 +401,9 @@ inline void sytrfnp_factor_cols(Int n, BatchView<T, V, Int> A, Int jj, Int k0)
 
     Int i = jj + JB;
     for (; i + 4 <= n; i += 4)
-        sytrfnp_syrk_tile<4, JB, false, true, true, T, V, Int>(A, i, jj, k0, jj);
+        sytrfnp_weighted_tile<4, JB, true, T, V, Int>(A, W, i, jj, k0, jj);
     for_remainder<4>(n - i, [&](auto ib) {
-        sytrfnp_syrk_tile<ib.value, JB, false, true, true, T, V, Int>(A, i, jj, k0, jj);
+        sytrfnp_weighted_tile<ib.value, JB, true, T, V, Int>(A, W, i, jj, k0, jj);
     });
 
     CBK_UNROLL
@@ -290,7 +441,7 @@ void sytrfnp_compact_block(Int j0, Int j1, Int n, BatchView<T, V, Int> A)
     const Int npanels = (j1 - j0 + sytrfnp_nb - 1) / sytrfnp_nb;
     const Int mid = j0 + (npanels / 2) * sytrfnp_nb;
     sytrfnp_compact_block<T, V, Int>(j0, mid, n, A);
-    sytrfnp_trailing_update<true, T, V, Int>(n, j1, A, j0, mid);
+    sytrfnp_trailing_update_shared<T, V, Int>(n, j1, A, j0, mid);
     sytrfnp_compact_block<T, V, Int>(mid, j1, n, A);
 }
 
