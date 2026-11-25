@@ -59,7 +59,8 @@ include/   public headers: cbk.h (portable C API), cbk_compat.h
            (MKL-style API), cbk_mkl_alloc.h (optional RAII mkl_malloc helpers)
 src/       the templated kernels (cbk_*_compact.hpp, one per routine, on the
            shared cbk_common.hpp; posv's and sysvnp's are drivers over
-           the potrf/potrs and sytrfnp/sytrsnp group kernels), the two adapter
+           the potrf/potrs and sytrfnp/sytrsnp group kernels; gepack's is the
+           portable pack/unpack between dense and compact), the two adapter
            sources that implement
            the public headers (cbk.cpp, cbk_compat.cpp), and
            cbk_matrix_view.hpp and cbk_matrix_batch.hpp, the dense MatrixView
@@ -208,9 +209,11 @@ workspace contract, or the benchmarks' threading.
   transpose is a stride swap. Do not hand-write `A[i + (size_t)j * lda]` in
   new tests, benchmarks or examples -- take a view. `MatrixView` asserts its
   bounds, so run the suites once in a `Debug` build when adding indexing code.
-  The tests use both: the pack/unpack helpers in `test_compact_util.hpp` write
-  the interleaved side through `BatchView` (`for_vlen` turns their runtime `V`
-  into its compile-time one) and the dense side through `MatrixBatch`. The
+  The tests use both: the pack/unpack helpers in `test_compact_util.hpp` hand
+  a `MatrixBatch` to the library's own `?gepack_compact` / `?geunpack_compact`
+  (the portable counterparts of MKL's, identity-padded like them), which
+  `test_gepack_compact.cpp` in turn checks against the layout formula of
+  `cbk.h` written out by hand -- the one suite that must not use the helpers. The
   library and its tests are one internal codebase and share these views on
   purpose; what keeps the suites honest is that they compute the *answers*
   independently -- scalar LAPACK references, dense LAPACK/MKL cross-checks.

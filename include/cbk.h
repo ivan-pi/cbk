@@ -19,6 +19,12 @@
  *   dtrsm_compact    / strsm_compact     -- triangular solve  op(A) X = alpha B, etc.
  *   dgels_compact    / sgels_compact     -- least-squares / minimum-norm solve  op(A) X = B
  *
+ * and the conversion to and from that format:
+ *
+ *   dgepack_compact   / sgepack_compact    -- dense matrices -> compact batch
+ *   dgeunpack_compact / sgeunpack_compact  -- compact batch -> dense matrices
+ *   dget_size_compact / sget_size_compact  -- bytes of a compact buffer
+ *
  * Compact layout; group g = idx/V, slot v = idx%V:
  *   A_v(i,j)  = ap [ g*ldap*ncol*V + (j*ldap + i)*V + v ]   (column-major)
  *   tau_v(kk) = taup[ g*k*V         +  kk*V          + v ]
@@ -33,8 +39,9 @@
  * described with the dimensions it was packed with, or every group after the
  * first is read from the wrong place. The batch is padded to a whole number
  * of groups, ceil(nm / V): the buffers must be allocated for it, and the
- * lanes past nm in the last group are computed on like any other (pad them
- * with identity matrices to keep their arithmetic finite).
+ * lanes past nm in the last group are computed on like any other.
+ * ?get_size_compact gives the padded size and ?gepack_compact fills those
+ * lanes with identity matrices, which keeps their arithmetic finite.
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
  * AVX512 d=8/s=16).
@@ -88,12 +95,68 @@
 #endif
 #endif
 
+#include <stddef.h> /* size_t */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* The version of the linked library, encoded as CBK_VERSION is. */
 CBK_API int cbk_get_version(void);
+
+/* The size in bytes of a compact buffer -- the portable mkl_?get_size_compact:
+ * what to allocate for nm matrices packed with leading dimension ld and second
+ * dimension sd, whole groups of V included,
+ *     ld * sd * V * ceil(nm / V) * sizeof(scalar).
+ *   ld       compact leading dimension (the ldap/ldbp/ldcp the routine is given)
+ *   sd       the other extent: the column count for a column-major batch, the
+ *            row count for a row-major one. For a tau buffer, ld = min(m, n)
+ *            and sd = 1.
+ *   V, nm    interleave width; total number of matrices
+ * Returns 0 for an illegal argument (ld < 0, sd < 0, V not 2/4/8/16, nm < 0),
+ * as for an empty batch. Align the buffer to 64 bytes for full speed (see
+ * Alignment above). */
+CBK_API size_t dget_size_compact(int ld, int sd, int V, int nm);
+
+CBK_API size_t sget_size_compact(int ld, int sd, int V, int nm);
+
+/* Pack a batch of conventionally stored matrices into the compact format --
+ * the portable mkl_?gepack_compact, and bit for bit the buffer it produces.
+ *   layout   'C'/'c' column-major or 'R'/'r' row-major (a and ap alike)
+ *   m, n     rows, columns of each matrix
+ *   a        array of nm pointers, a[idx] the idx-th m x n matrix in `layout`
+ *            with leading dimension lda; the matrices need not be contiguous
+ *   lda      leading dimension of each a[idx] (>= m col-major, >= n row-major)
+ *   ap       compact output; ?get_size_compact(ldap, n, V, nm) bytes
+ *            column-major, (ldap, m, V, nm) row-major
+ *   ldap     compact leading dimension (>= m col-major, >= n row-major)
+ *   V, nm    interleave width; total number of matrices
+ * The slots past nm in the last group are filled with the identity (ones on
+ * the diagonal, zeros elsewhere), so every routine here computes on them
+ * harmlessly. The entries between the matrix extent and ldap are not written.
+ * To pack a tau batch (k scalars per matrix) for ?ormqr_compact or
+ * ?orgqr_compact, pack it as k x 1 matrices with ldap = k and then clear the
+ * padded slots' first scalar, or simply let ?geqrf_compact produce it.
+ * Returns 0, or -j for an illegal j-th argument:
+ *   -1 layout   -2 m (<0)   -3 n (<0)   -5 lda   -7 ldap
+ *   -8 V (not 2/4/8/16)   -9 nm (<0)
+ */
+CBK_API int dgepack_compact(char layout, int m, int n, const double *const *a, int lda,
+                            double *ap, int ldap, int V, int nm);
+
+CBK_API int sgepack_compact(char layout, int m, int n, const float *const *a, int lda,
+                            float *ap, int ldap, int V, int nm);
+
+/* Unpack a compact batch into conventionally stored matrices -- the portable
+ * mkl_?geunpack_compact, the inverse of ?gepack_compact. Arguments and error
+ * codes as ?gepack_compact, with a[idx] the outputs and ap the input. The
+ * padded slots of the last group are not read, and the entries of each a[idx]
+ * between the matrix extent and lda are not written. */
+CBK_API int dgeunpack_compact(char layout, int m, int n, double *const *a, int lda,
+                              const double *ap, int ldap, int V, int nm);
+
+CBK_API int sgeunpack_compact(char layout, int m, int n, float *const *a, int lda,
+                              const float *ap, int ldap, int V, int nm);
 
 /* QR factorization: on exit ap holds R (on/above the diagonal) and the
  * Householder vectors (below), taup holds the k = min(m,n) reflector scalars --

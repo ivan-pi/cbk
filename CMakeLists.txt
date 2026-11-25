@@ -135,7 +135,7 @@ if(CBK_BUILD_TESTS)
   # The portable C API's suites: each kernel vs LAPACKE/CBLAS (its unblocked
   # LAPACK counterpart elementwise where that is the same algorithm, residual
   # and invariant gates elsewhere), plus the C API's LAPACK-style validation.
-  foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
+  foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
     target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
     target_include_directories(test_${routine}_compact
@@ -147,7 +147,7 @@ if(CBK_BUILD_TESTS)
     # The MKL-style API's suites (the design docs' section 7): the compat
     # entry points through MKL's own pack/unpack, cross-checked against MKL's
     # compact kernels, and end-to-end solves.
-    foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
+    foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_${routine}_mkl tests/test_${routine}_mkl.cpp)
       target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact LAPACKE::LAPACKE)
       target_include_directories(test_${routine}_mkl

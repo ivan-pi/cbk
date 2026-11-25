@@ -96,6 +96,18 @@ listed in `examples.md`.
   caller-threaded per-group loop. The blocked factorization is `geqrf`'s open
   item.
 
+## gepack / geunpack / get_size
+
+- **Done:** the portable API's conversion to and from the compact format and
+  its buffer size, `mkl_?gepack_compact`'s layout and padding bit for bit
+  (checked against MKL in `test_gepack_mkl`, against the layout formula in
+  `test_gepack_compact`); the suites' own pack/unpack helpers now call them.
+- **Open:** each pack is `V` scalar loads through the matrix pointers. For
+  matrices that are contiguous and equally spaced the gather could be a
+  strided vector load; not measured, and the conversion is memory-bound. No
+  `tau`-aware variant: a `tau` batch packed as `k x 1` matrices gets the
+  identity's one in its padded slots, which the caller clears.
+
 ## Project-wide
 
 - **Done: test against a real BLAS/LAPACK (issue #27).** The suites validate

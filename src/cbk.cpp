@@ -21,8 +21,10 @@
 #include "cbk_sysvnp_compact.hpp"
 #include "cbk_trsm_compact.hpp"
 #include "cbk_gels_compact.hpp"
+#include "cbk_gepack_compact.hpp"
 
 #include <cassert>
+#include <cstddef>
 
 /* The header's version macros are the source of truth for the library's
  * version; project(cbk VERSION ...) in CMakeLists.txt has to say the same
@@ -56,6 +58,64 @@ inline int max1(int x)
 inline bool vlen_ok(int V)
 {
     return V == 2 || V == 4 || V == 8 || V == 16;
+}
+
+/* ?get_size_compact: bytes, or 0 when an argument is illegal (the return is a
+ * size, so there is no -j to give; 0 is also the size of an empty batch). */
+template <typename T> std::size_t get_size(int ld, int sd, int V, int nm)
+{
+    if (ld < 0 || sd < 0 || !vlen_ok(V) || nm < 0) return 0;
+    return cbk::detail::compact_size_bytes<T, int>(ld, sd, V, nm);
+}
+
+/* ?gepack_compact and ?geunpack_compact share (layout, m, n, a, lda, ap, ldap,
+ * V, nm) and its validation: -1 layout, -2 m, -3 n, -5 lda, -7 ldap, -8 V,
+ * -9 nm. Sets the kernel flag. */
+inline int pack_args(char layout, int m, int n, int lda, int ldap, int V, int nm,
+                     bool &row)
+{
+    const bool col = opt(layout, 'C');
+    row = opt(layout, 'R');
+    if (!col && !row) return -1;
+    if (m < 0) return -2;
+    if (n < 0) return -3;
+    if (lda < max1(row ? n : m)) return -5;
+    if (ldap < max1(row ? n : m)) return -7;
+    if (!vlen_ok(V)) return -8;
+    if (nm < 0) return -9;
+    return 0;
+}
+
+template <typename T>
+int gepack(char layout, int m, int n, const T *const *a, int lda, T *ap, int ldap, int V,
+           int nm)
+{
+    bool row;
+    if (int e = pack_args(layout, m, n, lda, ldap, V, nm, row)) return e;
+    if (m == 0 || n == 0 || nm == 0) return 0;
+    assert(a != nullptr && ap != nullptr);
+
+    for_vlen(V, [&](auto v) {
+        cbk::detail::gepack_compact<T, decltype(v)::value>(row, m, n, a, lda, ap, ldap,
+                                                           nm);
+    });
+    return 0;
+}
+
+template <typename T>
+int geunpack(char layout, int m, int n, T *const *a, int lda, const T *ap, int ldap,
+             int V, int nm)
+{
+    bool row;
+    if (int e = pack_args(layout, m, n, lda, ldap, V, nm, row)) return e;
+    if (m == 0 || n == 0 || nm == 0) return 0;
+    assert(a != nullptr && ap != nullptr);
+
+    for_vlen(V, [&](auto v) {
+        cbk::detail::geunpack_compact<T, decltype(v)::value>(row, m, n, a, lda, ap, ldap,
+                                                             nm);
+    });
+    return 0;
 }
 
 template <typename T>
@@ -327,6 +387,20 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
  * parenthesized. */
 // NOLINTBEGIN(bugprone-macro-parentheses)
 #define CBK_DEFINE_COMPACT_ENTRY_POINTS(T, p)                                            \
+    size_t p##get_size_compact(int ld, int sd, int V, int nm)                            \
+    {                                                                                    \
+        return get_size<T>(ld, sd, V, nm);                                               \
+    }                                                                                    \
+    int p##gepack_compact(char layout, int m, int n, const T *const *a, int lda, T *ap,  \
+                          int ldap, int V, int nm)                                       \
+    {                                                                                    \
+        return gepack(layout, m, n, a, lda, ap, ldap, V, nm);                            \
+    }                                                                                    \
+    int p##geunpack_compact(char layout, int m, int n, T *const *a, int lda,             \
+                            const T *ap, int ldap, int V, int nm)                        \
+    {                                                                                    \
+        return geunpack(layout, m, n, a, lda, ap, ldap, V, nm);                          \
+    }                                                                                    \
     int p##geqrf_compact(char layout, int m, int n, T *ap, int ldap, T *taup, int V,     \
                          int nm)                                                         \
     {                                                                                    \

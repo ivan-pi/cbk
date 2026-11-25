@@ -7,6 +7,17 @@ release may change the API.
 
 ## [Unreleased]
 
+### Added
+
+- Portable C API: `?gepack_compact`, `?geunpack_compact` and
+  `?get_size_compact`, the conversion between conventionally stored matrices
+  and the compact format and the size of a compact buffer, so that `cbk.h`
+  can be used without MKL's pack routines. They reproduce
+  `mkl_?gepack_compact`, `mkl_?geunpack_compact` and `mkl_?get_size_compact`
+  bit for bit: the slots past `nm` in the last group are filled with the
+  identity, and the entries between the matrix extent and the leading
+  dimension are left untouched.
+
 ### Changed
 
 - **Breaking:** `?ormqr_compact` and `cbk_?ormqr_compact` take `na`, the
