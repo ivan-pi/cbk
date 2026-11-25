@@ -96,7 +96,7 @@ listed in `examples.md`.
   caller-threaded per-group loop. The blocked factorization is `geqrf`'s open
   item.
 
-## gepack / geunpack / get_size
+## gepack / geunpack / cbk_get_size
 
 - **Done:** the portable API's conversion to and from the compact format and
   its buffer size, `mkl_?gepack_compact`'s layout and padding bit for bit

@@ -37,4 +37,4 @@ SIMD kernel, validation, and the scoped-out extensions:
 | `?sytrfnp_compact` / `?sytrsnp_compact` / `?sysvnp_compact` - unpivoted LDL^T | [cbk_dsytrfnp_compact_design.md](cbk_dsytrfnp_compact_design.md) |
 | `?trsm_compact` - triangular solve | [cbk_dtrsm_compact_design.md](cbk_dtrsm_compact_design.md) |
 | `?gels_compact` - least-squares / minimum-norm solve | [cbk_dgels_compact_design.md](cbk_dgels_compact_design.md) |
-| `?gepack_compact` / `?geunpack_compact` / `?get_size_compact` - to and from the compact format | [cbk_dgepack_compact_design.md](cbk_dgepack_compact_design.md) |
+| `?gepack_compact` / `?geunpack_compact` / `cbk_get_size_compact` - to and from the compact format | [cbk_dgepack_compact_design.md](cbk_dgepack_compact_design.md) |

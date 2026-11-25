@@ -273,7 +273,7 @@ template <class T> struct compact;
 template <> struct compact<T> {                                                            \
     static constexpr const char *name = label;                                             \
     static std::size_t get_size(int ld, int sd, int V, int nm)                             \
-    { return p##get_size_compact(ld, sd, V, nm); }                                         \
+    { return cbk_get_size_compact(ld, sd, V, nm, sizeof(T)); }                             \
     static int gepack(char lay, int m, int n, const T *const *a, int lda, T *ap,           \
                       int ldap, int V, int nm)                                             \
     { return p##gepack_compact(lay, m, n, a, lda, ap, ldap, V, nm); }                      \
@@ -458,7 +458,7 @@ template <class T> void gen_tri(MatrixView<T> A, bool upper)
 // row-major pack goes through a row-major copy of the batch.
 
 // A zeroed compact buffer sized for nm rows x cols matrices at leading
-// dimension ldp -- ?get_size_compact's bytes, in scalars. For a buffer the
+// dimension ldp -- cbk_get_size_compact's bytes, in scalars. For a buffer the
 // kernel fills (tau, say), use it directly; for one packed from a batch, the
 // pack_compact/pack_tau overloads below return it filled.
 //

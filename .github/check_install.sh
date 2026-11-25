@@ -57,7 +57,7 @@ if [ "$shared" = ON ]; then
         echo "SONAME   $soname (want $want, version $version)"; fail=1
     fi
     exported=$(nm -D --defined-only "$libdir/libcbk.so" | awk '{ print $NF }')
-    stray=$(echo "$exported" | grep -v -E '^(cbk_)?[sd][a-z_]+_compact$|^cbk_get_version$' || true)
+    stray=$(echo "$exported" | grep -v -E '^(cbk_)?[sd][a-z]+_compact$|^cbk_get_(version|size_compact)$' || true)
     if [ -z "$stray" ] && [ -n "$exported" ]; then
         echo "ok       exports: $(echo "$exported" | wc -l) entry points, nothing else"
     else

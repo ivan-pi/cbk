@@ -1,7 +1,7 @@
 // test_gepack_compact.cpp
 //
 // Validation of the portable conversion routines (?gepack_compact,
-// ?geunpack_compact, ?get_size_compact) against the layout cbk.h documents,
+// ?geunpack_compact, cbk_get_size_compact) against the layout cbk.h documents,
 // written out here by hand on purpose: every other suite packs and unpacks
 // through these routines, so this one must not.
 //
@@ -9,7 +9,7 @@
 //   A_v(i,j) = ap[ g*ldap*m*V + (i*ldap + j)*V + v ]   (row-major)
 //
 // with g = idx/V and v = idx%V. All checks are structural, hence exact:
-//   1. C API argument validation (info = -j), and ?get_size_compact's value.
+//   1. C API argument validation (info = -j), and cbk_get_size_compact's value.
 //   2. ?gepack_compact: every scalar of the buffer is the matrix element the
 //      formula names; the slots past nm hold the identity; the scalars between
 //      the matrix extent and the leading dimension are untouched.
@@ -162,24 +162,32 @@ static int test_validation()
     // clang-format on
     int fails = report_api_checks(t);
 
-    /* ?get_size_compact: bytes of whole groups; 0 for an illegal argument, an
+    /* cbk_get_size_compact: bytes of whole groups; 0 for an illegal argument, an
      * empty batch or an empty matrix; no int overflow for a large batch */
     struct {
         const char *what;
         std::size_t got, want;
     } const s[] = {
-        {"dsize 5x3 V=4 nm=6", dget_size_compact(5, 3, 4, 6), (size_t)5 * 3 * 4 * 2 * 8},
-        {"ssize 5x3 V=4 nm=6", sget_size_compact(5, 3, 4, 6), (size_t)5 * 3 * 4 * 2 * 4},
-        {"dsize nm=8 (full)", dget_size_compact(5, 3, 8, 8), (size_t)5 * 3 * 8 * 1 * 8},
-        {"dsize nm=9", dget_size_compact(5, 3, 8, 9), (size_t)5 * 3 * 8 * 2 * 8},
-        {"ssize V=16 nm=1", sget_size_compact(2, 2, 16, 1), (size_t)2 * 2 * 16 * 1 * 4},
-        {"dsize nm=0", dget_size_compact(5, 3, 4, 0), 0},
-        {"dsize sd=0", dget_size_compact(5, 0, 4, 6), 0},
-        {"dsize ld<0", dget_size_compact(-1, 3, 4, 6), 0},
-        {"dsize sd<0", dget_size_compact(5, -1, 4, 6), 0},
-        {"dsize bad V", dget_size_compact(5, 3, 3, 6), 0},
-        {"dsize nm<0", dget_size_compact(5, 3, 4, -1), 0},
-        {"dsize beyond 2^31", dget_size_compact(64, 64, 8, 1 << 20),
+        {"dsize 5x3 V=4 nm=6", cbk_get_size_compact(5, 3, 4, 6, sizeof(double)),
+         (size_t)5 * 3 * 4 * 2 * 8},
+        {"ssize 5x3 V=4 nm=6", cbk_get_size_compact(5, 3, 4, 6, sizeof(float)),
+         (size_t)5 * 3 * 4 * 2 * 4},
+        {"dsize nm=8 (full)", cbk_get_size_compact(5, 3, 8, 8, sizeof(double)),
+         (size_t)5 * 3 * 8 * 1 * 8},
+        {"dsize nm=9", cbk_get_size_compact(5, 3, 8, 9, sizeof(double)),
+         (size_t)5 * 3 * 8 * 2 * 8},
+        {"ssize V=16 nm=1", cbk_get_size_compact(2, 2, 16, 1, sizeof(float)),
+         (size_t)2 * 2 * 16 * 1 * 4},
+        {"dsize nm=0", cbk_get_size_compact(5, 3, 4, 0, sizeof(double)), 0},
+        {"dsize sd=0", cbk_get_size_compact(5, 0, 4, 6, sizeof(double)), 0},
+        {"dsize ld<0", cbk_get_size_compact(-1, 3, 4, 6, sizeof(double)), 0},
+        {"dsize sd<0", cbk_get_size_compact(5, -1, 4, 6, sizeof(double)), 0},
+        {"dsize bad V", cbk_get_size_compact(5, 3, 3, 6, sizeof(double)), 0},
+        {"dsize nm<0", cbk_get_size_compact(5, 3, 4, -1, sizeof(double)), 0},
+        {"elem_size 0", cbk_get_size_compact(5, 3, 4, 6, 0), 0},
+        {"elem_size 1 (scalars)", cbk_get_size_compact(5, 3, 4, 6, 1),
+         (size_t)5 * 3 * 4 * 2},
+        {"dsize beyond 2^31", cbk_get_size_compact(64, 64, 8, 1 << 20, sizeof(double)),
          (size_t)64 * 64 * 8 * (1 << 17) * 8},
     };
     for (const auto &c : s) {
