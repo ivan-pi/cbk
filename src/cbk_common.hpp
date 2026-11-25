@@ -11,6 +11,7 @@
  *   make_lower_view       -- the view whose lower triangle is the named (uplo)
  *                            triangle of a symmetric batch.
  *   group_stride          -- scalars per group of V interleaved matrices.
+ *   group_count           -- groups of V that nm matrices occupy.
  *   for_vlen              -- runtime interleave width -> compile-time V.
  *   for_each_group        -- the loop over groups, threaded with OpenMP.
  *   zero_block / zero_compact -- B := 0 for a block of one group / a whole batch.
@@ -274,12 +275,20 @@ template <typename F> bool for_vlen(int V, F &&f)
 #endif
 constexpr double parallel_min_flops = CBK_OMP_MIN_FLOPS;
 
+/* Groups of V that nm matrices occupy, ceil(nm / V), formed without the
+ * nm + V - 1 that overflows Int for a batch within V of its maximum (and would
+ * turn the whole call into a silent no-op on a negative count). */
+template <typename Int> constexpr Int group_count(Int nm, int V) noexcept
+{
+    return nm / V + (nm % V != 0 ? 1 : 0);
+}
+
 template <int V, typename Int, typename Body>
 void for_each_group(
     Int nm, Body &&body,
     [[maybe_unused]] double flops_per_group = std::numeric_limits<double>::infinity())
 {
-    const Int ngroups = (nm + V - 1) / V;
+    const Int ngroups = group_count(nm, V);
     if (ngroups == 1) { /* the common single-group call: no OpenMP runtime at all */
         body(0);
         return;

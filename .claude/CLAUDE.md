@@ -164,7 +164,10 @@ workspace contract, or the benchmarks' threading.
   Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
   Instead give the helper the view and the indices and let it load what it
   needs (`sytrfnp_update_block`, which `potrf`'s panel calls too, does exactly that), or
-  pass the scalar the pack was broadcast from. The tiny lane-wise helpers
+  pass the scalar the pack was broadcast from. The same goes for results:
+  `geqrf_reflector` handed `tau` back through a pack reference until it grew
+  the scaling check and stopped inlining, and then faulted the same way; it
+  now writes `tau[kk]` and the caller reads it from there. The tiny lane-wise helpers
   (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
   because they always inline.
 - **clang splits 512-bit packs in half unless told otherwise.** On x86, clang
@@ -314,5 +317,19 @@ workspace contract, or the benchmarks' threading.
   faster than the rank-1 sweep, so the sweep stays confined to the panel"):
   the direction and at most a rough magnitude, never a table of ratios per
   order.
-- **Scope.** Real precisions (`s`/`d`) only; no column pivoting; no overflow/
-  underflow-safe reflector rescaling (see the design documents).
+- **Group strides are part of the layout.** A compact batch interleaves whole
+  matrices, so where group `g` starts depends on the dimensions every matrix
+  was packed with -- there is no reading "the leading `k` columns of a wider
+  `A`" as LAPACK does. A driver takes the packed extents (`?ormqr`'s `na`, the
+  column count `?geqrf` factored) and forms its strides from those, never from
+  the extent it happens to operate on; count groups with `group_count`, not
+  `(nm + V - 1) / V`, which overflows for a batch within `V` of `INT_MAX`.
+- **Exported symbols.** The library is built with hidden visibility; an entry
+  point is exported by the `CBK_API` in front of its declaration in the public
+  header, and the install check fails on any other dynamic symbol. The soname
+  is `libcbk.so.<major>.<minor>` until 1.0.0 (a minor release may change the
+  ABI), `libcbk.so.<major>` after.
+- **Scope.** Real precisions (`s`/`d`) only; no column pivoting. `geqrf`
+  rescales its reflectors like `dlarfg` (a rare out-of-line path, lane-wise,
+  taken only when a column's sum of squares leaves the safe range); nothing
+  else scales against overflow/underflow (see the design documents).

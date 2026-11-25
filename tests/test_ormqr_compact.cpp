@@ -41,20 +41,29 @@
 using namespace cbk::test;
 
 /* ------------------- one (layout, side, trans) case ------------------ */
-/* A is the nq x k reflector batch, nq = m (side 'L') or n ('R'); C is m x n. */
+/* A is the nq x na batch ?geqrf factored, nq = m (side 'L') or n ('R'), of
+ * which the first k reflectors are applied; C is m x n. na defaults to k (the
+ * reflector columns alone); na > k is the output of a wider factorization
+ * passed as it stands -- a wide A (na > nq) or leading reflectors only -- whose
+ * group strides in ap and taup are na's, not k's: with nm past one group, a
+ * kernel striding by k reads every later group from the wrong place. */
 
 template <class T, int V>
-static int run_case(char layout, char side, char trans, int nm, int m, int n, int k)
+static int run_case(char layout, char side, char trans, int nm, int m, int n, int k,
+                    int na = -1)
 {
     const bool row = (layout == 'R');
     const bool left = (side == 'L');
     const bool tran = (trans == 'T');
     const int nq = left ? m : n; /* the order of Q, and the rows of A */
+    if (na < 0) na = k;
+    const int kt = std::min(nq, na); /* the scalars ?geqrf leaves per matrix */
 
     /* (H, tau) of a random nq x k matrix, a random C, and the two references:
      * LAPACKE_?ormqr's op(Q) C, and the explicit Q of ?orgqr applied by ?gemm
      * (dqrt03) */
-    MatrixBatch<T> H(nm, nq, k), tau(nm, k, 1), C(nm, m, n), Cref(nm, m, n), QC(nm, m, n);
+    MatrixBatch<T> H(nm, nq, na), tau(nm, kt, 1), C(nm, m, n), Cref(nm, m, n),
+        QC(nm, m, n);
     std::vector<T> Qs((size_t)nq * nq);
     const auto Q = mat_view(Qs.data(), nq, nq);
     for (int idx = 0; idx < nm; ++idx) {
@@ -76,12 +85,12 @@ static int run_case(char layout, char side, char trans, int nm, int m, int n, in
     }
 
     /* pack in the requested layout, apply, unpack */
-    const int lda = std::max(1, row ? k : nq), ldc = std::max(1, row ? n : m);
+    const int lda = std::max(1, row ? na : nq), ldc = std::max(1, row ? n : m);
     std::vector<T> ap = pack_compact(H, lda, V, row);
     std::vector<T> tp = pack_tau(tau, V);
     std::vector<T> cp = pack_compact(C, ldc, V, row);
-    int bad = (compact<T>::ormqr(layout, side, trans, m, n, k, ap.data(), lda, tp.data(),
-                                 cp.data(), ldc, V, nm) != 0);
+    int bad = (compact<T>::ormqr(layout, side, trans, m, n, k, na, ap.data(), lda,
+                                 tp.data(), cp.data(), ldc, V, nm) != 0);
     MatrixBatch<T> Cout(nm, m, n);
     unpack_compact(Cout, cp.data(), ldc, V, row);
 
@@ -95,7 +104,7 @@ static int run_case(char layout, char side, char trans, int nm, int m, int n, in
     }
 
     /* check 3: the inverse application recovers C */
-    bad += (compact<T>::ormqr(layout, side, tran ? 'N' : 'T', m, n, k, ap.data(), lda,
+    bad += (compact<T>::ormqr(layout, side, tran ? 'N' : 'T', m, n, k, na, ap.data(), lda,
                               tp.data(), cp.data(), ldc, V, nm) != 0);
     unpack_compact(Cout, cp.data(), ldc, V, row);
     double r_rt = 0;
@@ -104,11 +113,12 @@ static int run_case(char layout, char side, char trans, int nm, int m, int n, in
                                             norm1(C.view(idx))));
 
     const bool ok = passes(r_ref) && passes(r_q) && passes(r_rt) && (bad == 0);
-    std::printf(
-        "T=%-6s V=%-2d nm=%-2d %s side=%c trans=%c m=%-3d n=%-3d k=%-3d | ref %-5.2g "
-        "%s | Q*C %-5.2g %s | QQt=I %-5.2g %s | %s\n",
-        compact<T>::name, V, nm, row ? "row" : "col", side, trans, m, n, k, r_ref,
-        verdict(r_ref), r_q, verdict(r_q), r_rt, verdict(r_rt), ok ? "OK" : "FAIL");
+    std::printf("T=%-6s V=%-2d nm=%-2d %s side=%c trans=%c m=%-3d n=%-3d k=%-3d na=%-3d "
+                "| ref %-5.2g "
+                "%s | Q*C %-5.2g %s | QQt=I %-5.2g %s | %s\n",
+                compact<T>::name, V, nm, row ? "row" : "col", side, trans, m, n, k, na,
+                r_ref, verdict(r_ref), r_q, verdict(r_q), r_rt, verdict(r_rt),
+                ok ? "OK" : "FAIL");
     return !ok;
 }
 
@@ -135,7 +145,7 @@ template <class T, int V> static int run_solve(int nm, int m, int nrhs)
     std::vector<T> ap = pack_compact(Afac, ld, V);
     std::vector<T> tp = pack_tau(tau, V);
     std::vector<T> bp = pack_compact(B, ld, V);
-    const int info = compact<T>::ormqr('C', 'L', 'T', m, nrhs, k, ap.data(), ld,
+    const int info = compact<T>::ormqr('C', 'L', 'T', m, nrhs, k, k, ap.data(), ld,
                                        tp.data(), bp.data(), ld, V, nm);
     unpack_compact(Bout, bp.data(), ld, V);
 
@@ -181,8 +191,8 @@ template <class T, int V> static int run_case_pivoted(int nm, int m, int nrhs)
     std::vector<T> bp = pack_compact(B, m, V);
 
     /* kernel: c := Q^T b */
-    compact<T>::ormqr('C', 'L', 'T', m, nrhs, k, ap.data(), m, tp.data(), bp.data(), m, V,
-                      nm);
+    compact<T>::ormqr('C', 'L', 'T', m, nrhs, k, k, ap.data(), m, tp.data(), bp.data(), m,
+                      V, nm);
     unpack_compact(Bout, bp.data(), m, V);
 
     /* R y = c, then back-permute x(jpvt(j)) = y(j); compare against X (dget04,
@@ -223,7 +233,7 @@ template <class T> static void bench(int V, int nm, int m, int nrhs, int reps)
     timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     for (int r = 0; r < reps; ++r)
-        compact<T>::ormqr('C', 'L', (r & 1) ? 'N' : 'T', m, nrhs, k, ap.data(), m,
+        compact<T>::ormqr('C', 'L', (r & 1) ? 'N' : 'T', m, nrhs, k, k, ap.data(), m,
                           tp.data(), bp.data(), m, V, nm);
     clock_gettime(CLOCK_MONOTONIC, &t1);
     double sec = (t1.tv_sec - t0.tv_sec) + 1e-9 * (t1.tv_nsec - t0.tv_nsec);
@@ -246,10 +256,14 @@ static int test_validation()
     const int m = 8, n = 6, k = 5, V = 4, nm = 4; /* A is nq x k, nq = m or n */
     std::vector<double> ap((size_t)m * m * V, 0), tau((size_t)m * V, 0),
         cp((size_t)m * m * V, 0);
+    auto call_na = [&](char lay, char si, char tr, int m_, int n_, int k_, int na_,
+                       int ldap_, int ldcp_, int V_, int nm_) {
+        return dormqr_compact(lay, si, tr, m_, n_, k_, na_, ap.data(), ldap_, tau.data(),
+                              cp.data(), ldcp_, V_, nm_);
+    };
     auto call = [&](char lay, char si, char tr, int m_, int n_, int k_, int ldap_,
                     int ldcp_, int V_, int nm_) {
-        return dormqr_compact(lay, si, tr, m_, n_, k_, ap.data(), ldap_, tau.data(),
-                              cp.data(), ldcp_, V_, nm_);
+        return call_na(lay, si, tr, m_, n_, k_, k_, ldap_, ldcp_, V_, nm_);
     };
 
     // clang-format off
@@ -264,13 +278,16 @@ static int test_validation()
         {"n<0",            call('C', 'L', 'T', m, -1, k,  m,   m,   V, nm),  -5},
         {"k>m (L)",        call('C', 'L', 'T', m, n, m+1, m,   m,   V, nm),  -6},
         {"k>n (R)",        call('C', 'R', 'T', m, n, n+1, n,   m,   V, nm),  -6},
-        {"ldap<m (L)",     call('C', 'L', 'T', m, n, k,   m-1, m,   V, nm),  -8},
-        {"ldap<n (R)",     call('C', 'R', 'T', m, n, k,   n-1, m,   V, nm),  -8},
-        {"ldap<k (row)",   call('R', 'L', 'T', m, n, k,   k-1, n,   V, nm),  -8},
-        {"ldcp<m (col)",   call('C', 'L', 'T', m, n, k,   m,   m-1, V, nm), -11},
-        {"ldcp<n (row)",   call('R', 'L', 'T', m, n, k,   k,   n-1, V, nm), -11},
-        {"bad V",          call('C', 'L', 'T', m, n, k,   m,   m,   3, nm), -12},
-        {"nm<0",           call('C', 'L', 'T', m, n, k,   m,   m,   V, -1), -13},
+        {"valid na>k",     call_na('C', 'L', 'T', m, n, k, k+1, m, m, V, nm), 0},
+        {"na<k",           call_na('C', 'L', 'T', m, n, k, k-1, m, m, V, nm), -7},
+        {"ldap<m (L)",     call('C', 'L', 'T', m, n, k,   m-1, m,   V, nm),  -9},
+        {"ldap<n (R)",     call('C', 'R', 'T', m, n, k,   n-1, m,   V, nm),  -9},
+        {"ldap<k (row)",   call('R', 'L', 'T', m, n, k,   k-1, n,   V, nm),  -9},
+        {"ldap<na (row)",  call_na('R', 'L', 'T', m, n, k, k+1, k, n, V, nm), -9},
+        {"ldcp<m (col)",   call('C', 'L', 'T', m, n, k,   m,   m-1, V, nm), -12},
+        {"ldcp<n (row)",   call('R', 'L', 'T', m, n, k,   k,   n-1, V, nm), -12},
+        {"bad V",          call('C', 'L', 'T', m, n, k,   m,   m,   3, nm), -13},
+        {"nm<0",           call('C', 'L', 'T', m, n, k,   m,   m,   V, -1), -14},
         {"empty m=0",      call('C', 'L', 'T', 0, n, 0,   1,   1,   V, nm),   0},
         {"empty k=0",      call('C', 'L', 'T', m, n, 0,   m,   m,   V, nm),   0},
         {"empty nm=0",     call('C', 'L', 'T', m, n, k,   m,   m,   V, 0),    0},
@@ -302,6 +319,20 @@ int main(int argc, char **)
                 fails +=
                     run_case<float, 8>(lay, side, tr, 16, 32, 8, side == 'L' ? 32 : 8);
             }
+    /* (H, tau) as ?geqrf leaves them for a batch wider than the k reflectors
+     * applied, over several groups (and a padded one): a wide factorization
+     * (na > nq, k = nq) and the leading reflectors of a tall one (k < na <=
+     * nq), in every layout, side and trans. The group strides are na's. */
+    for (char lay : {'C', 'R'})
+        for (char side : {'L', 'R'})
+            for (char tr : {'N', 'T'}) {
+                const int mm = (side == 'L') ? 5 : 7, nn = (side == 'L') ? 7 : 5;
+                fails += run_case<double, 4>(lay, side, tr, 11, mm, nn, 5, 9); /* wide */
+                fails +=
+                    run_case<double, 8>(lay, side, tr, 20, mm, nn, 2, 4);     /* k < na */
+                fails += run_case<float, 8>(lay, side, tr, 17, mm, nn, 3, 8); /* wide */
+            }
+
     /* the other widths, and 10 groups (the OpenMP path when threads <= 10),
      * on the tuned route */
     fails += run_case<double, 2>('C', 'L', 'T', 4, m, nrhs, m);

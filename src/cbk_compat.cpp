@@ -72,8 +72,8 @@ void geqrf(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, T *ap, MKL_INT ldap, T *taup
 
 template <typename T>
 void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n, MKL_INT k,
-           const T *ap, MKL_INT ldap, const T *taup, T *cp, MKL_INT ldcp, T *work,
-           MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
+           MKL_INT na, const T *ap, MKL_INT ldap, const T *taup, T *cp, MKL_INT ldcp,
+           T *work, MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)
 {
     *info = 0;
     if (workspace_query(work, lwork)) return;
@@ -83,7 +83,7 @@ void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n, MKL_I
     const bool left = (side == 'L' || side == 'l');
     *info = run_format<T>(format, [&](auto v) {
         cbk::detail::ormqr_compact<T, decltype(v)::value, MKL_INT>(
-            left, rowmajor, trans, m, n, k, ap, ldap, taup, cp, ldcp, nm);
+            left, rowmajor, trans, m, n, k, na, ap, ldap, taup, cp, ldcp, nm);
     });
 }
 
@@ -258,11 +258,11 @@ void gels(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs, T *
     }                                                                                    \
     void cbk_##p##ormqr_compact(                                                         \
         MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n, MKL_INT k,       \
-        const T *ap, MKL_INT ldap, const T *taup, T *cp, MKL_INT ldcp, T *work,          \
-        MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)               \
+        MKL_INT na, const T *ap, MKL_INT ldap, const T *taup, T *cp, MKL_INT ldcp,       \
+        T *work, MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm)      \
     {                                                                                    \
-        ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, work, lwork, info, \
-              format, nm);                                                               \
+        ormqr(layout, side, trans, m, n, k, na, ap, ldap, taup, cp, ldcp, work, lwork,   \
+              info, format, nm);                                                         \
     }                                                                                    \
     void cbk_##p##orgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k,      \
                                 T *ap, MKL_INT ldap, const T *taup, T *work,             \

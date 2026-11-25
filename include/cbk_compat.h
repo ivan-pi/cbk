@@ -90,56 +90,77 @@
 
 #include "mkl_types.h"
 
+/* CBK_API marks the entry points: the library is built with hidden symbol
+ * visibility, so a shared libcbk exports exactly the functions declared in
+ * its public headers and none of its internals. */
+#ifndef CBK_API
+#if defined(__GNUC__) || defined(__clang__)
+#define CBK_API __attribute__((visibility("default")))
+#else
+#define CBK_API
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* QR factorization: A -> (R, Householder vectors) in ap, tau in taup. Drop-in
  * for mkl_?geqrf_compact (identical signature). */
-void cbk_dgeqrf_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, double *ap, MKL_INT ldap,
-                        double *taup, double *work, MKL_INT lwork, MKL_INT *info,
-                        MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dgeqrf_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, double *ap,
+                                MKL_INT ldap, double *taup, double *work, MKL_INT lwork,
+                                MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_sgeqrf_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, float *ap, MKL_INT ldap,
-                        float *taup, float *work, MKL_INT lwork, MKL_INT *info,
-                        MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_sgeqrf_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, float *ap,
+                                MKL_INT ldap, float *taup, float *work, MKL_INT lwork,
+                                MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* C := op(Q) C (side 'L') or C op(Q) (side 'R'), op(Q) = Q ('N') or Q^T
  * ('T'/'C'), from the (H, tau) of a compact QR: LAPACK ?ormqr plus layout,
- * format and nm. */
-void cbk_dormqr_compact(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n,
-                        MKL_INT k, const double *ap, MKL_INT ldap, const double *taup,
-                        double *cp, MKL_INT ldcp, double *work, MKL_INT lwork,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+ * na, format and nm. na is the number of columns of the batch in ap as
+ * ?geqrf_compact factored it (na >= k; A is nq x na, nq = m for side 'L', n
+ * for 'R', and taup holds min(nq, na) scalars per matrix): it sets where each
+ * group of V matrices starts in ap and taup, so pass ?geqrf's n, not k, when
+ * they differ (a wide A, or fewer reflectors than were computed). */
+CBK_API void cbk_dormqr_compact(MKL_LAYOUT layout, char side, char trans, MKL_INT m,
+                                MKL_INT n, MKL_INT k, MKL_INT na, const double *ap,
+                                MKL_INT ldap, const double *taup, double *cp,
+                                MKL_INT ldcp, double *work, MKL_INT lwork, MKL_INT *info,
+                                MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_sormqr_compact(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n,
-                        MKL_INT k, const float *ap, MKL_INT ldap, const float *taup,
-                        float *cp, MKL_INT ldcp, float *work, MKL_INT lwork,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_sormqr_compact(MKL_LAYOUT layout, char side, char trans, MKL_INT m,
+                                MKL_INT n, MKL_INT k, MKL_INT na, const float *ap,
+                                MKL_INT ldap, const float *taup, float *cp, MKL_INT ldcp,
+                                float *work, MKL_INT lwork, MKL_INT *info,
+                                MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* Generate the first n columns of Q = H(0) ... H(k-1) (m >= n >= k) from the
  * (H, tau) of a compact QR, in place over the reflectors: LAPACK ?orgqr plus
  * layout, format and nm. ap is packed m x n; on entry its columns 0..k-1 hold
  * the reflectors (columns k..n-1 need not be set), on exit each matrix holds
  * n orthonormal columns -- the factorization, R included, is overwritten. */
-void cbk_dorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, double *ap,
-                        MKL_INT ldap, const double *taup, double *work, MKL_INT lwork,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k,
+                                double *ap, MKL_INT ldap, const double *taup,
+                                double *work, MKL_INT lwork, MKL_INT *info,
+                                MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_sorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, float *ap,
-                        MKL_INT ldap, const float *taup, float *work, MKL_INT lwork,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_sorgqr_compact(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k,
+                                float *ap, MKL_INT ldap, const float *taup, float *work,
+                                MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format,
+                                MKL_INT nm);
 
 /* Cholesky factorization of a batch of symmetric positive-definite n x n
  * matrices: A = L L^T (MKL_LOWER) or A = U^T U (MKL_UPPER). Drop-in for
  * mkl_?potrf_compact (identical signature). On exit the named triangle holds
  * the factor; the other is untouched. No workspace and no SPD test: a non-SPD
  * lane poisons itself with NaN/Inf rather than reporting info = j. */
-void cbk_dpotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, double *ap,
-                        MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dpotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, double *ap,
+                                MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
+                                MKL_INT nm);
 
-void cbk_spotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
-                        MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_spotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
+                                MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
+                                MKL_INT nm);
 
 /* Solve A X = B from the factor of cbk_?potrf_compact (same uplo), in
  * place: L z = B; L^T X = z (MKL_LOWER), or U^T z = B; U X = z (MKL_UPPER).
@@ -147,13 +168,13 @@ void cbk_spotrf_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
  * with ldbp >= n (column-major) or >= nrhs (row-major); the factor is not
  * modified. A factor lane poisoned by non-SPD input yields NaN/Inf in that
  * lane's X, not an error. */
-void cbk_dpotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                        const double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dpotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                                const double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
+                                MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_spotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                        const float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
-                        MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_spotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                                const float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
+                                MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* Symmetric positive-definite solve A X = B in one pass: cbk_?potrf_compact
  * followed by cbk_?potrs_compact, fused per group of V matrices so each
@@ -163,13 +184,13 @@ void cbk_spotrs_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrh
  * is bit-identical to the two separate calls. As in LAPACK ?posv, nrhs = 0
  * still factors ap (the nrhs quick return is ?potrs's); bp is then never
  * referenced. */
-void cbk_dposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                       double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp, MKL_INT *info,
-                       MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                               double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
+                               MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_sposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                       float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp, MKL_INT *info,
-                       MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_sposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
+                               float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
+                               MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* LDL^T factorization without pivoting of a batch of symmetric n x n matrices:
  * A = L D L^T (MKL_LOWER) or A = U^T D U (MKL_UPPER; the transpose dual, as
@@ -179,26 +200,28 @@ void cbk_sposv_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs
  * untouched. No workspace, no ipiv, no singularity test: indefinite matrices
  * factor (no sqrt), but a zero pivot -- a singular leading principal minor --
  * poisons its lane with Inf/NaN rather than reporting info = j. */
-void cbk_dsytrfnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, double *ap,
-                          MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
-                          MKL_INT nm);
+CBK_API void cbk_dsytrfnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, double *ap,
+                                  MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
+                                  MKL_INT nm);
 
-void cbk_ssytrfnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
-                          MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
-                          MKL_INT nm);
+CBK_API void cbk_ssytrfnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, float *ap,
+                                  MKL_INT ldap, MKL_INT *info, MKL_COMPACT_PACK format,
+                                  MKL_INT nm);
 
 /* Solve A X = B from the factor of cbk_?sytrfnp_compact (same uplo), in
  * place: L z = B; D w = z; L^T X = w (MKL_LOWER), or U^T z = B; D w = z;
  * U X = w (MKL_UPPER). LAPACK ?sytrs minus ipiv, plus layout/format/nm. B is
  * n x nrhs with ldbp >= n (column-major) or >= nrhs (row-major); the factor is
  * not modified. A zero D(i) yields Inf/NaN in that lane's X, not an error. */
-void cbk_dsytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                          const double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
-                          MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dsytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,
+                                  MKL_INT nrhs, const double *ap, MKL_INT ldap,
+                                  double *bp, MKL_INT ldbp, MKL_INT *info,
+                                  MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_ssytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                          const float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp,
-                          MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_ssytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,
+                                  MKL_INT nrhs, const float *ap, MKL_INT ldap, float *bp,
+                                  MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
+                                  MKL_INT nm);
 
 /* Symmetric solve A X = B in one pass: cbk_?sytrfnp_compact followed by
  * cbk_?sytrsnp_compact, fused per group of V matrices so each factor is
@@ -208,13 +231,15 @@ void cbk_ssytrsnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT n
  * bit-identical to the two separate calls. As in LAPACK ?sysv, nrhs = 0 still
  * factors ap (the nrhs quick return is ?sytrs's); bp is then never
  * referenced. */
-void cbk_dsysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                         double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp,
-                         MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dsysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,
+                                 MKL_INT nrhs, double *ap, MKL_INT ldap, double *bp,
+                                 MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
+                                 MKL_INT nm);
 
-void cbk_ssysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nrhs,
-                         float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp, MKL_INT *info,
-                         MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_ssysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n,
+                                 MKL_INT nrhs, float *ap, MKL_INT ldap, float *bp,
+                                 MKL_INT ldbp, MKL_INT *info, MKL_COMPACT_PACK format,
+                                 MKL_INT nm);
 
 /* Triangular solve with multiple right-hand sides, in place:
  *     op(A) X = alpha B  (MKL_LEFT)   or   X op(A) = alpha B  (MKL_RIGHT),
@@ -222,15 +247,15 @@ void cbk_ssysvnp_compact(MKL_LAYOUT layout, MKL_UPLO uplo, MKL_INT n, MKL_INT nr
  * factor, op(A) = A (MKL_NOTRANS) or A^T (MKL_TRANS / MKL_CONJTRANS, the same
  * for real types), B (m x n) overwritten by X. Drop-in for mkl_?trsm_compact
  * (identical signature): like the BLAS ?trsm it batches, no workspace, no info. */
-void cbk_dtrsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
-                       MKL_TRANSPOSE transa, MKL_DIAG diag, MKL_INT m, MKL_INT n,
-                       double alpha, const double *ap, MKL_INT ldap, double *bp,
-                       MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dtrsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
+                               MKL_TRANSPOSE transa, MKL_DIAG diag, MKL_INT m, MKL_INT n,
+                               double alpha, const double *ap, MKL_INT ldap, double *bp,
+                               MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_strsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
-                       MKL_TRANSPOSE transa, MKL_DIAG diag, MKL_INT m, MKL_INT n,
-                       float alpha, const float *ap, MKL_INT ldap, float *bp,
-                       MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_strsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
+                               MKL_TRANSPOSE transa, MKL_DIAG diag, MKL_INT m, MKL_INT n,
+                               float alpha, const float *ap, MKL_INT ldap, float *bp,
+                               MKL_INT ldbp, MKL_COMPACT_PACK format, MKL_INT nm);
 
 /* Least-squares (op(A) with more rows than columns) or minimum-norm (more
  * columns than rows) solution of the full-rank systems op(A) X = B, op(A) = A
@@ -241,13 +266,15 @@ void cbk_strsm_compact(MKL_LAYOUT layout, MKL_SIDE side, MKL_UPLO uplo,
  * queries the workspace (see the workspace note above); min(m,n) = 0 sets
  * B := 0. Rank deficiency is not detected (no info > 0): a zero diagonal of R
  * divides through to Inf/NaN in that lane. */
-void cbk_dgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs,
-                       double *ap, MKL_INT ldap, double *bp, MKL_INT ldbp, double *work,
-                       MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_dgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n,
+                               MKL_INT nrhs, double *ap, MKL_INT ldap, double *bp,
+                               MKL_INT ldbp, double *work, MKL_INT lwork, MKL_INT *info,
+                               MKL_COMPACT_PACK format, MKL_INT nm);
 
-void cbk_sgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n, MKL_INT nrhs,
-                       float *ap, MKL_INT ldap, float *bp, MKL_INT ldbp, float *work,
-                       MKL_INT lwork, MKL_INT *info, MKL_COMPACT_PACK format, MKL_INT nm);
+CBK_API void cbk_sgels_compact(MKL_LAYOUT layout, char trans, MKL_INT m, MKL_INT n,
+                               MKL_INT nrhs, float *ap, MKL_INT ldap, float *bp,
+                               MKL_INT ldbp, float *work, MKL_INT lwork, MKL_INT *info,
+                               MKL_COMPACT_PACK format, MKL_INT nm);
 
 #ifdef __cplusplus
 }

@@ -73,9 +73,20 @@ target_compile_definitions(cbk PRIVATE
 if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(cbk PRIVATE OpenMP::OpenMP_CXX)
 endif()
-# libcbk.so.<0.2.0> with soname libcbk.so.<0>, from project(... VERSION) above.
+# libcbk.so.<0.2.0>, from project(... VERSION) above. The soname names the ABI:
+# until 1.0.0 a minor release may change the API (CHANGELOG.md), so it is
+# libcbk.so.<0.2> there -- the same compatibility the CMake package declares
+# (SameMinorVersion, below) -- and libcbk.so.<major> from 1.0.0 on.
+if(PROJECT_VERSION_MAJOR EQUAL 0)
+  set(_cbk_soversion ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+else()
+  set(_cbk_soversion ${PROJECT_VERSION_MAJOR})
+endif()
+# Hidden visibility: the shared library exports the entry points the public
+# headers mark CBK_API and none of the kernels' template instantiations.
 set_target_properties(cbk PROPERTIES
-  VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+  VERSION ${PROJECT_VERSION} SOVERSION ${_cbk_soversion}
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 add_library(cbk::cbk ALIAS cbk)
 
 # ---------------------------------------------------------------------------

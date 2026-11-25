@@ -94,8 +94,8 @@ template <class T, int V> static int run_case(int nm, int m, int n)
         for (int idx = 0; idx < nm; ++idx)
             matmul(A.view(idx), X, B.view(idx)); /* B = A X */
         std::vector<T> bp = pack_compact(B, lda, V);
-        compact<T>::ormqr('C', 'L', 'T', n, nrhs, k, ap.data(), lda, tp.data(), bp.data(),
-                          lda, V, nm);
+        compact<T>::ormqr('C', 'L', 'T', n, nrhs, k, k, ap.data(), lda, tp.data(),
+                          bp.data(), lda, V, nm);
         MatrixBatch<T> Bo(nm, n, nrhs);
         unpack_compact(Bo, bp.data(), lda, V);
         r_solve = 0;
@@ -240,18 +240,18 @@ template <class T, int V> static int run_invariant_set()
     return fails;
 }
 
-// ------------------------ underflow scope (design 6.6) ---------------
+// ------------- a tail negligible against its diagonal (design 6.6) ---
 
-// A column whose sub-diagonal entries are so small that their squares
-// underflow to zero (below the square root of the smallest subnormal, ~1.5e-162
+// A column whose sub-diagonal entries are so small *relative to its diagonal*
+// that their squares underflow even after the column is scaled by its largest
+// entry (a ratio below the square root of the smallest subnormal, ~1.5e-162
 // in FP64 and ~3.7e-23 in FP32) reads as already triangular: tau = 0, the
-// diagonal stays, and the reflector body below it is scaled by 0 (so the
-// storage holds zeros, which ormqr/orgqr ignore under tau = 0 anyway), rather
-// than taking dlarfg's rescaled path. That is the documented scope, and the
-// factorization it returns is still exact to working precision (the dropped
-// tail is below eps * ||A|| by many orders). This case checks that contract
-// directly -- the scalar reference (std::hypot) does not underflow, so it is
-// not the yardstick here -- and that no lane turns NaN.
+// diagonal stays, and the reflector body below it is zeroed. LAPACK's ?larfg
+// returns a reflector there instead (its ?nrm2 does not underflow), so the
+// scalar reference is not the yardstick; the factorization is exact to
+// working precision either way (the dropped tail is below eps * ||A|| by many
+// orders), which this case checks directly, with no lane turning NaN. A
+// column that is small as a whole is another matter: test_scaled.
 template <class T, int V> static int test_underflow()
 {
     const int nm = V, m = 6, n = 4, tiny_col = 0; /* no earlier reflector touches it */
@@ -275,8 +275,8 @@ template <class T, int V> static int test_underflow()
     double r_rec = 0;
     for (int idx = 0; idx < nm; ++idx) {
         /* column 0 is the first reflector's, so nothing reduces it first: its
-         * tail underflows squared, tau = 0, the diagonal is kept, the body
-         * below it is zeroed */
+         * tail underflows squared, scaled or not, tau = 0, the diagonal is
+         * kept, the body below it is zeroed */
         if (tau(idx, tiny_col, 0) != T(0)) ++fails;
         if (Aout(idx, tiny_col, tiny_col) != A(idx, tiny_col, tiny_col)) ++fails;
         for (int i = tiny_col + 1; i < m; ++i)
@@ -297,10 +297,129 @@ template <class T, int V> static int test_underflow()
             r_rec, test_ratio<T>(diff_norm1(Rec, A.view(idx)), m, norm1(A.view(idx))));
     }
     fails += !passes(r_rec);
-    std::printf("T=%-6s V=%-2d underflow column: tau=0, diag kept, body 0, finite %s | "
+    std::printf("T=%-6s V=%-2d negligible tail: tau=0, diag kept, body 0, finite %s | "
                 "rec:%-5.2g %s\n",
                 compact<T>::name, V, fails ? "FAIL" : "OK", r_rec, verdict(r_rec));
     return fails;
+}
+
+// ---------------- columns scaled out of the squares' range -----------
+// A batch whose matrices sit at different magnitudes -- some small enough for
+// a column's sum of squares to underflow, some large enough for it to
+// overflow, some ordinary -- must factor like LAPACK's ?geqr2, whose ?larfg
+// rescales: the unscaled sum reads an underflowed column as already
+// triangular and returns a finite, wrong R (and Inf for the overflowed one).
+// The ratios are dqrt01's, which are scale-invariant. The ordinary lanes
+// share packs with the scaled ones and must not notice: their (H, tau) is
+// compared bit for bit with the same matrices factored in a batch of their
+// own.
+template <class T, int V> static int test_scaled(int m, int n)
+{
+    const bool dbl = std::is_same_v<T, double>;
+    // clang-format off
+    const T scales[] = {T(1), dbl ? T(1e-170) : T(1e-25), dbl ? T(1e160) : T(1e19),
+                        T(1), dbl ? T(1e-300) : T(1e-36), dbl ? T(1e-155) : T(1e-23)};
+    // clang-format on
+    const int nscales = (int)(sizeof scales / sizeof scales[0]);
+    const int nm = 2 * V + 1, k = std::min(m, n);
+
+    MatrixBatch<T> A(nm, m, n), A1(nm, m, n), Aref(nm, m, n), tau_ref(nm, k, 1);
+    for (int idx = 0; idx < nm; ++idx) {
+        gen_boosted(A1.view(idx));
+        const T s = scales[idx % nscales];
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < m; ++i)
+                A(idx, i, j) = A1(idx, i, j) * s;
+        std::copy(A[idx], A[idx] + (size_t)m * n, Aref[idx]);
+        ref_geqr2(Aref.view(idx), tau_ref[idx]);
+    }
+
+    const int lda = std::max(1, m);
+    std::vector<T> ap = pack_compact(A, lda, V), ap1 = pack_compact(A1, lda, V);
+    std::vector<T> tp = compact_buffer<T>(nm, k, 1, k, V), tp1 = tp;
+    int info = compact<T>::geqrf('C', m, n, ap.data(), lda, tp.data(), V, nm);
+    info |= compact<T>::geqrf('C', m, n, ap1.data(), lda, tp1.data(), V, nm);
+
+    MatrixBatch<T> Aout(nm, m, n), tau_out(nm, k, 1), A1out(nm, m, n), tau1(nm, k, 1);
+    unpack_compact(Aout, ap.data(), lda, V);
+    unpack_tau(tau_out, tp.data(), V);
+    unpack_compact(A1out, ap1.data(), lda, V);
+    unpack_tau(tau1, tp1.data(), V);
+
+    // R carries the matrix's scale and the reflector vectors below it are
+    // O(1) whatever the scale, so the two halves of H are gated separately:
+    // R against ||A||, V against 1
+    double r_h = 0, r_v = 0, r_t = 0, r_rec = 0;
+    int differs = 0;
+    std::vector<T> Ds((size_t)m * n), Zs((size_t)m * n, T(0));
+    const auto D = mat_view(Ds.data(), m, n), Z = mat_view(Zs.data(), m, n);
+    for (int idx = 0; idx < nm; ++idx) {
+        const double na = norm1(A.view(idx));
+        for (int upper = 0; upper < 2; ++upper) {
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < m; ++i)
+                    D(i, j) = ((i <= j) == (upper == 1))
+                                  ? Aout(idx, i, j) - Aref(idx, i, j)
+                                  : T(0);
+            if (upper)
+                r_h = std::max(r_h, test_ratio<T>(diff_norm1(D, Z), m, na));
+            else
+                r_v = std::max(r_v, test_ratio<T>(diff_norm1(D, Z), m));
+        }
+        r_t = std::max(r_t, test_ratio<T>(diff_norm1(mat_view(tau_out[idx], k, 1),
+                                                     mat_view(tau_ref[idx], k, 1)),
+                                          m));
+        std::vector<T> Recs((size_t)m * n, T(0));
+        const auto Rec = mat_view(Recs.data(), m, n);
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i <= std::min(j, k - 1); ++i)
+                Rec(i, j) = Aout(idx, i, j);
+        ref_ormqr('N', k, Aout.view(idx), tau_out[idx], Rec);
+        r_rec = std::max(r_rec, test_ratio<T>(diff_norm1(Rec, A.view(idx)), m, na));
+
+        if (scales[idx % nscales] == T(1))
+            differs += !std::equal(Aout[idx], Aout[idx] + (size_t)m * n, A1out[idx]) ||
+                       !std::equal(tau_out[idx], tau_out[idx] + k, tau1[idx]);
+    }
+    const bool ok =
+        passes(r_h) && passes(r_v) && passes(r_t) && passes(r_rec) && !differs && !info;
+    std::printf("T=%-6s V=%-2d nm=%-2d m=%-3d n=%-3d scaled lanes | R:%-5.2g %s "
+                "V:%-5.2g %s tau:%-5.2g %s rec:%-5.2g %s | unscaled lanes bitwise %s | "
+                "%s\n",
+                compact<T>::name, V, nm, m, n, r_h, verdict(r_h), r_v, verdict(r_v), r_t,
+                verdict(r_t), r_rec, verdict(r_rec), differs ? "DIFFER" : "same",
+                ok ? "OK" : "FAIL");
+    return !ok;
+}
+
+// The group count of a batch within V of INT_MAX: nm + V - 1 overflows there,
+// and the negative count it left made the whole call a no-op that returned 0.
+static_assert(
+    cbk::detail::group_count(std::numeric_limits<int>::max(), 8) == 268435456 &&
+        cbk::detail::group_count(std::numeric_limits<int>::max() - 7, 8) == 268435455 &&
+        cbk::detail::group_count(std::numeric_limits<int>::max(), 2) == 1073741824 &&
+        cbk::detail::group_count(0, 4) == 0 && cbk::detail::group_count(1, 4) == 1 &&
+        cbk::detail::group_count(4, 4) == 1 && cbk::detail::group_count(5, 4) == 2,
+    "group_count(nm, V) must be ceil(nm / V) over the whole range of nm");
+
+// The driver itself, on the largest batch: every group visited once, in order
+// (a zero work estimate keeps the loop serial, so the count needs no lock).
+static int test_group_loop()
+{
+    const int nm = std::numeric_limits<int>::max();
+    long long calls = 0, sum = 0;
+    cbk::detail::for_each_group<16>(
+        nm,
+        [&](int g) {
+            ++calls;
+            sum += g;
+        },
+        0.0);
+    const long long ng = 134217728; /* ceil((2^31 - 1) / 16) */
+    const bool ok = (calls == ng) && (sum == ng * (ng - 1) / 2);
+    std::printf("for_each_group<16>(nm = INT_MAX): %lld groups (want %lld) %s\n", calls,
+                ng, ok ? "OK" : "FAIL");
+    return !ok;
 }
 
 // --------------------- C API argument validation --------------------
@@ -362,9 +481,18 @@ int main()
             fails += run_case<double, 4>(5, m, n);
             fails += run_case<float, 8>(9, m, n);
         }
-    // numerical scope: an underflowing column reads as already triangular
+    // a tail negligible against its diagonal reads as already triangular
     fails += test_underflow<double, 4>();
     fails += test_underflow<float, 8>();
+    // matrices scaled until a column's sum of squares leaves the range
+    fails += test_scaled<double, 4>(6, 4);
+    fails += test_scaled<double, 8>(5, 5);
+    fails += test_scaled<double, 2>(3, 7);
+    fails += test_scaled<float, 8>(6, 4);
+    fails += test_scaled<float, 16>(5, 5);
+    fails += test_scaled<float, 4>(3, 7);
+    // a batch within V of INT_MAX
+    fails += test_group_loop();
 
     // the dense-LAPACK contract (design 7.1): residual and orthogonality of
     // the materialized Q, over conditioning and structure, in both precisions

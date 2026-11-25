@@ -23,10 +23,18 @@
  *   A_v(i,j)  = ap [ g*ldap*ncol*V + (j*ldap + i)*V + v ]   (column-major)
  *   tau_v(kk) = taup[ g*k*V         +  kk*V          + v ]
  *   B_v(i,j)  = bp [ g*ldbp*nrhs*V  + (j*ldbp + i)*V + v ]
- * where ncol is n for ?geqrf (the full matrix), k for ?ormqr (A is the
- * (ldap, k) reflector batch, exactly as LAPACK ?ormqr's A(LDA,K)), and n for
+ * where ncol is n for ?geqrf (the full matrix), na for ?ormqr (the columns of
+ * the batch as ?geqrf factored it, an argument: see ?ormqr_compact), and n for
  * ?orgqr (the m x n Q it generates in place). Row-major ?geqrf swaps the
  * in-matrix index roles (i -> i*ldap + j).
+ *
+ * The group stride is part of every buffer's layout: unlike a single LAPACK
+ * matrix, of which a routine may read a leading part, a compact batch must be
+ * described with the dimensions it was packed with, or every group after the
+ * first is read from the wrong place. The batch is padded to a whole number
+ * of groups, ceil(nm / V): the buffers must be allocated for it, and the
+ * lanes past nm in the last group are computed on like any other (pad them
+ * with identity matrices to keep their arithmetic finite).
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
  * AVX512 d=8/s=16).
@@ -69,12 +77,23 @@
     (CBK_VERSION_MAJOR * 10000 + CBK_VERSION_MINOR * 100 + CBK_VERSION_PATCH)
 /* NOLINTEND(modernize-macro-to-enum) */
 
+/* CBK_API marks the entry points: the library is built with hidden symbol
+ * visibility, so a shared libcbk exports exactly the functions declared in
+ * its public headers and none of its internals. */
+#ifndef CBK_API
+#if defined(__GNUC__) || defined(__clang__)
+#define CBK_API __attribute__((visibility("default")))
+#else
+#define CBK_API
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* The version of the linked library, encoded as CBK_VERSION is. */
-int cbk_get_version(void);
+CBK_API int cbk_get_version(void);
 
 /* QR factorization: on exit ap holds R (on/above the diagonal) and the
  * Householder vectors (below), taup holds the k = min(m,n) reflector scalars --
@@ -85,42 +104,53 @@ int cbk_get_version(void);
  *   ldap     compact leading dimension (>= m col-major, >= n row-major)
  *   taup     compact tau output (k = min(m,n) per matrix, ld = k)
  *   V, nm    interleave width; total number of matrices (padded last group)
+ * The reflectors are generated as LAPACK's ?larfg does, safe against overflow
+ * and underflow of a column's sum of squares: a batch scaled anywhere in the
+ * floating-point range factors to the correspondingly scaled R.
  * Returns 0, or -j (LAPACK sign convention) for an illegal j-th argument:
  *   -1 layout   -2 m (<0)   -3 n (<0)   -5 ldap   -7 V (not 2/4/8/16)   -8 nm (<0)
  */
-int dgeqrf_compact(char layout, int m, int n, double *ap, int ldap, double *taup, int V,
-                   int nm);
+CBK_API int dgeqrf_compact(char layout, int m, int n, double *ap, int ldap, double *taup,
+                           int V, int nm);
 
-int sgeqrf_compact(char layout, int m, int n, float *ap, int ldap, float *taup, int V,
-                   int nm);
+CBK_API int sgeqrf_compact(char layout, int m, int n, float *ap, int ldap, float *taup,
+                           int V, int nm);
 
 /* Apply Q (or Q^T) of a compact QR to a compact matrix, from either side:
  * C := op(Q) C (side='L') or C := C op(Q) (side='R'), op(Q) = Q ('N') or Q^T
  * ('T') -- LAPACK ?ormqr, one matrix per compact lane, in either layout.
- * Q = H(0) H(1) ... H(k-1) is the product of the k reflectors ?geqrf_compact
- * left in ap and taup; it is nq x nq with nq = m (side='L') or n (side='R').
+ * Q = H(0) H(1) ... H(k-1) is the product of the first k reflectors
+ * ?geqrf_compact left in ap and taup; it is nq x nq with nq = m (side='L') or
+ * n (side='R'). (ap, taup) is the output of ?geqrf_compact on an nq x na
+ * batch, passed as it stands.
  *   layout   'C' column-major or 'R' row-major (A and C alike)
  *   side     'L' (C := op(Q) C) or 'R' (C := C op(Q))
  *   trans    'T' (Q^T, the solve case) or 'N' (Q)
  *   m, n     rows and columns of C
- *   k        number of reflectors (0 <= k <= nq)
- *   ap       compact reflectors from ?geqrf_compact, (nq x k) per matrix
- *   ldap     compact leading dimension of A (>= nq column-major, >= k row-major)
- *   taup     compact tau (k per matrix, ld = k)
+ *   k        number of reflectors to apply (0 <= k <= nq)
+ *   na       columns of the batch in ap, i.e. the n ?geqrf_compact was called
+ *            with (na >= k). It is not in LAPACK's ?ormqr, which reads the
+ *            leading k columns of any A; here it sets where each group of V
+ *            matrices starts in ap and in taup. na = k when exactly the k
+ *            reflector columns were packed.
+ *   ap       compact reflectors from ?geqrf_compact, (nq x na) per matrix
+ *   ldap     compact leading dimension of A (>= nq column-major, >= na row-major)
+ *   taup     compact tau, min(nq, na) per matrix (ld = min(nq, na)), as
+ *            ?geqrf_compact wrote it
  *   cp       compact C (m x n), overwritten with op(Q) C or C op(Q)
  *   ldcp     compact leading dimension of C (>= m column-major, >= n row-major)
  *   V, nm    interleave width; total number of matrices (padded last group)
  * Returns 0, or -j for an illegal j-th argument:
  *   -1 layout   -2 side   -3 trans   -4 m (<0)   -5 n (<0)   -6 k (<0 or >nq)
- *   -8 ldap    -11 ldcp   -12 V (not 2/4/8/16)   -13 nm (<0)
+ *   -7 na (<k)   -9 ldap   -12 ldcp   -13 V (not 2/4/8/16)   -14 nm (<0)
  */
-int dormqr_compact(char layout, char side, char trans, int m, int n, int k,
-                   const double *ap, int ldap, const double *taup, double *cp, int ldcp,
-                   int V, int nm);
+CBK_API int dormqr_compact(char layout, char side, char trans, int m, int n, int k,
+                           int na, const double *ap, int ldap, const double *taup,
+                           double *cp, int ldcp, int V, int nm);
 
-int sormqr_compact(char layout, char side, char trans, int m, int n, int k,
-                   const float *ap, int ldap, const float *taup, float *cp, int ldcp,
-                   int V, int nm);
+CBK_API int sormqr_compact(char layout, char side, char trans, int m, int n, int k,
+                           int na, const float *ap, int ldap, const float *taup,
+                           float *cp, int ldcp, int V, int nm);
 
 /* Generate the explicit orthogonal factor of a compact QR: the first n columns
  * of Q = H(0) H(1) ... H(k-1) (m >= n >= k), formed in place over the
@@ -137,16 +167,19 @@ int sormqr_compact(char layout, char side, char trans, int m, int n, int k,
  *            overwritten with Q
  *   ldap     compact leading dimension (>= m col-major, >= n row-major)
  *   taup     compact tau (k per matrix, ld = k), as ?geqrf_compact wrote it
+ *            for an m x k batch (the scalars of a wider factorization, of
+ *            which only the first k reflectors are wanted, have a different
+ *            group stride and must be repacked)
  *   V, nm    interleave width; total number of matrices (padded last group)
  * Returns 0, or -j for an illegal j-th argument:
  *   -1 layout   -2 m (<0)   -3 n (<0 or >m)   -4 k (<0 or >n)   -6 ldap
  *   -8 V (not 2/4/8/16)   -9 nm (<0)
  */
-int dorgqr_compact(char layout, int m, int n, int k, double *ap, int ldap,
-                   const double *taup, int V, int nm);
+CBK_API int dorgqr_compact(char layout, int m, int n, int k, double *ap, int ldap,
+                           const double *taup, int V, int nm);
 
-int sorgqr_compact(char layout, int m, int n, int k, float *ap, int ldap,
-                   const float *taup, int V, int nm);
+CBK_API int sorgqr_compact(char layout, int m, int n, int k, float *ap, int ldap,
+                           const float *taup, int V, int nm);
 
 /* Cholesky factorization of a batch of symmetric positive-definite n x n
  * matrices A: A = L L^T (uplo 'L') or A = U^T U (uplo 'U'), one matrix per
@@ -164,9 +197,11 @@ int sorgqr_compact(char layout, int m, int n, int k, float *ap, int ldap,
  *   -1 layout   -2 uplo   -3 n (<0)   -5 ldap (< max(1,n))
  *   -6 V (not 2/4/8/16)   -7 nm (<0)
  */
-int dpotrf_compact(char layout, char uplo, int n, double *ap, int ldap, int V, int nm);
+CBK_API int dpotrf_compact(char layout, char uplo, int n, double *ap, int ldap, int V,
+                           int nm);
 
-int spotrf_compact(char layout, char uplo, int n, float *ap, int ldap, int V, int nm);
+CBK_API int spotrf_compact(char layout, char uplo, int n, float *ap, int ldap, int V,
+                           int nm);
 
 /* Solve A X = B from the Cholesky factor produced by ?potrf_compact -- the
  * step that closes the batched SPD solve. Runs the two in-place substitution
@@ -187,11 +222,11 @@ int spotrf_compact(char layout, char uplo, int n, float *ap, int ldap, int V, in
  *   -1 layout   -2 uplo   -3 n (<0)   -4 nrhs (<0)   -6 ldap
  *   -8 ldbp     -9 V (not 2/4/8/16)   -10 nm (<0)
  */
-int dpotrs_compact(char layout, char uplo, int n, int nrhs, const double *ap, int ldap,
-                   double *bp, int ldbp, int V, int nm);
+CBK_API int dpotrs_compact(char layout, char uplo, int n, int nrhs, const double *ap,
+                           int ldap, double *bp, int ldbp, int V, int nm);
 
-int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap, int ldap,
-                   float *bp, int ldbp, int V, int nm);
+CBK_API int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap,
+                           int ldap, float *bp, int ldbp, int V, int nm);
 
 /* Symmetric positive-definite solve A X = B in one pass: ?potrf_compact
  * followed by ?potrs_compact, fused per group of V matrices so each factor is
@@ -204,11 +239,11 @@ int spotrs_compact(char layout, char uplo, int n, int nrhs, const float *ap, int
  * unconditionally; the nrhs quick return is ?potrs's): bp is then never
  * referenced, though Fortran semantics still want it present (a dummy
  * suffices). */
-int dposv_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
-                  double *bp, int ldbp, int V, int nm);
+CBK_API int dposv_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
+                          double *bp, int ldbp, int V, int nm);
 
-int sposv_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap, float *bp,
-                  int ldbp, int V, int nm);
+CBK_API int sposv_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap,
+                          float *bp, int ldbp, int V, int nm);
 
 /* LDL^T factorization, without pivoting, of a batch of symmetric n x n
  * matrices A: A = L D L^T (uplo 'L') or A = U^T D U (uplo 'U'), one matrix per
@@ -232,9 +267,11 @@ int sposv_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap, 
  *   -1 layout   -2 uplo   -3 n (<0)   -5 ldap (< max(1,n))
  *   -6 V (not 2/4/8/16)   -7 nm (<0)
  */
-int dsytrfnp_compact(char layout, char uplo, int n, double *ap, int ldap, int V, int nm);
+CBK_API int dsytrfnp_compact(char layout, char uplo, int n, double *ap, int ldap, int V,
+                             int nm);
 
-int ssytrfnp_compact(char layout, char uplo, int n, float *ap, int ldap, int V, int nm);
+CBK_API int ssytrfnp_compact(char layout, char uplo, int n, float *ap, int ldap, int V,
+                             int nm);
 
 /* Solve A X = B from the unpivoted LDL^T factor produced by ?sytrfnp_compact --
  * the step that closes the batched symmetric solve. Runs the three in-place
@@ -254,11 +291,11 @@ int ssytrfnp_compact(char layout, char uplo, int n, float *ap, int ldap, int V, 
  *   -1 layout   -2 uplo   -3 n (<0)   -4 nrhs (<0)   -6 ldap
  *   -8 ldbp     -9 V (not 2/4/8/16)   -10 nm (<0)
  */
-int dsytrsnp_compact(char layout, char uplo, int n, int nrhs, const double *ap, int ldap,
-                     double *bp, int ldbp, int V, int nm);
+CBK_API int dsytrsnp_compact(char layout, char uplo, int n, int nrhs, const double *ap,
+                             int ldap, double *bp, int ldbp, int V, int nm);
 
-int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap, int ldap,
-                     float *bp, int ldbp, int V, int nm);
+CBK_API int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap,
+                             int ldap, float *bp, int ldbp, int V, int nm);
 
 /* Symmetric solve A X = B in one pass, without pivoting: ?sytrfnp_compact
  * followed by ?sytrsnp_compact, fused per group of V matrices so each factor is
@@ -271,11 +308,11 @@ int ssytrsnp_compact(char layout, char uplo, int n, int nrhs, const float *ap, i
  * factors ap (LAPACK ?sysv calls ?sytrf unconditionally; the nrhs quick
  * return is ?sytrs's): bp is then never referenced, though Fortran semantics
  * still want it present (a dummy suffices). */
-int dsysvnp_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
-                    double *bp, int ldbp, int V, int nm);
+CBK_API int dsysvnp_compact(char layout, char uplo, int n, int nrhs, double *ap, int ldap,
+                            double *bp, int ldbp, int V, int nm);
 
-int ssysvnp_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap,
-                    float *bp, int ldbp, int V, int nm);
+CBK_API int ssysvnp_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap,
+                            float *bp, int ldbp, int V, int nm);
 
 /* Triangular solve with multiple right-hand sides -- the portable form of
  * mkl_?trsm_compact, the step that closes the batched QR solve. Solves in place
@@ -299,13 +336,13 @@ int ssysvnp_compact(char layout, char uplo, int n, int nrhs, float *ap, int ldap
  *   -1 layout  -2 side   -3 uplo   -4 transa   -5 diag   -6 m (<0)   -7 n (<0)
  *   -10 ldap   -12 ldbp  -13 V (not 2/4/8/16)  -14 nm (<0)
  * (alpha, ap and bp are never inspected, matching LAPACK/BLAS.) */
-int dtrsm_compact(char layout, char side, char uplo, char transa, char diag, int m, int n,
-                  double alpha, const double *ap, int ldap, double *bp, int ldbp, int V,
-                  int nm);
+CBK_API int dtrsm_compact(char layout, char side, char uplo, char transa, char diag,
+                          int m, int n, double alpha, const double *ap, int ldap,
+                          double *bp, int ldbp, int V, int nm);
 
-int strsm_compact(char layout, char side, char uplo, char transa, char diag, int m, int n,
-                  float alpha, const float *ap, int ldap, float *bp, int ldbp, int V,
-                  int nm);
+CBK_API int strsm_compact(char layout, char side, char uplo, char transa, char diag,
+                          int m, int n, float alpha, const float *ap, int ldap, float *bp,
+                          int ldbp, int V, int nm);
 
 /* Least-squares / minimum-norm solve of a batch of full-rank systems
  *   op(A) X = B,   op(A) = A ('N') or A^T ('T'/'C'),   A is m x n,
@@ -344,11 +381,11 @@ int strsm_compact(char layout, char side, char uplo, char transa, char diag, int
  *   -1 layout   -2 trans   -3 m (<0)   -4 n (<0)   -5 nrhs (<0)   -7 ldap
  *   -9 ldbp     -11 V (not 2/4/8/16)   -12 nm (<0)
  */
-int dgels_compact(char layout, char trans, int m, int n, int nrhs, double *ap, int ldap,
-                  double *bp, int ldbp, double *taup, int V, int nm);
+CBK_API int dgels_compact(char layout, char trans, int m, int n, int nrhs, double *ap,
+                          int ldap, double *bp, int ldbp, double *taup, int V, int nm);
 
-int sgels_compact(char layout, char trans, int m, int n, int nrhs, float *ap, int ldap,
-                  float *bp, int ldbp, float *taup, int V, int nm);
+CBK_API int sgels_compact(char layout, char trans, int m, int n, int nrhs, float *ap,
+                          int ldap, float *bp, int ldbp, float *taup, int V, int nm);
 
 #ifdef __cplusplus
 }

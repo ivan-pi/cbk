@@ -6,8 +6,10 @@ C API (LAPACK-style `info = -j`) and the MKL-style `cbk_?*_compact` (no
 argument checking, scalar `info`) -- in FP64 and FP32, over one `BatchView`
 kernel that covers every layout (and side, for `ormqr`/`trsm`).
 
-Complex precisions, pivoting, and overflow/underflow-safe scaling are out of
-scope throughout; each design document's section 6 says what else its routine
+Complex precisions and pivoting are out of scope throughout, and so is
+overflow/underflow-safe scaling everywhere but the QR reflectors (`geqrf`
+rescales them as `dlarfg` does; the Cholesky, LDL^T and triangular kernels do
+not scale); each design document's section 6 says what else its routine
 leaves out, and its section 7 what the test suites gate. The benchmarks are
 listed in `examples.md`.
 

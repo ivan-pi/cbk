@@ -99,9 +99,9 @@ int suite1(MKL_LAYOUT layout, char side, char trans, int nm, int m, int n, int k
      * scalar (MKL Compact convention), not a per-matrix array. */
     MKL_INT info = 99;
     T wq;
-    compat<T>::ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, &wq, -1,
+    compat<T>::ormqr(layout, side, trans, m, n, k, k, ap, ldap, taup, cp, ldcp, &wq, -1,
                      &info, fmt, nm);
-    compat<T>::ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, &wq,
+    compat<T>::ormqr(layout, side, trans, m, n, k, k, ap, ldap, taup, cp, ldcp, &wq,
                      (MKL_INT)wq, &info, fmt, nm);
 
     /* unpack and compare against the dense reference */
@@ -174,9 +174,9 @@ template <class T> int suite2(int nm, int n, int nrhs)
     mkl<T>::geqrf(MKL_COL_MAJOR, m, n, ap, m, taup, work.data(), lwork, &info, fmt, nm);
 
     /* 2. routine under test: cp <- Q^T B */
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq, -1,
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, k, ap, m, taup, cp, m, &wq, -1,
                      &info, fmt, nm);
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq,
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, k, ap, m, taup, cp, m, &wq,
                      (MKL_INT)wq, &info, fmt, nm);
 
     /* 3. compact upper-triangular solve: cp <- R^{-1} (Q^T B) = Xhat */

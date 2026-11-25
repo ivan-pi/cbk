@@ -189,8 +189,10 @@ diagonal of `R`) does not vectorize across a pack and the compact `info` is a
 scalar, so it is not performed: a zero diagonal divides through to `Inf`/`NaN`
 in that lane, as in `?trsm`. A nearly rank-deficient `op(A)` gives the same
 inaccurate solution it would from `?gels` (no pivoting; use a rank-revealing
-method). `?gels`'s overflow/underflow rescaling (`?lascl`) and `?larfg`'s are
-omitted, as throughout the toolkit; complex precisions are out of scope.
+method). `?gels`'s overflow/underflow rescaling of the whole problem
+(`?lascl`) is omitted; the reflectors themselves are generated with `?larfg`'s
+rescaling (the `?geqrf` design document, 6.6). Complex precisions are out of
+scope.
 
 ## 7. Testing
 

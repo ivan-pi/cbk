@@ -10,7 +10,7 @@ This extension provides a routine to multiply a set of general matrices $C$ by t
 ```c
 void cbk_dormqr_compact (
     MKL_LAYOUT layout, char side, char trans,
-    MKL_INT m, MKL_INT n, MKL_INT k,
+    MKL_INT m, MKL_INT n, MKL_INT k, MKL_INT na,
     const double * ap, MKL_INT ldap,
     const double * taup,
     double * cp, MKL_INT ldcp,
@@ -40,9 +40,10 @@ Unlike ArmPL's `armpl_dormqr_interleave_batch` which explicitly requires batch, 
 * **`k`** (`MKL_INT`): The number of elementary reflectors whose product defines the matrix $Q$.
     * If `side = 'L'`, $m \ge k \ge 0$.
     * If `side = 'R'`, $n \ge k \ge 0$.
-* **`ap`** (`const double *`): Buffer containing the elementary reflectors from the QR factorization, stored in MKL Compact format.
-* **`ldap`** (`MKL_INT`): The leading dimension of each matrix within the compact buffer `ap`. As in LAPACK `?ormqr`, $A$ is dimensioned $(\text{ldap}, k)$ and must be packed with exactly $k$ columns, so the per-matrix group stride is $\text{ldap}\cdot k$. For square/tall factors $k$ equals the factored column count (the `mkl_?geqrf_compact` output is consumed directly); a wide factor must pack only its $k$ reflector columns.
-* **`taup`** (`const double *`): Buffer containing the scalar factors of the elementary reflectors, stored in MKL Compact format.
+* **`na`** (`MKL_INT`): The number of columns of each matrix in `ap` as it was factored, i.e. the `n` that `?geqrf_compact` was called with ($na \ge k$). LAPACK's `?ormqr` has no such argument: it reads the leading $k$ columns of any $A(\text{lda}, \ge k)$. A compact batch interleaves whole matrices, so the place where each group of matrices starts in `ap` and `taup` depends on how many columns (and scalars) every matrix was packed with, not on how many reflectors are applied. With `na`, the output of `?geqrf_compact` is passed as it stands: a wide factorization ($na > n_q$, with $n_q = m$ for `side = 'L'` and $n$ for `'R'`), or a tall one of which only the leading $k < na$ reflectors are wanted. `na = k` when exactly the $k$ reflector columns were packed.
+* **`ap`** (`const double *`): Buffer containing the elementary reflectors from the QR factorization, stored in MKL Compact format: $n_q \times na$ per matrix.
+* **`ldap`** (`MKL_INT`): The leading dimension of each matrix within the compact buffer `ap` ($\ge n_q$ column-major, $\ge na$ row-major). The per-matrix group stride is $\text{ldap}\cdot na$ column-major and $\text{ldap}\cdot n_q$ row-major.
+* **`taup`** (`const double *`): Buffer containing the scalar factors of the elementary reflectors, stored in MKL Compact format: $\min(n_q, na)$ per matrix, as `?geqrf_compact` wrote them.
 * **`cp`** (`double *`): Buffer containing the batch of matrices $C$ to be multiplied, stored in MKL Compact format.
 * **`ldcp`** (`MKL_INT`): The leading dimension of each matrix within the compact buffer `cp`.
 * **`lwork`** (`MKL_INT`): The size of the workspace array. If `lwork = -1`, a workspace query is assumed; the routine only calculates the optimal size of the workspace array and returns it in the first element of `work`.

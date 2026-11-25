@@ -35,11 +35,14 @@
  *   the kernel sees that purely as C^T's BatchView, so the arithmetic is shared.
  *
  * Compact storage (matches mkl_?gepack_compact); group g = idx/V, slot v = idx%V:
- *     A_v(i,j)  = ap [ g*ldap*k*V   + (j*ldap + i)*V + v ]   (column-major)
- *     tau_v(kk) = taup[ g*k*V       +  kk*V          + v ]
+ *     A_v(i,j)  = ap [ g*ldap*na*V  + (j*ldap + i)*V + v ]   (column-major)
+ *     tau_v(kk) = taup[ g*kt*V      +  kk*V          + v ]   kt = min(nq, na)
  *     C_v(i,j)  = cp [ g*ldcp*n*V   + (j*ldcp + i)*V + v ]
- * A is the (ldap, k) reflector batch, exactly as LAPACK ?ormqr declares it, so
- * its per-matrix column extent -- hence the group stride -- is k.
+ * A is the nq x na batch ?geqrf factored (nq = m for side='L', n for 'R') and
+ * taup its min(nq, na) scalars per matrix; the first k <= min(nq, na)
+ * reflectors are applied. na and not k sets the group strides, so the output
+ * of ?geqrf is passed as it stands -- a wide factorization (na > nq), or one
+ * of which only the leading reflectors are wanted (k < na), included.
  *
  * Assisted-by: Claude:claude-fable-5 Claude:claude-opus-4-8
  */
@@ -123,24 +126,29 @@ void ormqr_compact_group(Direction dir, Int len, Int npanel, Int k,
     }
 }
 
-/* All groups: C (m x n) := op(Q) C or C op(Q), either layout. A is the
- * (len x k) reflector batch, len = m (side='L') or n (side='R'), declared
- * (ldap, k) as in LAPACK ?ormqr. trans is 'N', or 'T'/'C' for the transpose.
+/* All groups: C (m x n) := op(Q) C or C op(Q), either layout. A is the batch
+ * ?geqrf left, len x na per matrix with len = m (side='L') or n (side='R'), of
+ * which the first k columns are the reflectors applied; taup is that
+ * factorization's, min(len, na) scalars per matrix. The group strides come
+ * from na, not k: the compact format interleaves whole matrices, so where
+ * LAPACK's ?ormqr reads the leading k columns of any A(LDA, >= k), here the
+ * next group starts na columns (and min(len, na) scalars) on. trans is 'N',
+ * or 'T'/'C' for the transpose.
  * A padded partial last group is processed too, harmlessly: its identity
  * factors have tau = 0. */
 template <typename T, int V, typename Int = int>
-void ormqr_compact(bool left, bool rowmajor, char trans, Int m, Int n, Int k, const T *ap,
-                   Int ldap, const T *taup, T *cp, Int ldcp, Int nm)
+void ormqr_compact(bool left, bool rowmajor, char trans, Int m, Int n, Int k, Int na,
+                   const T *ap, Int ldap, const T *taup, T *cp, Int ldcp, Int nm)
 {
-    assert(nm >= 1 && m >= 0 && n >= 0 && k >= 0);
+    assert(nm >= 1 && m >= 0 && n >= 0 && k >= 0 && na >= k);
 
     const bool tran = (trans == 'T' || trans == 't' || trans == 'C' || trans == 'c');
     const Direction dir = (left == tran) ? Direction::Forward : Direction::Backward;
     const Int len = left ? m : n;
     const Int npanel = left ? n : m;
 
-    const std::size_t str_a = group_stride(rowmajor, ldap, len, k, V);
-    const std::size_t str_t = (std::size_t)k * V;
+    const std::size_t str_a = group_stride(rowmajor, ldap, len, na, V);
+    const std::size_t str_t = (std::size_t)(len < na ? len : na) * V;
     const std::size_t str_c = group_stride(rowmajor, ldcp, m, n, V);
 
     for_each_group<V>(nm, [&](Int g) {

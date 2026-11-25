@@ -78,8 +78,8 @@ int geqrf(char layout, int m, int n, T *ap, int ldap, T *taup, int V, int nm)
 }
 
 template <typename T>
-int ormqr(char layout, char side, char trans, int m, int n, int k, const T *ap, int ldap,
-          const T *taup, T *cp, int ldcp, int V, int nm)
+int ormqr(char layout, char side, char trans, int m, int n, int k, int na, const T *ap,
+          int ldap, const T *taup, T *cp, int ldcp, int V, int nm)
 {
     const bool col = opt(layout, 'C'), row = opt(layout, 'R');
     const bool left = opt(side, 'L'), right = opt(side, 'R');
@@ -90,16 +90,17 @@ int ormqr(char layout, char side, char trans, int m, int n, int k, const T *ap, 
     if (m < 0) return -4;
     if (n < 0) return -5;
     if (k < 0 || k > nq) return -6;
-    if (ldap < max1(row ? k : nq)) return -8;
-    if (ldcp < max1(row ? n : m)) return -11;
-    if (!vlen_ok(V)) return -12;
-    if (nm < 0) return -13;
+    if (na < k) return -7;
+    if (ldap < max1(row ? na : nq)) return -9;
+    if (ldcp < max1(row ? n : m)) return -12;
+    if (!vlen_ok(V)) return -13;
+    if (nm < 0) return -14;
     if (m == 0 || n == 0 || k == 0 || nm == 0) return 0;
     assert(ap != nullptr && taup != nullptr && cp != nullptr);
 
     for_vlen(V, [&](auto v) {
-        cbk::detail::ormqr_compact<T, decltype(v)::value>(left, row, trans, m, n, k, ap,
-                                                          ldap, taup, cp, ldcp, nm);
+        cbk::detail::ormqr_compact<T, decltype(v)::value>(left, row, trans, m, n, k, na,
+                                                          ap, ldap, taup, cp, ldcp, nm);
     });
     return 0;
 }
@@ -332,10 +333,10 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
         return geqrf(layout, m, n, ap, ldap, taup, V, nm);                               \
     }                                                                                    \
     int p##ormqr_compact(char layout, char side, char trans, int m, int n, int k,        \
-                         const T *ap, int ldap, const T *taup, T *cp, int ldcp, int V,   \
-                         int nm)                                                         \
+                         int na, const T *ap, int ldap, const T *taup, T *cp, int ldcp,  \
+                         int V, int nm)                                                  \
     {                                                                                    \
-        return ormqr(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp, V, nm);     \
+        return ormqr(layout, side, trans, m, n, k, na, ap, ldap, taup, cp, ldcp, V, nm); \
     }                                                                                    \
     int p##orgqr_compact(char layout, int m, int n, int k, T *ap, int ldap,              \
                          const T *taup, int V, int nm)                                   \

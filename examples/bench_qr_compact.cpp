@@ -176,8 +176,8 @@ double run_batched(const Systems &P, MKL_COMPACT_PACK fmt, int V, Backend impl)
                 geqrf_compact(MKL_COL_MAJOR, n, n, ap, n, taup, work.data(), lwork, info,
                               fmt, cnt);
                 double dummy;
-                cbk_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup, bp,
-                                   n, &dummy, 1, info, fmt, cnt);
+                cbk_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, n, ap, n, taup,
+                                   bp, n, &dummy, 1, info, fmt, cnt);
                 trsm_compact(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT,
                              n, nrhs, 1.0, ap, n, bp, n, fmt, cnt);
             }

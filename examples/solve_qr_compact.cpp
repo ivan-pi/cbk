@@ -217,8 +217,8 @@ void batch_solve(int nm, int n, int nrhs)
      *    lwork is 1 -- the same quick-return value reference LAPACK dormqr
      *    reports -- and no query is required. */
     double dummy;
-    cbk_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap, n, taup, bp, n, &dummy, 1,
-                       info, fmt, nm);
+    cbk_dormqr_compact(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, n, ap, n, taup, bp, n, &dummy,
+                       1, info, fmt, nm);
     check_info(info[0], "cbk_dormqr_compact");
 
     /* 3. triangular solve: bp <- R^{-1} (Q^T B) = Xhat   (this repo's extension) */

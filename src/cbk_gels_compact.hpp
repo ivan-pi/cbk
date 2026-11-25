@@ -71,7 +71,7 @@ namespace cbk::detail {
 template <typename Int> Int gels_lwork(Int m, Int n, Int nm, int V) noexcept
 {
     const Int q = (m < n) ? m : n;
-    const Int ngroups = (nm + V - 1) / V;
+    const Int ngroups = group_count(nm, V);
     const Int need = q * V * ngroups;
     return need < 1 ? Int(1) : need;
 }

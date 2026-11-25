@@ -126,7 +126,9 @@ kernels compile to something much slower than their source says, on any
 cmake --install build --prefix /opt/cbk
 ```
 
-installs the library (`libcbk.a`, or `libcbk.so` with `-DBUILD_SHARED_LIBS=ON`),
+installs the library (`libcbk.a`, or `libcbk.so` with `-DBUILD_SHARED_LIBS=ON`:
+soname `libcbk.so.<major>.<minor>` until 1.0.0, since a minor release may
+change the ABI, and only the entry points of the public headers exported),
 the public headers of what was built (`cbk.h` always; `cbk_compat.h`
 and `cbk_mkl_alloc.h` only with `CBK_WITH_MKL=ON`), and a CMake package under
 `lib/cmake/cbk/`. A downstream project finds it with
