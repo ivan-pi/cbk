@@ -73,7 +73,7 @@ void orgqr_compact_group(Int m, Int n, Int k, BatchView<T, V, Int> A, const T *t
         /* apply H(kk) to the trailing columns kk+1 .. n-1 (rows above kk of
          * those columns are still zero and stay untouched: larf reads and
          * writes rows kk..m-1 only) */
-        larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+        larf<T, V>(kk, m, Ac, &t, A, kk + 1, n);
         /* form column kk = H(kk) e_kk, sweep-free: the reflector body scaled
          * by -tau in place, 1 - tau on the diagonal, zeros above. tau = 0 (an
          * already-triangular column, or a padded identity lane) gives e_kk. */

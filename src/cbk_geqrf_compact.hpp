@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cassert>
+#include <limits>
 #include <type_traits>
 
 CBK_KERNEL_BEGIN
@@ -52,9 +53,9 @@ using mask_t = typename pack<typename int_bits<T>::type, V>::type;
 /* r := mask ? a : b, lane-wise; mask lanes are all-ones or zero, as the vector
  * comparisons produce. The blend runs on the may-alias integer view. */
 template <typename T, int V>
-inline void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
-                    const typename pack<T, V>::type &a,
-                    const typename pack<T, V>::type &b) noexcept
+CBK_ALWAYS_INLINE void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
+                               const typename pack<T, V>::type &a,
+                               const typename pack<T, V>::type &b) noexcept
 {
     using MT = mask_t<T, V>;
     const MT ai = reinterpret_cast<const MT &>(a);
@@ -72,10 +73,10 @@ inline void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
  * (and a padded identity lane) yields tau = 0 with x0 unchanged, and no lane
  * ever forms 0/0 or 1/0. */
 template <typename T, int V>
-inline void larfg_pack(const typename pack<T, V>::type &x0,
-                       const typename pack<T, V>::type &tail,
-                       typename pack<T, V>::type &rdiag, typename pack<T, V>::type &tau,
-                       typename pack<T, V>::type &inv) noexcept
+CBK_ALWAYS_INLINE void
+larfg_pack(const typename pack<T, V>::type &x0, const typename pack<T, V>::type &tail,
+           typename pack<T, V>::type &rdiag, typename pack<T, V>::type &tau,
+           typename pack<T, V>::type &inv) noexcept
 {
     using VT = typename pack<T, V>::type;
     const VT zero = VT{};
@@ -89,19 +90,129 @@ inline void larfg_pack(const typename pack<T, V>::type &x0,
     vselect<T, V>(rdiag, has, beta, x0);
 }
 
-/* Build H(kk) from column kk of A, rows kk..m-1: the reflector body scaled in
- * place below the diagonal, the R diagonal in A(kk,kk), tau[kk] = t (also
- * returned in t for the caller's larf). One step of geqr2. */
+/* True when every lane of a comparison mask is set. */
+template <typename T, int V>
+CBK_ALWAYS_INLINE bool all_lanes(const mask_t<T, V> &mask) noexcept
+{
+    typename int_bits<T>::type all = -1;
+    for (int v = 0; v < V; ++v)
+        all &= mask[v];
+    return all != 0;
+}
+
+/* r := |x|, lane-wise. */
+template <typename T, int V>
+CBK_ALWAYS_INLINE void vabs(typename pack<T, V>::type &r,
+                            const typename pack<T, V>::type &x) noexcept
+{
+    vselect<T, V>(r, x < 0, -x, x);
+}
+
+/* The range in which the plain sum of squares is a faithful norm: the tail
+ * sum at least safmin / eps, so whatever its terms lost to underflow is below
+ * its rounding error, and the full sum finite. A lane outside it -- a column
+ * small or large enough for its squares to leave the floating-point range, or
+ * one with nothing below the diagonal -- is one the plain larfg cannot be
+ * trusted on: the sum underflowed to zero reads as "already triangular" and
+ * returns a finite, wrong R, and the overflowed one returns Inf. */
+template <typename T, int V>
+CBK_ALWAYS_INLINE void larfg_in_range(mask_t<T, V> &ok,
+                                      const typename pack<T, V>::type &x0,
+                                      const typename pack<T, V>::type &tail) noexcept
+{
+    constexpr T tsml = std::numeric_limits<T>::min() / std::numeric_limits<T>::epsilon();
+    constexpr T tbig = std::numeric_limits<T>::max();
+    ok = (tail >= tsml) & (x0 * x0 + tail <= tbig);
+}
+
+/* The reflector of column kk for a pack with a lane out of larfg_in_range:
+ * dlarfg's rescaling, lane-wise. Each such lane's column is divided by its
+ * largest magnitude (a division, not a reciprocal multiply: the reciprocal of
+ * a subnormal overflows), which puts the sum of squares in [1, m]; tau and the
+ * reflector body are scale-invariant, and beta is scaled back. A column that
+ * is exactly zero below the diagonal -- an already-triangular one, a padded
+ * identity lane -- still yields tau = 0 with the diagonal untouched. The lanes
+ * that were in range keep the plain path's result, bit for bit, so a lane's
+ * factorization never depends on which matrices share its pack.
+ *
+ * Out of line on purpose (it is the rare path, and the plain one stays small);
+ * it takes the view and the indices and loads what it needs, since a pack must
+ * not cross a call boundary by reference (cbk_common.hpp). */
 template <typename T, int V, typename Int>
-inline void geqrf_reflector(Int kk, Int m, const BatchView<T, V, Int> &A,
-                            typename pack<T, V>::type *tau,
-                            typename pack<T, V>::type &t) noexcept
+__attribute__((noinline)) void geqrf_reflector_scaled(Int kk, Int m,
+                                                      BatchView<T, V, Int> A,
+                                                      typename pack<T, V>::type *tau)
+{
+    using VT = typename pack<T, V>::type;
+    const VT x0 = A(kk, kk);
+
+    /* the plain path, for the lanes in range */
+    VT tail = VT{};
+    for (Int i = kk + 1; i < m; ++i)
+        tail += A(i, kk) * A(i, kk);
+    mask_t<T, V> ok;
+    larfg_in_range<T, V>(ok, x0, tail);
+    VT rdiag, t, inv;
+    larfg_pack<T, V>(x0, tail, rdiag, t, inv);
+
+    /* the scaled path: sc = max |column|, or 1 for an all-zero column */
+    VT mx, one;
+    broadcast<T, V>(one, T(1));
+    vabs<T, V>(mx, x0);
+    for (Int i = kk + 1; i < m; ++i) {
+        VT a;
+        vabs<T, V>(a, A(i, kk));
+        vselect<T, V>(mx, a > mx, a, mx);
+    }
+    VT sc;
+    vselect<T, V>(sc, mx > 0, mx, one);
+    VT tail_s = VT{};
+    for (Int i = kk + 1; i < m; ++i) {
+        const VT a = A(i, kk) / sc;
+        tail_s += a * a;
+    }
+    VT rdiag_s, t_s, inv_s;
+    larfg_pack<T, V>(x0 / sc, tail_s, rdiag_s, t_s, inv_s);
+    /* beta back in the column's scale; with no reflector, x0 itself (exactly) */
+    vselect<T, V>(rdiag_s, tail_s > 0, rdiag_s * sc, x0);
+
+    vselect<T, V>(t, ok, t, t_s);
+    vselect<T, V>(rdiag, ok, rdiag, rdiag_s);
+    tau[kk] = t;
+    for (Int i = kk + 1; i < m; ++i) {
+        VT body;
+        vselect<T, V>(body, ok, A(i, kk) * inv, (A(i, kk) / sc) * inv_s);
+        A(i, kk) = body;
+    }
+    A(kk, kk) = rdiag;
+}
+
+/* Build H(kk) from column kk of A, rows kk..m-1: the reflector body scaled in
+ * place below the diagonal, the R diagonal in A(kk,kk), the scalar in tau[kk]
+ * (the caller reads it back from there for its larf: the result is not handed
+ * out through a pack reference, which this function, no longer small enough to
+ * be sure of inlining, must not do -- cbk_common.hpp). One step of geqr2. The sum of squares
+ * is formed unscaled; a pack with a lane whose sum left the range in which
+ * that is safe (larfg_in_range) is redone by geqrf_reflector_scaled. The last
+ * column of a square matrix has nothing below the diagonal and no sum to
+ * check. */
+template <typename T, int V, typename Int>
+inline void geqrf_reflector(Int kk, Int m, BatchView<T, V, Int> A,
+                            typename pack<T, V>::type *tau) noexcept
 {
     using VT = typename pack<T, V>::type;
     VT tail = VT{};
     for (Int i = kk + 1; i < m; ++i)
         tail += A(i, kk) * A(i, kk);
-    VT rdiag, inv;
+    if (kk + 1 < m) {
+        mask_t<T, V> ok;
+        larfg_in_range<T, V>(ok, A(kk, kk), tail);
+        if (__builtin_expect(!all_lanes<T, V>(ok), 0)) {
+            geqrf_reflector_scaled<T, V, Int>(kk, m, A, tau);
+            return;
+        }
+    }
+    VT rdiag, t, inv;
     larfg_pack<T, V>(A(kk, kk), tail, rdiag, t, inv);
     tau[kk] = t;
     for (Int i = kk + 1; i < m; ++i)
@@ -123,10 +234,13 @@ void geqrf_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_)
     const Int k = (m < n) ? m : n;
 
     for (Int kk = 0; kk < k; ++kk) {
-        VT t;
-        geqrf_reflector<T, V, Int>(kk, m, A, tau, t);
+        geqrf_reflector<T, V, Int>(kk, m, A, tau);
         /* apply H(kk) to the trailing columns kk+1 .. n-1 */
-        larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+        /* a local copy, not &tau[kk]: a pointer into the tau buffer may alias
+         * the stores to A (the pack is may_alias), and larf reloading it
+         * through the trailing update measured markedly slower under gcc */
+        const VT t = tau[kk];
+        larf<T, V>(kk, m, Ac, &t, A, kk + 1, n);
     }
 }
 

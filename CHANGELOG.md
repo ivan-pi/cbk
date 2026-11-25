@@ -7,6 +7,70 @@ release may change the API.
 
 ## [Unreleased]
 
+### Added
+
+- Portable C API: `?gepack_compact`, `?geunpack_compact` and
+  `?get_size_compact`, the conversion between conventionally stored matrices
+  and the compact format and the size of a compact buffer, so that `cbk.h`
+  can be used without MKL's pack routines. They reproduce
+  `mkl_?gepack_compact`, `mkl_?geunpack_compact` and `mkl_?get_size_compact`
+  bit for bit: the slots past `nm` in the last group are filled with the
+  identity, and the entries between the matrix extent and the leading
+  dimension are left untouched.
+  `?get_size_compact` returns bytes as a `size_t`, so a batch past 2 GB is
+  sized correctly where MKL's `MKL_INT` result wraps under LP64.
+
+- `CBK_REQUIRE_OPENMP` (CMake, default `OFF`): fail the configure instead of
+  silently building single-threaded when no OpenMP runtime is found. The
+  configure now prints which threading it chose.
+- Tests: `test_batch_compact`, the batch-level contracts -- a matrix a routine
+  cannot handle (non-SPD, zero pivot, NaN, rank-deficient) gets Inf/NaN in its
+  own result and leaves every other matrix bit-identical; results do not
+  depend on the thread count or on a caller's outer parallel loop, nested or
+  not.
+- CI: Debug, AVX2 (`x86-64-v3`), AVX-512 (`x86-64-v4`, where the runner has
+  it), `-fno-inline-functions`, ASan and UBSan builds under gcc and clang;
+  the clang rows install `libomp-dev` and every row requires OpenMP, so the
+  threaded path is tested under both compilers.
+
+### Changed
+
+- **Breaking:** `?ormqr_compact` and `cbk_?ormqr_compact` take `na`, the
+  number of columns of the batch in `ap` as `?geqrf_compact` factored it,
+  after `k`: `(layout, side, trans, m, n, k, na, ap, ldap, ...)`. The group
+  strides of `ap` and `taup` were derived from `k`, so the output of a wide
+  factorization (`m < n`), or of any factorization of which fewer than
+  `min(m, n)` reflectors were applied, was read from the wrong place in every
+  group after the first, with a zero return code. A caller that packed exactly
+  the `k` reflector columns passes `na = k` and is otherwise unchanged; the
+  portable routine's argument validation renumbers from `na` on (`-7 na`,
+  `-9 ldap`, `-12 ldcp`, `-13 V`, `-14 nm`).
+- The shared library's soname is `libcbk.so.<major>.<minor>` until 1.0.0
+  (`libcbk.so.0.2`), since a minor release may change the ABI; it was
+  `libcbk.so.0` for 0.1.0 and 0.2.0 alike, across the `?ormqr_compact`
+  signature change.
+- The library is built with hidden symbol visibility and exports only the
+  entry points of its public headers (marked `CBK_API`); a shared `libcbk`
+  used to export every kernel template instantiation as well.
+
+### Fixed
+
+- `?geqrf_compact` (and `?gels_compact`, which factors with it) rescales a
+  reflector whose column's sum of squares underflows or overflows, as LAPACK's
+  `?larfg` does. A column of small entries (below about `1e-162` in double,
+  `1e-23` in single precision) used to read as already triangular and return a
+  finite, wrong `R`; one of large entries returned `Inf`. Inputs of ordinary
+  magnitude take the same path as before and factor to the same bits.
+- A batch within `V` of `INT_MAX` matrices no longer overflows the group
+  count, which made every routine return 0 without computing anything.
+- Under clang, the kernels faulted on an aligned vector move whenever the
+  compiler did not inline their small pack helpers: with the sanitizers, with
+  `-fno-inline-functions`, or at a low optimization level. Clang gives a
+  reference parameter (or return) of the pack type its natural vector
+  alignment, which a compact buffer or a local need not have. The helpers are
+  now force-inlined, and the larger ones take a pointer.
+- `cbk.h` gave the threading gate as about `2e5` flops; it is `5e4`.
+
 ## [0.2.0] - 2026-09-15
 
 ### Changed

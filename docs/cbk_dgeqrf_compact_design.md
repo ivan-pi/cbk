@@ -183,20 +183,41 @@ reasons" and make "the user responsible for passing correct parameters" --
 The column norm is the direct `sqrt(sum of squares)` -- fast and vectorizable,
 and accurate to working precision across the target range. Rank-deficient and
 already-triangular columns degrade gracefully through the `has` mask (`tau = 0`,
-diagonal preserved). There is no protection against overflow or underflow in the column norm: the
-sum of squares is formed directly, without the rescaling LAPACK's `dlarfg`
-applies when a column's entries are extreme. Inputs are assumed well
-conditioned and within range, as the target applications' are, and safe scaling
-is deferred to a later release. Outside that range the kernel does not fail; it
-simply does what the direct arithmetic gives. Entries large enough for their
-squares to overflow produce an infinite norm and an unusable factor. Entries so
-small that their squares underflow to zero make the below-diagonal norm read
-zero, and the column is then treated as already triangular exactly as an
-all-zero tail is: `tau = 0`, the diagonal kept, the reflector body below it
-written as zeros. That factorization is still exact to working precision (the
-dropped tail is negligible against `||A||`). The portable self-test (7.4)
-exercises the underflow case so that this behavior cannot change unnoticed; the
-suites otherwise exercise column scaling to `cond = 4`.
+diagonal preserved).
+
+The direct sum is only trusted where it is safe. After forming it, the kernel
+tests every lane of the pack: the below-diagonal sum must be at least
+`safmin / eps` (so that whatever its terms lost to underflow is below its own
+rounding error) and the full sum finite. When all lanes pass -- always, for
+inputs of ordinary magnitude -- the reflector is the plain one and nothing else
+runs. When a lane fails, the pack's reflector is redone out of line
+(`geqrf_reflector_scaled`) with LAPACK `dlarfg`'s rescaling, lane-wise: the
+column is divided by its largest magnitude, which puts the sum of squares in
+`[1, m]`; `tau` and the reflector body are scale-invariant, and `beta` is
+scaled back. The lanes that were in range keep the plain result bit for bit,
+so a matrix's factorization never depends on which matrices share its pack. A
+batch scaled anywhere in the floating-point range therefore factors to the
+correspondingly scaled `R`.
+
+This replaced an earlier scope limit (no rescaling at all), under which a
+column whose squares underflowed read as already triangular and returned a
+finite, wrong `R` with nothing to flag it, and one whose squares overflowed
+returned `Inf`. In single precision that range was narrow enough to meet in
+practice. The check costs one comparison and a rarely taken branch per column, which
+did not register in the timings of in-range inputs when it was added
+(`bench_geqrf_compact` measures the routine).
+
+Two cases take the scaled path without being out of range, and are merely
+slower: a column that is exactly zero below the diagonal (an already-triangular
+input) and the identity lanes that pad a partial last group. One departure from
+`dlarfg` remains: a tail so small *relative to its own diagonal* that its
+squares underflow even after scaling (a ratio below the square root of the
+smallest subnormal) still reads as zero, giving `tau = 0` where `dlarfg`
+returns a reflector. That factorization is exact to working precision (the
+dropped tail is negligible against `||A||`), and the portable self-test (7.4)
+pins the behavior; it also factors batches that mix ordinary, underflowing and
+overflowing matrices against `?geqr2`. The suites otherwise exercise column
+scaling to `cond = 4`.
 
 Two of Intel's stated [numerical limitations for Compact BLAS and Compact LAPACK
 routines](https://www.intel.com/content/www/us/en/docs/onemkl/developer-reference-c/2025-2/numerical-limits-compact-blas-compact-lapack.html)
@@ -205,8 +226,10 @@ routine:
 
 * **Matrices scaled near underflow/overflow.** As Intel notes specifically for
   `mkl_?geqrf_compact`, the compact QR does not provide safe handling of values
-  near underflow/overflow. This routine likewise omits the rescaling of LAPACK's
-  `dlarfg` (which triggers only near `1e+/-150`); such inputs are out of scope.
+  near underflow/overflow. This routine does rescale the reflector, as above;
+  what it does not guard is the trailing update, whose inner products can
+  still overflow for entries within a factor of about `m` of the largest
+  finite value.
 * **No error checking and no pivoting.** No argument validation (section 6.5),
   and the factorization is unpivoted -- pivoting needs comparisons that do not
   vectorize across a pack. It is the caller's responsibility to pass inputs that
@@ -261,9 +284,12 @@ must recover `X`. Gate the forward error `Xhat - X` and the residual
 `tests/test_geqrf_compact.cpp` validates the templated kernel directly against
 LAPACK's unblocked `?geqr2` (`LAPACKE_?geqr2` through `ref_geqr2`,
 elementwise at `~eps`) across `(T, V)` combinations and partial (padded) final
-packs, the underflow scope of 6.6 (a column whose tail underflows squared
-comes back with `tau = 0`, its diagonal kept and its body zeroed, every lane
-finite, and the factorization still exact to working precision), the
+packs, the scaling of 6.6 (batches mixing ordinary matrices with ones scaled
+until a column's squares underflow or overflow, against `?geqr2`, the ordinary
+lanes bit-identical to a batch of their own; and a tail negligible against its
+diagonal, which comes back with `tau = 0`, its diagonal kept and its body
+zeroed, every lane finite, the factorization still exact to working
+precision), the
 dense-LAPACK invariants of 7.1 (`Q` from `?orgqr`, residual and orthogonality
 gates, over the structured inputs) on any LAPACKE stack, plus the LAPACK-style
 argument validation of the portable C API. It needs a LAPACKE + CBLAS

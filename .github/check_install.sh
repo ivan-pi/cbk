@@ -42,6 +42,29 @@ for f in include/cbk_compat.h include/cbk_mkl_alloc.h "${cmakedir#"$prefix/"}/Fi
     if [ "$mkl" = ON ]; then expect "$prefix/$f"; else expect_absent "$prefix/$f"; fi
 done
 
+# A shared libcbk exports its C entry points and nothing else (the kernels'
+# template instantiations stay hidden), and its soname carries the minor
+# version until 1.0.0, when a minor release may still change the ABI.
+if [ "$shared" = ON ]; then
+    version=$(sed -n 's/^set(PACKAGE_VERSION "\(.*\)")$/\1/p' "$cmakedir/cbkConfigVersion.cmake")
+    major=${version%%.*}
+    minor=${version#*.}; minor=${minor%%.*}
+    if [ "$major" = 0 ]; then want="libcbk.so.$major.$minor"; else want="libcbk.so.$major"; fi
+    soname=$(objdump -p "$libdir/libcbk.so" | awk '$1 == "SONAME" { print $2 }')
+    if [ "$soname" = "$want" ]; then
+        echo "ok       soname $soname"
+    else
+        echo "SONAME   $soname (want $want, version $version)"; fail=1
+    fi
+    exported=$(nm -D --defined-only "$libdir/libcbk.so" | awk '{ print $NF }')
+    stray=$(echo "$exported" | grep -v -E '^(cbk_)?[sd][a-z_]+_compact$|^cbk_get_version$' || true)
+    if [ -z "$stray" ] && [ -n "$exported" ]; then
+        echo "ok       exports: $(echo "$exported" | wc -l) entry points, nothing else"
+    else
+        echo "EXPORTS  beyond the public API:"; echo "$stray" | head -n 20; fail=1
+    fi
+fi
+
 if [ "$fail" -ne 0 ]; then
     echo "== full listing"
     find "$prefix" -type f -o -type l | sort

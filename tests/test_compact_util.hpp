@@ -272,11 +272,19 @@ template <class T> struct compact;
 #define CBK_TEST_COMPACT_DISPATCH(T, p, label)                                             \
 template <> struct compact<T> {                                                            \
     static constexpr const char *name = label;                                             \
+    static std::size_t get_size(int ld, int sd, int V, int nm)                             \
+    { return p##get_size_compact(ld, sd, V, nm); }                                         \
+    static int gepack(char lay, int m, int n, const T *const *a, int lda, T *ap,           \
+                      int ldap, int V, int nm)                                             \
+    { return p##gepack_compact(lay, m, n, a, lda, ap, ldap, V, nm); }                      \
+    static int geunpack(char lay, int m, int n, T *const *a, int lda, const T *ap,         \
+                        int ldap, int V, int nm)                                           \
+    { return p##geunpack_compact(lay, m, n, a, lda, ap, ldap, V, nm); }                    \
     static int geqrf(char lay, int m, int n, T *a, int ld, T *tau, int V, int nm)          \
     { return p##geqrf_compact(lay, m, n, a, ld, tau, V, nm); }                             \
-    static int ormqr(char lay, char si, char tr, int m, int n, int k, const T *a,        \
-                     int lda, const T *tau, T *c, int ldc, int V, int nm)                  \
-    { return p##ormqr_compact(lay, si, tr, m, n, k, a, lda, tau, c, ldc, V, nm); }         \
+    static int ormqr(char lay, char si, char tr, int m, int n, int k, int na,            \
+                     const T *a, int lda, const T *tau, T *c, int ldc, int V, int nm)      \
+    { return p##ormqr_compact(lay, si, tr, m, n, k, na, a, lda, tau, c, ldc, V, nm); }     \
     static int orgqr(char lay, int m, int n, int k, T *a, int lda, const T *tau,           \
                      int V, int nm)                                                        \
     { return p##orgqr_compact(lay, m, n, k, a, lda, tau, V, nm); }                         \
@@ -437,29 +445,22 @@ template <class T> void gen_tri(MatrixView<T> A, bool upper)
 // The dense batches are MatrixBatch (src/cbk_matrix_batch.hpp), shared with
 // the benchmarks; the suites allocate with the default allocator.
 
-// Compact pack/unpack (matches mkl_?gepack_compact). group g = idx/V, slot
-// v = idx%V; element (i,j) of every matrix in a group is one V-wide pack, and
-// the packs of a group sit at the leading dimension ldp in the given layout.
-// Padded slots (idx >= nm) carry the identity.
+// Compact pack/unpack: the library's own ?gepack_compact / ?geunpack_compact
+// (which tests/test_gepack_compact.cpp checks element by element against the
+// layout formula of cbk.h, and the MKL suites against mkl_?gepack_compact).
+// group g = idx/V, slot v = idx%V; element (i,j) of every matrix in a group is
+// one V-wide pack, and the packs of a group sit at the leading dimension ldp
+// in the given layout. Padded slots (idx >= nm) carry the identity, so the
+// kernels run the padding unmasked.
 //
-// Both sides are addressed through the project's views: the dense side through
-// MatrixBatch (hence MatrixView), the interleaved side through the kernels'
-// own BatchView, whose element is the pack and whose strides are in packs --
-// `P(i, j)[v]` is element (i,j) of slot v. The layout is the view's strides,
-// so one body serves column-major and row-major, and the group offset is the
-// library's group_stride. BatchView is templated on the interleave width, so
-// for_vlen turns the runtime V into the compile-time one (2, 4, 8 or 16 --
-// the widths the C API accepts). Sharing the kernels' views here is
-// deliberate; see "Two views, one idea" in .claude/CLAUDE.md.
-//
-// A padded slot carries pad_diag on its diagonal, zero elsewhere: the identity
-// for matrix batches (so kernels run the padding unmasked), zero for tau
-// batches (the identity's reflectors).
+// The dense batches are column-major whatever the compact layout, and the
+// library routines take one layout for both sides (as MKL's do), so a
+// row-major pack goes through a row-major copy of the batch.
 
 // A zeroed compact buffer sized for nm rows x cols matrices at leading
-// dimension ldp -- the one place the ng * gstride sizing is written. For a
-// buffer the kernel fills (tau, say), use it directly; for one packed from a
-// batch, the pack_compact/pack_tau overloads below return it filled.
+// dimension ldp -- ?get_size_compact's bytes, in scalars. For a buffer the
+// kernel fills (tau, say), use it directly; for one packed from a batch, the
+// pack_compact/pack_tau overloads below return it filled.
 //
 // Never empty: an operand with a zero extent is still an argument the routine
 // may require present (Fortran semantics -- ?posv's bp at nrhs = 0, ?gels's A
@@ -469,65 +470,69 @@ template <class T>
 std::vector<T> compact_buffer(int nm, int rows, int cols, int ldp, int V,
                               bool rowmajor = false)
 {
-    const int ng = (nm + V - 1) / V;
-    return std::vector<T>(std::max<std::size_t>(
-        1, (std::size_t)ng * group_stride(rowmajor, ldp, rows, cols, V)));
+    const std::size_t bytes = compact<T>::get_size(ldp, rowmajor ? rows : cols, V, nm);
+    assert(bytes % sizeof(T) == 0);
+    return std::vector<T>(std::max<std::size_t>(1, bytes / sizeof(T)));
+}
+
+// The batch as nm row-major m x n matrices (leading dimension n), contiguous.
+template <class T> std::vector<T> rowmajor_copy(const MatrixBatch<T> &Mk)
+{
+    const int m = Mk.rows(), n = Mk.cols();
+    std::vector<T> r(std::max<std::size_t>(1, (std::size_t)Mk.count() * Mk.stride()));
+    for (int idx = 0; idx < Mk.count(); ++idx)
+        for (int i = 0; i < m; ++i)
+            for (int j = 0; j < n; ++j)
+                r[(std::size_t)idx * Mk.stride() + (std::size_t)i * n + j] =
+                    Mk(idx, i, j);
+    return r;
 }
 
 template <class T>
-void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false,
-                  T pad_diag = T(1))
+void pack_compact(const MatrixBatch<T> &Mk, T *p, int ldp, int V, bool rowmajor = false)
 {
     const int m = Mk.rows(), n = Mk.cols(), nm = Mk.count();
-    const int ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(rowmajor, ldp, m, n, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P = make_view<T, VV>(p + (std::size_t)g * gstride, rowmajor, ldp);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                if (idx < nm) {
-                    const auto M = Mk.view(idx);
-                    for (int j = 0; j < n; ++j)
-                        for (int i = 0; i < m; ++i)
-                            P(i, j)[v] = M(i, j);
-                }
-                else { /* padded slot */
-                    for (int j = 0; j < n; ++j)
-                        for (int i = 0; i < m; ++i)
-                            P(i, j)[v] = (i == j) ? pad_diag : T(0);
-                }
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
+    int info;
+    if (rowmajor) {
+        const std::vector<T> r = rowmajor_copy(Mk);
+        std::vector<const T *> ptrs(nm);
+        for (int idx = 0; idx < nm; ++idx)
+            ptrs[idx] = r.data() + (std::size_t)idx * Mk.stride();
+        info = compact<T>::gepack('R', m, n, ptrs.data(), std::max(1, n), p, ldp, V, nm);
+    }
+    else {
+        const std::vector<const T *> ptrs = Mk.base_ptrs();
+        info = compact<T>::gepack('C', m, n, ptrs.data(), std::max(1, m), p, ldp, V, nm);
+    }
+    assert(info == 0 && "pack_compact: ?gepack_compact rejected its arguments");
+    (void)info;
 }
 
 template <class T>
 void unpack_compact(MatrixBatch<T> &Mk, const T *p, int ldp, int V, bool rowmajor = false)
 {
     const int m = Mk.rows(), n = Mk.cols(), nm = Mk.count();
-    const int ng = (nm + V - 1) / V;
-    const std::size_t gstride = group_stride(rowmajor, ldp, m, n, V);
-    const bool width_ok = for_vlen(V, [&](auto vw) {
-        constexpr int VV = decltype(vw)::value;
-        for (int g = 0; g < ng; ++g) {
-            const auto P =
-                make_const_view<T, VV>(p + (std::size_t)g * gstride, rowmajor, ldp);
-            for (int v = 0; v < VV; ++v) {
-                const int idx = g * VV + v;
-                if (idx >= nm) continue;
-                const auto M = Mk.view(idx);
+    int info;
+    if (rowmajor) {
+        std::vector<T> r(std::max<std::size_t>(1, (std::size_t)nm * Mk.stride()));
+        std::vector<T *> ptrs(nm);
+        for (int idx = 0; idx < nm; ++idx)
+            ptrs[idx] = r.data() + (std::size_t)idx * Mk.stride();
+        info =
+            compact<T>::geunpack('R', m, n, ptrs.data(), std::max(1, n), p, ldp, V, nm);
+        for (int idx = 0; idx < nm; ++idx)
+            for (int i = 0; i < m; ++i)
                 for (int j = 0; j < n; ++j)
-                    for (int i = 0; i < m; ++i)
-                        M(i, j) = P(i, j)[v];
-            }
-        }
-    });
-    assert(width_ok && "interleave width must be 2, 4, 8 or 16");
-    (void)width_ok;
+                    Mk(idx, i, j) =
+                        r[(std::size_t)idx * Mk.stride() + (std::size_t)i * n + j];
+    }
+    else {
+        const std::vector<T *> ptrs = Mk.base_ptrs();
+        info =
+            compact<T>::geunpack('C', m, n, ptrs.data(), std::max(1, m), p, ldp, V, nm);
+    }
+    assert(info == 0 && "unpack_compact: ?geunpack_compact rejected its arguments");
+    (void)info;
 }
 
 // The suites' usual shape: pack into a freshly sized buffer and return it.
@@ -541,11 +546,16 @@ std::vector<T> pack_compact(const MatrixBatch<T> &Mk, int ldp, int V,
 }
 
 // A tau batch (k scalars per matrix) is packed as k x 1 matrices whose padded
-// slots are all zero -- pack_compact with a zero pad diagonal.
+// slots are all zero (the identity's reflectors): ?gepack_compact, then the
+// one it put on the padded slots' "diagonal", tau(0), cleared.
 template <class T> void pack_tau(const MatrixBatch<T> &tau, T *tp, int V)
 {
     assert(tau.cols() == 1);
-    pack_compact(tau, tp, tau.rows(), V, false, T(0));
+    const int k = tau.rows(), nm = tau.count();
+    pack_compact(tau, tp, std::max(1, k), V);
+    if (k > 0 && nm % V != 0)
+        for (int v = nm % V; v < V; ++v)
+            tp[(std::size_t)(nm / V) * k * V + v] = T(0);
 }
 
 template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
@@ -558,7 +568,7 @@ template <class T> std::vector<T> pack_tau(const MatrixBatch<T> &tau, int V)
 template <class T> void unpack_tau(MatrixBatch<T> &tau, const T *tp, int V)
 {
     assert(tau.cols() == 1);
-    unpack_compact(tau, tp, tau.rows(), V);
+    unpack_compact(tau, tp, std::max(1, tau.rows()), V);
 }
 
 // ----------------------- the small-dimension sweep -------------------

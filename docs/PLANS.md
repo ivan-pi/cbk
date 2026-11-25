@@ -6,8 +6,10 @@ C API (LAPACK-style `info = -j`) and the MKL-style `cbk_?*_compact` (no
 argument checking, scalar `info`) -- in FP64 and FP32, over one `BatchView`
 kernel that covers every layout (and side, for `ormqr`/`trsm`).
 
-Complex precisions, pivoting, and overflow/underflow-safe scaling are out of
-scope throughout; each design document's section 6 says what else its routine
+Complex precisions and pivoting are out of scope throughout, and so is
+overflow/underflow-safe scaling everywhere but the QR reflectors (`geqrf`
+rescales them as `dlarfg` does; the Cholesky, LDL^T and triangular kernels do
+not scale); each design document's section 6 says what else its routine
 leaves out, and its section 7 what the test suites gate. The benchmarks are
 listed in `examples.md`.
 
@@ -31,8 +33,6 @@ listed in `examples.md`.
   generators planned below would close it.
 - **Open:** the one-column tail of `larf` (all of `nrhs < 4`) reduces `v^T c`
   into a single accumulator and runs at FMA latency; split it into several.
-  `larf_block` takes `tau` by reference to a pack, which is safe only while it
-  inlines (`.claude/CLAUDE.md`); pass the pointer and index instead.
 
 ## orgqr
 
@@ -94,7 +94,27 @@ listed in `examples.md`.
   caller-threaded per-group loop. The blocked factorization is `geqrf`'s open
   item.
 
+## gepack / geunpack / get_size
+
+- **Done:** the portable API's conversion to and from the compact format and
+  its buffer size, `mkl_?gepack_compact`'s layout and padding bit for bit
+  (checked against MKL in `test_gepack_mkl`, against the layout formula in
+  `test_gepack_compact`); the suites' own pack/unpack helpers now call them.
+- **Open:** each pack is `V` scalar loads through the matrix pointers. For
+  matrices that are contiguous and equally spaced the gather could be a
+  strided vector load; not measured, and the conversion is memory-bound. No
+  `tau`-aware variant: a `tau` batch packed as `k x 1` matrices gets the
+  identity's one in its padded slots, which the caller clears.
+
 ## Project-wide
+
+- **Done: the pack-reference hazard is closed by construction.** Every
+  function with a pack reference parameter (and `BatchView::operator()`,
+  which returns one) is `CBK_ALWAYS_INLINE`; `larf` and `larf_block` take
+  `tau` by pointer. Before, correctness under clang rested on the optimizer
+  choosing to inline them, and failed under the sanitizers and
+  `-fno-inline-functions`. CI's `variants` job runs both, with Debug, AVX2
+  and AVX-512 builds, under gcc and clang.
 
 - **Done: test against a real BLAS/LAPACK (issue #27).** The suites validate
   against LAPACKE + CBLAS (`tests/test_lapack_util.hpp`): the `ref_*`

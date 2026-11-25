@@ -15,7 +15,10 @@ the standard per-level thread list enables nested splitting when wanted, e.g.
 OMP_NUM_THREADS=8,2 OMP_MAX_ACTIVE_LEVELS=2 ./my_app   # 8 outer x 2 inner threads
 ```
 
-Results are independent of the thread count.
+Results are independent of the thread count. `tests/test_batch_compact.cpp`
+holds the routines to both claims: bitwise-identical results on 1, 2, 3 and
+the maximum number of threads, and from inside a caller's parallel loop with
+nested parallelism off and on.
 
 In the source, every all-groups driver is a call to
 `for_each_group<V>(nm, flops_per_group, body)` in `src/cbk_common.hpp`;

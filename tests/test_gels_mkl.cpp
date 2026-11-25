@@ -259,7 +259,7 @@ template <class T> int suite2(int nm, int n, int nrhs)
     mkl<T>::geqrf(MKL_COL_MAJOR, n, n, ap2.get(), n, tp2.get(), work_mkl.data(),
                   (MKL_INT)work_mkl.size(), &info, fmt, nm);
     T dummy;
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, ap2.get(), n, tp2.get(),
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', n, nrhs, n, n, ap2.get(), n, tp2.get(),
                      bp2.get(), n, &dummy, 1, &info, fmt, nm);
     mkl<T>::trsm(MKL_COL_MAJOR, MKL_LEFT, MKL_UPPER, MKL_NOTRANS, MKL_NONUNIT, n, nrhs,
                  T(1), ap2.get(), n, bp2.get(), n, fmt, nm);

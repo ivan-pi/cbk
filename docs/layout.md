@@ -18,7 +18,7 @@ The headers under `include/` are the project's API, the only files users need:
 
 | File | Role |
 |------|------|
-| `include/cbk.h` | The library's C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. The library target is `cbk::cbk`. |
+| `include/cbk.h` | The library's C API: `?geqrf_compact`, `?ormqr_compact`, `?orgqr_compact`, `?potrf_compact`, `?potrs_compact`, `?posv_compact`, `?sytrfnp_compact`, `?sytrsnp_compact`, `?sysvnp_compact`, `?trsm_compact`, `?gels_compact`, and the conversion routines `?gepack_compact`, `?geunpack_compact`, `?get_size_compact` (`d`/`s`), with an explicit interleave width `V`, LAPACK-style `info = -j` validation, and no MKL dependency. The library target is `cbk::cbk`. |
 | `include/cbk_compat.h` | The optional MKL-style API (`-DCBK_WITH_MKL=ON`, compiled into the same `cbk::cbk`): `cbk_?geqrf_compact`, `cbk_?ormqr_compact`, `cbk_?orgqr_compact`, `cbk_?potrf_compact`, `cbk_?potrs_compact`, `cbk_?posv_compact`, `cbk_?sytrfnp_compact`, `cbk_?sytrsnp_compact`, `cbk_?sysvnp_compact`, `cbk_?trsm_compact`, `cbk_?gels_compact`, taking `MKL_LAYOUT` and `MKL_COMPACT_PACK` formats. Also the C++ helpers `vlen_for_format` / `format_for_vlen` / `compact_format_name`. |
 | `include/cbk_mkl_alloc.h` | Optional RAII buffer helpers (`mkl_alloc_bytes`, `mkl_buffer`) wrapping `mkl_malloc`/`mkl_free`. |
 
@@ -45,12 +45,14 @@ scalar, `0` on success).
 | `src/cbk_sysvnp_compact.hpp` | The fused factor-and-solve driver: both group kernels per group, while the factor is cache-resident. |
 | `src/cbk_trsm_compact.hpp` | Triangular-solve kernels: the tuned column-major `side='L'` row-dot path and the general strided kernel, behind the per-group `trsm_compact_group` the fused solves compose. |
 | `src/cbk_gels_compact.hpp` | The one-call least-squares / minimum-norm solve: one driver over the geqrf, ormqr and trsm group kernels, on the tall view of `A` (transposed when `m < n`, which is the LQ case). |
-| `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-two entry points. |
+| `src/cbk_gepack_compact.hpp` | Pack and unpack between dense matrices (an array of pointers) and the compact format, with the identity in the padded slots, and the buffer size; `mkl_?gepack_compact`'s layout and padding. Portable API only. |
+| `src/cbk.cpp` | The portable C API: argument validation and `V` dispatch for all twenty-eight entry points. |
 | `src/cbk_compat.cpp` | The MKL-style API: MKL enum / `MKL_COMPACT_PACK` unwrapping for all twenty-two entry points. |
-| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, Compact pack/unpack, and `compact<T>` (the portable C API dispatched on the scalar type); header-only, library-free. |
+| `tests/test_compact_util.hpp` | Shared test helpers: RNG, error metrics, input generation, Compact pack/unpack of a `MatrixBatch` (through the library's `?gepack_compact` / `?geunpack_compact`), and `compact<T>` (the portable C API dispatched on the scalar type); header-only, library-free. |
 | `tests/test_lapack_util.hpp` | The dense references on a real LAPACKE + CBLAS: `lapack<T>` (the LAPACKE/CBLAS dispatch), the `ref_*` procedures over views (`ref_geqr2`, `ref_ormqr`, `ref_potrf`, `ref_trsm`, `ref_gels`, ...), `matmul`, `tri_apply`, `solve_errors`. The stack comes from `cmake/FindLAPACKE.cmake`. |
 | `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `compat<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels). |
 | `tests/test_*_compact.cpp` | The portable C API's suites, on any LAPACKE stack: each kernel vs its LAPACK counterpart (elementwise where that is the same unblocked algorithm, residual and invariant gates elsewhere), plus C API validation, in FP64 and FP32. |
+| `tests/test_batch_compact.cpp` | The contracts of the batch as a whole, over several routines: a matrix a routine cannot handle gets Inf/NaN in its own result and leaves every other matrix bit-identical; results are independent of the thread count and of a caller's outer parallel loop. |
 | `tests/test_*_mkl.cpp` | MKL validation, templated on the scalar type and run in FP64 and FP32: the MKL-style API through MKL's pack/unpack, cross-checks vs MKL's compact kernels, end-to-end solves. |
 | `examples/bench_util.hpp` | The benchmarks' shared harness (timing, aligned storage, command line). |
 

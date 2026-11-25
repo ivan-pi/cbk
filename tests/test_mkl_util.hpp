@@ -42,11 +42,11 @@ template <> struct compat<T> {                                                  
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
     { cbk_##p##geqrf_compact(layout, m, n, ap, ldap, taup, work, lwork, info, fmt, nm); } \
     static void ormqr(MKL_LAYOUT layout, char side, char trans, MKL_INT m, MKL_INT n,     \
-                      MKL_INT k, const T *ap, MKL_INT ldap, const T *taup, T *cp,          \
-                      MKL_INT ldcp, T *work, MKL_INT lwork, MKL_INT *info,                 \
+                      MKL_INT k, MKL_INT na, const T *ap, MKL_INT ldap, const T *taup,     \
+                      T *cp, MKL_INT ldcp, T *work, MKL_INT lwork, MKL_INT *info,          \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \
-    { cbk_##p##ormqr_compact(layout, side, trans, m, n, k, ap, ldap, taup, cp, ldcp,   \
-                                 work, lwork, info, fmt, nm); }                            \
+    { cbk_##p##ormqr_compact(layout, side, trans, m, n, k, na, ap, ldap, taup, cp,     \
+                                 ldcp, work, lwork, info, fmt, nm); }                      \
     static void orgqr(MKL_LAYOUT layout, MKL_INT m, MKL_INT n, MKL_INT k, T *ap,          \
                       MKL_INT ldap, const T *taup, T *work, MKL_INT lwork, MKL_INT *info,  \
                       MKL_COMPACT_PACK fmt, MKL_INT nm)                                    \

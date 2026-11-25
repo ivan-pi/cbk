@@ -203,8 +203,8 @@ the portable `?orgqr_compact` of `cbk.h` is the checked surface.
 The columns of the computed `Q` are orthonormal to working precision
 (`||Q^T Q - I|| = O(k eps)`), as for dense `?orgqr` -- the accumulation is
 a product of exactly representable Householder applications and does not
-amplify the factorization's error. `?larfg`-style overflow/underflow
-rescaling is omitted, as throughout the toolkit; complex precisions
+amplify the factorization's error. The routine generates no reflectors, so
+it has no `?larfg` rescaling of its own to do; complex precisions
 (`?ungqr`) are out of scope with the rest of the complex domain. The LQ
 counterpart `?orglq` -- rows of `Q` from a `?gelqf`-storage factorization,
 e.g. the `m < n` output of `cbk_?gels_compact` -- is this kernel over

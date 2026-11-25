@@ -202,9 +202,9 @@ template <class T> int suite2(int nm, int m, int k)
 
     /* route 2: Q I through the apply-Q sweep, with its own queried workspace */
     T wq2;
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'N', m, k, k, hp, m, taup, cp, m, &wq2, -1,
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'N', m, k, k, k, hp, m, taup, cp, m, &wq2, -1,
                      &info, fmt, nm);
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'N', m, k, k, hp, m, taup, cp, m, &wq2,
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'N', m, k, k, k, hp, m, taup, cp, m, &wq2,
                      (MKL_INT)wq2, &info, fmt, nm);
     if (info != 0) {
         ++fails;

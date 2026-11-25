@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CBK_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" OFF)
 option(CBK_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
+option(CBK_REQUIRE_OPENMP "Fail the configure if CBK_WITH_OPENMP finds no OpenMP"      OFF)
 option(CBK_BUILD_TESTS "Build tests and register them with CTest"                     ON)
 # The install rules belong to cbk's own build, not to a project that
 # add_subdirectory()s it.
@@ -41,8 +42,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # OpenMP threads the group loop inside every routine (see the threading note
 # in src/cbk_common.hpp); the benchmarks use it for their outer loops.
 # Linked PRIVATE: consumers get the runtime library, not the -fopenmp flag.
+# Without an OpenMP runtime for the compiler (clang without libomp-dev, say)
+# the library builds serial rather than not at all; the status line says which,
+# and CBK_REQUIRE_OPENMP turns the fallback into an error, for a build (CI's)
+# that must not lose its threading unnoticed.
 if(CBK_WITH_OPENMP)
-  find_package(OpenMP QUIET)
+  if(CBK_REQUIRE_OPENMP)
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+  else()
+    find_package(OpenMP QUIET COMPONENTS CXX)
+  endif()
+endif()
+if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
+  message(STATUS "cbk: threading with OpenMP ${OpenMP_CXX_VERSION}")
+elseif(CBK_WITH_OPENMP)
+  message(STATUS "cbk: no OpenMP found for ${CMAKE_CXX_COMPILER_ID}; building single-threaded")
+else()
+  message(STATUS "cbk: single-threaded (CBK_WITH_OPENMP=OFF)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -73,9 +89,20 @@ target_compile_definitions(cbk PRIVATE
 if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
   target_link_libraries(cbk PRIVATE OpenMP::OpenMP_CXX)
 endif()
-# libcbk.so.<0.2.0> with soname libcbk.so.<0>, from project(... VERSION) above.
+# libcbk.so.<0.2.0>, from project(... VERSION) above. The soname names the ABI:
+# until 1.0.0 a minor release may change the API (CHANGELOG.md), so it is
+# libcbk.so.<0.2> there -- the same compatibility the CMake package declares
+# (SameMinorVersion, below) -- and libcbk.so.<major> from 1.0.0 on.
+if(PROJECT_VERSION_MAJOR EQUAL 0)
+  set(_cbk_soversion ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+else()
+  set(_cbk_soversion ${PROJECT_VERSION_MAJOR})
+endif()
+# Hidden visibility: the shared library exports the entry points the public
+# headers mark CBK_API and none of the kernels' template instantiations.
 set_target_properties(cbk PROPERTIES
-  VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+  VERSION ${PROJECT_VERSION} SOVERSION ${_cbk_soversion}
+  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 add_library(cbk::cbk ALIAS cbk)
 
 # ---------------------------------------------------------------------------
@@ -124,19 +151,27 @@ if(CBK_BUILD_TESTS)
   # The portable C API's suites: each kernel vs LAPACKE/CBLAS (its unblocked
   # LAPACK counterpart elementwise where that is the same algorithm, residual
   # and invariant gates elsewhere), plus the C API's LAPACK-style validation.
-  foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
+  # "batch" is not a routine: the contracts of the batch as a whole (a bad
+  # matrix stays in its lane; results independent of the thread count and of
+  # a caller's outer parallel loop), over several routines.
+  foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels batch)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
     target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
     target_include_directories(test_${routine}_compact
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
   endforeach()
+  # Its threading half drives the OpenMP runtime itself (thread counts, an
+  # outer parallel region); without OpenMP it reports that and passes.
+  if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(test_batch_compact PRIVATE OpenMP::OpenMP_CXX)
+  endif()
 
   if(CBK_WITH_MKL)
     # The MKL-style API's suites (the design docs' section 7): the compat
     # entry points through MKL's own pack/unpack, cross-checked against MKL's
     # compact kernels, and end-to-end solves.
-    foreach(routine geqrf ormqr orgqr potrf sytrfnp trsm gels)
+    foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels)
       add_executable(test_${routine}_mkl tests/test_${routine}_mkl.cpp)
       target_link_libraries(test_${routine}_mkl PRIVATE cbk MKL::Compact LAPACKE::LAPACKE)
       target_include_directories(test_${routine}_mkl

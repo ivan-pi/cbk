@@ -136,10 +136,10 @@ template <class T> int suite3(int nm, int n, int nrhs)
 
     /* 2. our compact apply Q^T, with its own separately queried workspace. */
     T wq_ormqr;
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m, &wq_ormqr,
-                     -1, &info, fmt, nm);
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, k, ap, m, taup, cp, m,
+                     &wq_ormqr, -1, &info, fmt, nm);
     std::vector<T> work_ormqr((size_t)std::max<MKL_INT>((MKL_INT)wq_ormqr, 1));
-    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, ap, m, taup, cp, m,
+    compat<T>::ormqr(MKL_COL_MAJOR, 'L', 'T', m, nrhs, k, k, ap, m, taup, cp, m,
                      work_ormqr.data(), (MKL_INT)work_ormqr.size(), &info, fmt, nm);
 
     /* 3. MKL compact triangular solve R X = Q^T B */
