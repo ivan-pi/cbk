@@ -40,15 +40,6 @@ extern "C" int cbk_get_version(void)
     return CBK_VERSION;
 }
 
-/* Bytes of a compact buffer, or 0 when an argument is illegal (the return is
- * a size, so there is no -j to give; 0 is also the size of an empty batch).
- * Type-independent: the scalar's size is the caller's to state. */
-extern "C" size_t cbk_get_size_compact(int ld, int sd, int V, int nm, size_t elem_size)
-{
-    if (ld < 0 || sd < 0 || (V != 2 && V != 4 && V != 8 && V != 16) || nm < 0) return 0;
-    return cbk::detail::compact_size_bytes(ld, sd, V, nm, elem_size);
-}
-
 namespace {
 
 using cbk::detail::for_vlen;
@@ -67,6 +58,14 @@ inline int max1(int x)
 inline bool vlen_ok(int V)
 {
     return V == 2 || V == 4 || V == 8 || V == 16;
+}
+
+/* ?get_size_compact: bytes, or 0 when an argument is illegal (the return is a
+ * size, so there is no -j to give; 0 is also the size of an empty batch). */
+template <typename T> std::size_t get_size(int ld, int sd, int V, int nm)
+{
+    if (ld < 0 || sd < 0 || !vlen_ok(V) || nm < 0) return 0;
+    return cbk::detail::compact_size_bytes<T, int>(ld, sd, V, nm);
 }
 
 /* ?gepack_compact and ?geunpack_compact share (layout, m, n, a, lda, ap, ldap,
@@ -388,6 +387,10 @@ int gels(char layout, char trans, int m, int n, int nrhs, T *ap, int ldap, T *bp
  * parenthesized. */
 // NOLINTBEGIN(bugprone-macro-parentheses)
 #define CBK_DEFINE_COMPACT_ENTRY_POINTS(T, p)                                            \
+    size_t p##get_size_compact(int ld, int sd, int V, int nm)                            \
+    {                                                                                    \
+        return get_size<T>(ld, sd, V, nm);                                               \
+    }                                                                                    \
     int p##gepack_compact(char layout, int m, int n, const T *const *a, int lda, T *ap,  \
                           int ldap, int V, int nm)                                       \
     {                                                                                    \

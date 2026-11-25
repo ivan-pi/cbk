@@ -1,4 +1,4 @@
-# API Design Document: `?gepack_compact`, `?geunpack_compact`, `cbk_get_size_compact`
+# API Design Document: `?gepack_compact`, `?geunpack_compact`, `?get_size_compact`
 
 > Assisted-by: Claude:claude-fable-5
 
@@ -19,7 +19,7 @@ routines are the ones to call, and the two produce the same buffer (section 5).
 ## 2. Syntax
 
 ```c
-size_t cbk_get_size_compact(int ld, int sd, int V, int nm, size_t elem_size);
+size_t dget_size_compact(int ld, int sd, int V, int nm);
 
 int dgepack_compact  (char layout, int m, int n, const double *const *a, int lda,
                       double *ap, int ldap, int V, int nm);
@@ -27,10 +27,9 @@ int dgeunpack_compact(char layout, int m, int n, double *const *a, int lda,
                       const double *ap, int ldap, int V, int nm);
 ```
 
-and the `s` forms of the pack and unpack routines for `float`. Their argument
-lists are MKL's with the `MKL_LAYOUT` enum replaced by the layout character
-and `MKL_COMPACT_PACK` by the interleave width `V`, as everywhere in `cbk.h`.
-The size routine departs from MKL's on purpose (section 3).
+and the `s` forms for `float`. The argument lists are MKL's with the
+`MKL_LAYOUT` enum replaced by the layout character and `MKL_COMPACT_PACK` by
+the interleave width `V`, as everywhere in `cbk.h`.
 
 ## 3. Parameters
 
@@ -43,21 +42,23 @@ The size routine departs from MKL's on purpose (section 3).
   a stride.
 * **`lda`**, **`ldap`**: leading dimensions of the dense matrices and of the
   compact batch (`>= max(1, m)` column-major, `>= max(1, n)` row-major).
-* **`ap`**: the compact batch, `cbk_get_size_compact(ldap, n, V, nm,
-  sizeof(double))` bytes column-major and `(ldap, m, ...)` row-major.
+* **`ap`**: the compact batch, `?get_size_compact(ldap, n, V, nm)` bytes
+  column-major and `(ldap, m, V, nm)` row-major.
 * **`V`, `nm`**: interleave width (2, 4, 8 or 16) and number of matrices.
 
-`cbk_get_size_compact(ld, sd, V, nm, elem_size)` returns
-`ld * sd * V * ceil(nm / V) * elem_size` bytes, `sd` being the extent that is
-not the leading dimension's. It returns `0` for an illegal argument: its
-return value is a size, so it has no `-j` to give.
+`?get_size_compact(ld, sd, V, nm)` returns
+`ld * sd * V * ceil(nm / V) * sizeof(scalar)` bytes, `sd` being the extent
+that is not the leading dimension's. It returns `0` for an illegal argument:
+its return value is a size, so it has no `-j` to give.
 
-It is one function, not a `d`/`s` pair. The size of a compact buffer depends
-on the scalar type only through the size of one scalar, and a function with
-no array argument has no way to know which precision the buffer is for, so
-the caller says: `sizeof(double)` for the `d` routines, `sizeof(float)` for
-the `s` ones, as with `calloc`. A caller who wants the number of scalars
-divides by the same `elem_size`.
+It is a `d`/`s` pair like every other routine, although the two differ only
+in a `sizeof`. A single function taking the scalar's size as a fifth argument
+was tried and withdrawn: a size function has no array argument to tell it the
+precision, so the caller had to state it, and a wrong one (or two of the five
+integers swapped) compiles and returns a plausible number -- a buffer half
+the size the `d` routines then write to. With the precision in the name, the
+call reads like the routines the buffer is for and the remaining arguments
+are the `(ld, sd, V, nm)` they take.
 
 The result is a `size_t` computed in `size_t`. `mkl_?get_size_compact`
 returns an `MKL_INT`, 32 bits under the LP64 interface, and a batch past 2 GB
@@ -92,8 +93,7 @@ factorization came from elsewhere; clear those scalars then (the suites'
 ## 5. Compatibility with MKL
 
 Both padding choices are `mkl_?gepack_compact`'s, measured rather than read
-from the documentation, and `cbk_get_size_compact` returns MKL's byte count
-for the same scalar size.
+from the documentation, and `?get_size_compact` returns MKL's byte count.
 `tests/test_gepack_mkl.cpp` holds the routines to that: the packed buffers of
 the two libraries are compared with `memcmp` from the same sentinel fill, each
 library unpacks the other's buffer to the same matrices, and the sizes agree,

@@ -23,7 +23,7 @@
  *
  *   dgepack_compact   / sgepack_compact    -- dense matrices -> compact batch
  *   dgeunpack_compact / sgeunpack_compact  -- compact batch -> dense matrices
- *   cbk_get_size_compact                   -- bytes of a compact buffer (either precision)
+ *   dget_size_compact / sget_size_compact  -- bytes of a compact buffer
  *
  * Compact layout; group g = idx/V, slot v = idx%V:
  *   A_v(i,j)  = ap [ g*ldap*ncol*V + (j*ldap + i)*V + v ]   (column-major)
@@ -40,7 +40,7 @@
  * first is read from the wrong place. The batch is padded to a whole number
  * of groups, ceil(nm / V): the buffers must be allocated for it, and the
  * lanes past nm in the last group are computed on like any other.
- * cbk_get_size_compact gives the padded size and ?gepack_compact fills those
+ * ?get_size_compact gives the padded size and ?gepack_compact fills those
  * lanes with identity matrices, which keeps their arithmetic finite.
  *
  * V is the interleave width: 2, 4, 8, or 16 elements (SSE d=2/s=4, AVX d=4/s=8,
@@ -104,27 +104,26 @@ extern "C" {
 /* The version of the linked library, encoded as CBK_VERSION is. */
 CBK_API int cbk_get_version(void);
 
-/* The size in bytes of a compact buffer: what to allocate for nm matrices
- * packed with leading dimension ld and second dimension sd, whole groups of V
- * included,
- *     ld * sd * V * ceil(nm / V) * elem_size.
- * One function for both precisions: the buffer's size depends on the scalar
- * type only through the size of one scalar, which the caller states (as with
- * calloc), so nothing here needs to know which routines the buffer is for.
- *   ld         compact leading dimension (the ldap/ldbp/ldcp the routine is given)
- *   sd         the other extent: the column count for a column-major batch,
- *              the row count for a row-major one. For a tau buffer,
- *              ld = min(m, n) and sd = 1.
- *   V, nm      interleave width; total number of matrices
- *   elem_size  bytes per scalar: sizeof(double) for the d routines,
- *              sizeof(float) for the s routines
- * The result is a size_t, computed in size_t: a batch past 2 GB is sized
- * correctly (mkl_?get_size_compact, the routine this replaces, returns an
- * MKL_INT that wraps there under LP64). Divide by elem_size for the number
- * of scalars. Returns 0 for an illegal argument (ld < 0, sd < 0, V not
- * 2/4/8/16, nm < 0), as for an empty batch. Align the buffer to 64 bytes for
- * full speed (see Alignment above). */
-CBK_API size_t cbk_get_size_compact(int ld, int sd, int V, int nm, size_t elem_size);
+/* The size in bytes of a compact buffer -- the portable mkl_?get_size_compact:
+ * what to allocate for nm matrices packed with leading dimension ld and second
+ * dimension sd, whole groups of V included,
+ *     ld * sd * V * ceil(nm / V) * sizeof(scalar).
+ *   ld       compact leading dimension (the ldap/ldbp/ldcp the routine is given)
+ *   sd       the other extent: the column count for a column-major batch, the
+ *            row count for a row-major one. For a tau buffer, ld = min(m, n)
+ *            and sd = 1.
+ *   V, nm    interleave width; total number of matrices
+ * Call the one whose letter matches the routines the buffer is for: the d
+ * form counts doubles, the s form floats, so the precision cannot be passed
+ * wrong. The result is a size_t, computed in size_t: a batch past 2 GB is
+ * sized correctly (mkl_?get_size_compact returns an MKL_INT that wraps there
+ * under LP64). Divide by the scalar's size for the number of elements.
+ * Returns 0 for an illegal argument (ld < 0, sd < 0, V not 2/4/8/16, nm < 0),
+ * as for an empty batch. Align the buffer to 64 bytes for full speed (see
+ * Alignment above). */
+CBK_API size_t dget_size_compact(int ld, int sd, int V, int nm);
+
+CBK_API size_t sget_size_compact(int ld, int sd, int V, int nm);
 
 /* Pack a batch of conventionally stored matrices into the compact format --
  * the portable mkl_?gepack_compact, and bit for bit the buffer it produces.
@@ -133,7 +132,7 @@ CBK_API size_t cbk_get_size_compact(int ld, int sd, int V, int nm, size_t elem_s
  *   a        array of nm pointers, a[idx] the idx-th m x n matrix in `layout`
  *            with leading dimension lda; the matrices need not be contiguous
  *   lda      leading dimension of each a[idx] (>= m col-major, >= n row-major)
- *   ap       compact output; cbk_get_size_compact(ldap, n, V, nm, sizeof(double)) bytes
+ *   ap       compact output; ?get_size_compact(ldap, n, V, nm) bytes
  *            column-major, (ldap, m, V, nm) row-major
  *   ldap     compact leading dimension (>= m col-major, >= n row-major)
  *   V, nm    interleave width; total number of matrices

@@ -9,17 +9,16 @@ release may change the API.
 
 ### Added
 
-- Portable C API: `?gepack_compact` and `?geunpack_compact`, the conversion
-  between conventionally stored matrices and the compact format, and
-  `cbk_get_size_compact`, the size of a compact buffer, so that `cbk.h` can
-  be used without MKL's pack routines. Pack and unpack reproduce
-  `mkl_?gepack_compact` and `mkl_?geunpack_compact` bit for bit: the slots
-  past `nm` in the last group are filled with the identity, and the entries
-  between the matrix extent and the leading dimension are left untouched.
-  `cbk_get_size_compact(ld, sd, V, nm, elem_size)` is one function for both
-  precisions -- the caller passes the size of a scalar -- and returns bytes
-  as a `size_t`, so a batch past 2 GB is sized correctly where
-  `mkl_?get_size_compact`'s `MKL_INT` wraps under LP64.
+- Portable C API: `?gepack_compact`, `?geunpack_compact` and
+  `?get_size_compact`, the conversion between conventionally stored matrices
+  and the compact format and the size of a compact buffer, so that `cbk.h`
+  can be used without MKL's pack routines. They reproduce
+  `mkl_?gepack_compact`, `mkl_?geunpack_compact` and `mkl_?get_size_compact`
+  bit for bit: the slots past `nm` in the last group are filled with the
+  identity, and the entries between the matrix extent and the leading
+  dimension are left untouched.
+  `?get_size_compact` returns bytes as a `size_t`, so a batch past 2 GB is
+  sized correctly where MKL's `MKL_INT` result wraps under LP64.
 
 ### Changed
 

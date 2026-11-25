@@ -3,8 +3,7 @@
  * Conversion between a batch of conventionally stored (dense) matrices and the
  * compact (interleaved) format, templated on scalar type T and interleave width
  * V -- the portable mkl_?gepack_compact / mkl_?geunpack_compact, and the size
- * of the buffer they convert to and from (cbk_get_size_compact, which unlike
- * mkl_?get_size_compact is one function taking the scalar's size):
+ * of the buffer they convert to and from (mkl_?get_size_compact):
  *
  *     gepack    ap  <-  a[0 .. nm-1]      interleave
  *     geunpack  a[0 .. nm-1]  <-  ap      de-interleave
@@ -46,12 +45,11 @@ namespace cbk::detail {
 /* Bytes of a compact buffer for nm matrices of leading dimension ld and second
  * dimension sd (the column count column-major, the row count row-major):
  * ld * sd packs for each of the ceil(nm / V) groups. */
-template <typename Int>
-std::size_t compact_size_bytes(Int ld, Int sd, int V, Int nm,
-                               std::size_t elem_size) noexcept
+template <typename T, typename Int>
+std::size_t compact_size_bytes(Int ld, Int sd, int V, Int nm) noexcept
 {
     return (std::size_t)ld * (std::size_t)sd * (std::size_t)V *
-           (std::size_t)group_count(nm, V) * elem_size;
+           (std::size_t)group_count(nm, V) * sizeof(T);
 }
 
 /* Offset of element (i,j) in a dense matrix of leading dimension ld. */

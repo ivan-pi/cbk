@@ -25,7 +25,7 @@ into MKL's Compact ecosystem on Intel CPUs.
 | [`?sytrfnp` / `?sytrsnp` / `?sysvnp_compact`](docs/cbk_dsytrfnp_compact_design.md) | unpivoted LDL^T factorization, solve, fused factor-and-solve |
 | [`?trsm_compact`](docs/cbk_dtrsm_compact_design.md) | triangular solve |
 | [`?gels_compact`](docs/cbk_dgels_compact_design.md) | least-squares / minimum-norm solve `op(A) X = B` in one call |
-| [`?gepack` / `?geunpack_compact`, `cbk_get_size_compact`](docs/cbk_dgepack_compact_design.md) | pack dense matrices into the compact format and back; size the buffer |
+| [`?gepack` / `?geunpack` / `?get_size_compact`](docs/cbk_dgepack_compact_design.md) | pack dense matrices into the compact format and back; size the buffer |
 
 Each routine links to its design document.
 

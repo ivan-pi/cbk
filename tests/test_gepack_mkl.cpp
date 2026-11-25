@@ -1,6 +1,6 @@
 /* test_gepack_mkl.cpp
  *
- * The portable ?gepack_compact / ?geunpack_compact / cbk_get_size_compact against
+ * The portable ?gepack_compact / ?geunpack_compact / ?get_size_compact against
  * Intel MKL's mkl_?gepack_compact / mkl_?geunpack_compact /
  * mkl_?get_size_compact, which they are documented to reproduce: the same
  * buffer bit for bit -- the identity in the slots past nm and the scalars
