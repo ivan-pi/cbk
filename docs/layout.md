@@ -52,6 +52,7 @@ scalar, `0` on success).
 | `tests/test_lapack_util.hpp` | The dense references on a real LAPACKE + CBLAS: `lapack<T>` (the LAPACKE/CBLAS dispatch), the `ref_*` procedures over views (`ref_geqr2`, `ref_ormqr`, `ref_potrf`, `ref_trsm`, `ref_gels`, ...), `matmul`, `tri_apply`, `solve_errors`. The stack comes from `cmake/FindLAPACKE.cmake`. |
 | `tests/test_mkl_util.hpp` | Scalar-type dispatch for the MKL-backed suites: `compat<T>` (routines under test), `mkl<T>` (MKL's compact API and kernels). |
 | `tests/test_*_compact.cpp` | The portable C API's suites, on any LAPACKE stack: each kernel vs its LAPACK counterpart (elementwise where that is the same unblocked algorithm, residual and invariant gates elsewhere), plus C API validation, in FP64 and FP32. |
+| `tests/test_batch_compact.cpp` | The contracts of the batch as a whole, over several routines: a matrix a routine cannot handle gets Inf/NaN in its own result and leaves every other matrix bit-identical; results are independent of the thread count and of a caller's outer parallel loop. |
 | `tests/test_*_mkl.cpp` | MKL validation, templated on the scalar type and run in FP64 and FP32: the MKL-style API through MKL's pack/unpack, cross-checks vs MKL's compact kernels, end-to-end solves. |
 | `examples/bench_util.hpp` | The benchmarks' shared harness (timing, aligned storage, command line). |
 

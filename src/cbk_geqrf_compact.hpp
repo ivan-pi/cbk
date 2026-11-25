@@ -53,9 +53,9 @@ using mask_t = typename pack<typename int_bits<T>::type, V>::type;
 /* r := mask ? a : b, lane-wise; mask lanes are all-ones or zero, as the vector
  * comparisons produce. The blend runs on the may-alias integer view. */
 template <typename T, int V>
-inline void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
-                    const typename pack<T, V>::type &a,
-                    const typename pack<T, V>::type &b) noexcept
+CBK_ALWAYS_INLINE void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
+                               const typename pack<T, V>::type &a,
+                               const typename pack<T, V>::type &b) noexcept
 {
     using MT = mask_t<T, V>;
     const MT ai = reinterpret_cast<const MT &>(a);
@@ -73,10 +73,10 @@ inline void vselect(typename pack<T, V>::type &r, const mask_t<T, V> &mask,
  * (and a padded identity lane) yields tau = 0 with x0 unchanged, and no lane
  * ever forms 0/0 or 1/0. */
 template <typename T, int V>
-inline void larfg_pack(const typename pack<T, V>::type &x0,
-                       const typename pack<T, V>::type &tail,
-                       typename pack<T, V>::type &rdiag, typename pack<T, V>::type &tau,
-                       typename pack<T, V>::type &inv) noexcept
+CBK_ALWAYS_INLINE void
+larfg_pack(const typename pack<T, V>::type &x0, const typename pack<T, V>::type &tail,
+           typename pack<T, V>::type &rdiag, typename pack<T, V>::type &tau,
+           typename pack<T, V>::type &inv) noexcept
 {
     using VT = typename pack<T, V>::type;
     const VT zero = VT{};
@@ -91,7 +91,8 @@ inline void larfg_pack(const typename pack<T, V>::type &x0,
 }
 
 /* True when every lane of a comparison mask is set. */
-template <typename T, int V> inline bool all_lanes(const mask_t<T, V> &mask) noexcept
+template <typename T, int V>
+CBK_ALWAYS_INLINE bool all_lanes(const mask_t<T, V> &mask) noexcept
 {
     typename int_bits<T>::type all = -1;
     for (int v = 0; v < V; ++v)
@@ -101,8 +102,8 @@ template <typename T, int V> inline bool all_lanes(const mask_t<T, V> &mask) noe
 
 /* r := |x|, lane-wise. */
 template <typename T, int V>
-inline void vabs(typename pack<T, V>::type &r,
-                 const typename pack<T, V>::type &x) noexcept
+CBK_ALWAYS_INLINE void vabs(typename pack<T, V>::type &r,
+                            const typename pack<T, V>::type &x) noexcept
 {
     vselect<T, V>(r, x < 0, -x, x);
 }
@@ -115,8 +116,9 @@ inline void vabs(typename pack<T, V>::type &r,
  * trusted on: the sum underflowed to zero reads as "already triangular" and
  * returns a finite, wrong R, and the overflowed one returns Inf. */
 template <typename T, int V>
-inline void larfg_in_range(mask_t<T, V> &ok, const typename pack<T, V>::type &x0,
-                           const typename pack<T, V>::type &tail) noexcept
+CBK_ALWAYS_INLINE void larfg_in_range(mask_t<T, V> &ok,
+                                      const typename pack<T, V>::type &x0,
+                                      const typename pack<T, V>::type &tail) noexcept
 {
     constexpr T tsml = std::numeric_limits<T>::min() / std::numeric_limits<T>::epsilon();
     constexpr T tbig = std::numeric_limits<T>::max();
@@ -233,9 +235,12 @@ void geqrf_compact_group(Int m, Int n, BatchView<T, V, Int> A, T *tau_)
 
     for (Int kk = 0; kk < k; ++kk) {
         geqrf_reflector<T, V, Int>(kk, m, A, tau);
-        const VT t = tau[kk];
         /* apply H(kk) to the trailing columns kk+1 .. n-1 */
-        larf<T, V>(kk, m, Ac, t, A, kk + 1, n);
+        /* a local copy, not &tau[kk]: a pointer into the tau buffer may alias
+         * the stores to A (the pack is may_alias), and larf reloading it
+         * through the trailing update measured markedly slower under gcc */
+        const VT t = tau[kk];
+        larf<T, V>(kk, m, Ac, &t, A, kk + 1, n);
     }
 }
 

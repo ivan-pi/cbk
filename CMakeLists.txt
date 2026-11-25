@@ -15,6 +15,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CBK_WITH_MKL    "Build the Intel MKL compact extension, examples and MKL tests" OFF)
 option(CBK_WITH_OPENMP "Thread each routine's loop over compact groups with OpenMP"     ON)
+option(CBK_REQUIRE_OPENMP "Fail the configure if CBK_WITH_OPENMP finds no OpenMP"      OFF)
 option(CBK_BUILD_TESTS "Build tests and register them with CTest"                     ON)
 # The install rules belong to cbk's own build, not to a project that
 # add_subdirectory()s it.
@@ -41,8 +42,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # OpenMP threads the group loop inside every routine (see the threading note
 # in src/cbk_common.hpp); the benchmarks use it for their outer loops.
 # Linked PRIVATE: consumers get the runtime library, not the -fopenmp flag.
+# Without an OpenMP runtime for the compiler (clang without libomp-dev, say)
+# the library builds serial rather than not at all; the status line says which,
+# and CBK_REQUIRE_OPENMP turns the fallback into an error, for a build (CI's)
+# that must not lose its threading unnoticed.
 if(CBK_WITH_OPENMP)
-  find_package(OpenMP QUIET)
+  if(CBK_REQUIRE_OPENMP)
+    find_package(OpenMP REQUIRED COMPONENTS CXX)
+  else()
+    find_package(OpenMP QUIET COMPONENTS CXX)
+  endif()
+endif()
+if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
+  message(STATUS "cbk: threading with OpenMP ${OpenMP_CXX_VERSION}")
+elseif(CBK_WITH_OPENMP)
+  message(STATUS "cbk: no OpenMP found for ${CMAKE_CXX_COMPILER_ID}; building single-threaded")
+else()
+  message(STATUS "cbk: single-threaded (CBK_WITH_OPENMP=OFF)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -135,13 +151,21 @@ if(CBK_BUILD_TESTS)
   # The portable C API's suites: each kernel vs LAPACKE/CBLAS (its unblocked
   # LAPACK counterpart elementwise where that is the same algorithm, residual
   # and invariant gates elsewhere), plus the C API's LAPACK-style validation.
-  foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels)
+  # "batch" is not a routine: the contracts of the batch as a whole (a bad
+  # matrix stays in its lane; results independent of the thread count and of
+  # a caller's outer parallel loop), over several routines.
+  foreach(routine gepack geqrf ormqr orgqr potrf sytrfnp trsm gels batch)
     add_executable(test_${routine}_compact tests/test_${routine}_compact.cpp)
     target_link_libraries(test_${routine}_compact PRIVATE cbk LAPACKE::LAPACKE)
     target_include_directories(test_${routine}_compact
       PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME portable_${routine} COMMAND test_${routine}_compact)
   endforeach()
+  # Its threading half drives the OpenMP runtime itself (thread counts, an
+  # outer parallel region); without OpenMP it reports that and passes.
+  if(CBK_WITH_OPENMP AND OpenMP_CXX_FOUND)
+    target_link_libraries(test_batch_compact PRIVATE OpenMP::OpenMP_CXX)
+  endif()
 
   if(CBK_WITH_MKL)
     # The MKL-style API's suites (the design docs' section 7): the compat

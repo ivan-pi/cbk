@@ -70,10 +70,11 @@ enum class Direction { Forward, Backward };
  * blocking. */
 template <int JB, typename T, int V, typename Int>
 inline void larf_block(Int kk, Int len, const ConstBatchView<T, V, Int> &A,
-                       const typename pack<T, V>::type &t, const BatchView<T, V, Int> &C,
-                       Int p0)
+                       const typename pack<T, V>::type *tau,
+                       const BatchView<T, V, Int> &C, Int p0)
 {
     using VT = typename pack<T, V>::type;
+    const VT t = *tau;
     VT w[JB];
     for (int c = 0; c < JB; ++c)
         w[c] = C(kk, p0 + c);
@@ -93,18 +94,20 @@ inline void larf_block(Int kk, Int len, const ConstBatchView<T, V, Int> &A,
     }
 }
 
-/* Apply H(kk) (column kk of A, scalar t) to slices [p0, p1) of C, four at a
- * time with a one-at-a-time tail. */
+/* Apply H(kk) (column kk of A, scalar *tau) to slices [p0, p1) of C, four at
+ * a time with a one-at-a-time tail. tau is a pointer, not a reference: these
+ * two are too large to force inline, and a pack reference must not cross a
+ * call (cbk_common.hpp). */
 template <typename T, int V, typename Int>
 inline void larf(Int kk, Int len, const ConstBatchView<T, V, Int> &A,
-                 const typename pack<T, V>::type &t, const BatchView<T, V, Int> &C,
+                 const typename pack<T, V>::type *tau, const BatchView<T, V, Int> &C,
                  Int p0, Int p1)
 {
     Int p = p0;
     for (; p + 4 <= p1; p += 4)
-        larf_block<4, T, V>(kk, len, A, t, C, p);
+        larf_block<4, T, V>(kk, len, A, tau, C, p);
     for (; p < p1; ++p)
-        larf_block<1, T, V>(kk, len, A, t, C, p);
+        larf_block<1, T, V>(kk, len, A, tau, C, p);
 }
 
 /* One group: sweep the k reflectors over all `npanel` slices of C. A is the
@@ -122,7 +125,8 @@ void ormqr_compact_group(Direction dir, Int len, Int npanel, Int k,
     const VT *tau = reinterpret_cast<const VT *>(tau_);
     for (Int s = 0; s < k; ++s) {
         const Int kk = (dir == Direction::Forward) ? s : k - 1 - s;
-        larf<T, V>(kk, len, A, tau[kk], C, Int(0), npanel);
+        const VT t = tau[kk]; /* a local: see geqrf_compact_group */
+        larf<T, V>(kk, len, A, &t, C, Int(0), npanel);
     }
 }
 

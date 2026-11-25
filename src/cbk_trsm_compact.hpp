@@ -47,9 +47,9 @@ namespace cbk::detail {
  * reads A down columns (contiguous), for the 1-column tail where a strided
  * single-column row-dot would prefetch poorly. bj is the column, scaled first. */
 template <bool UPPER, bool UNIT, typename T, int V, typename Int>
-inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
-                          typename pack<T, V>::type *bj,
-                          const typename pack<T, V>::type &va)
+CBK_ALWAYS_INLINE void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
+                                     typename pack<T, V>::type *bj,
+                                     const typename pack<T, V>::type &va)
 {
     using VT = typename pack<T, V>::type;
     for (Int i = 0; i < m; ++i)
@@ -71,9 +71,9 @@ inline void trsm_axpy_col(Int m, const typename pack<T, V>::type *A, Int ldap,
  * registers and the c-loops unroll. B points at the first of the JB adjacent RHS
  * columns (column c at B + c*ldbp); alpha is folded into the first load. */
 template <int JB, bool UPPER, bool TRAN, bool UNIT, typename T, int V, typename Int>
-inline void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
-                           typename pack<T, V>::type *B, Int ldbp,
-                           const typename pack<T, V>::type &va)
+CBK_ALWAYS_INLINE void trsm_dot_block(Int m, const typename pack<T, V>::type *A, Int ldap,
+                                      typename pack<T, V>::type *B, Int ldbp,
+                                      const typename pack<T, V>::type &va)
 {
     using VT = typename pack<T, V>::type;
     /* back-substitute (sweep rows high -> low) when op(A) is upper-triangular:

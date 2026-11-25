@@ -102,22 +102,33 @@ template <typename T, int V> struct pack {
 /*                                                                     */
 /* Vectors are passed by reference: passing a GNU vector by value would */
 /* commit the base-ISA vector argument ABI without -march, which GCC   */
-/* and Clang flag via -Wpsabi. Once inlined the codegen is identical.  */
-/* Results are written through an out-parameter (named first). These   */
-/* helpers are small enough to always inline; a pack passed by         */
-/* reference across a call clang does NOT inline is loaded there with   */
-/* the natural vector alignment (the typedef's relaxed alignment is    */
-/* lost on the referent) and faults on an under-aligned buffer or      */
-/* local -- larger helpers re-read the value from the view instead.    */
+/* and Clang flag via -Wpsabi. Results are written through an          */
+/* out-parameter (named first).                                        */
+/*                                                                     */
+/* Every function with a pack (or mask) reference parameter is         */
+/* CBK_ALWAYS_INLINE, and that is a correctness requirement, not a     */
+/* hint. Clang gives a reference parameter the *natural* alignment of  */
+/* its vector type (the typedef's relaxed alignment does not reach the */
+/* parameter), so a call that stays out of line loads and stores       */
+/* through it with aligned moves and faults on a pack that is only     */
+/* T-aligned -- a view element, or a local. Left to the inliner this   */
+/* held at -O2 and broke wherever inlining was curtailed: under the    */
+/* sanitizers, with -fno-inline-functions, or once a helper grew.      */
+/* Inlined, the parameter is gone and each access keeps the alignment  */
+/* of the object it names. A helper too large to force inline takes a  */
+/* pointer to the pack (clang does honor the typedef on a pointee),    */
+/* the scalar it was broadcast from, or the view and the indices.      */
 /* ------------------------------------------------------------------ */
+
+#define CBK_ALWAYS_INLINE inline __attribute__((always_inline))
 
 /* r := sqrt(x), lane-wise. GCC and clang lower the loop to one vsqrt*
  * instruction under -fno-math-errno, which the library's CMakeLists sets
  * (docs/building.md); with math errno on, each lane is a guarded scalar sqrt
  * plus a libm call. The kernels never read errno. */
 template <typename T, int V>
-inline void vsqrt(typename pack<T, V>::type &r,
-                  const typename pack<T, V>::type &x) noexcept
+CBK_ALWAYS_INLINE void vsqrt(typename pack<T, V>::type &r,
+                             const typename pack<T, V>::type &x) noexcept
 {
     for (int v = 0; v < V; ++v)
         r[v] = std::sqrt(x[v]);
@@ -127,7 +138,7 @@ inline void vsqrt(typename pack<T, V>::type &r,
  * arithmetic but not in assignment; `x - VT{}` subtracts an all-zero vector,
  * leaving x in every lane (and, unlike `VT{} + x`, preserving a zero's sign). */
 template <typename T, int V>
-inline void broadcast(typename pack<T, V>::type &v, T x) noexcept
+CBK_ALWAYS_INLINE void broadcast(typename pack<T, V>::type &v, T x) noexcept
 {
     v = x - typename pack<T, V>::type{};
 }
@@ -168,7 +179,13 @@ template <typename T, int V, typename Int = int, bool Const = false> struct Batc
     Int si; /* stride along the first index  */
     Int sj; /* stride along the second index */
 
-    VT &operator()(Int i, Int j) const noexcept { return data[i * si + j * sj]; }
+    /* Forced inline: the returned reference is a pack reference crossing a
+     * call, and out of line clang gives it the natural vector alignment
+     * (see the lane-wise helpers above). */
+    CBK_ALWAYS_INLINE VT &operator()(Int i, Int j) const noexcept
+    {
+        return data[i * si + j * sj];
+    }
 
     /* The same storage read as the transposed matrices: (i,j) -> (j,i). */
     BatchView transposed() const noexcept { return {data, sj, si}; }

@@ -153,24 +153,41 @@ workspace contract, or the benchmarks' threading.
   `aligned(alignof(T))`; always name it as `typename pack<T,V>::type` and never
   pass it as a template *argument* (clang strips typedef alignment there and
   emits aligned loads that fault on 16-byte-aligned buffers -- issue #34).
-- **Never pass a pack across a call by reference.** The second face of the
-  same clang behavior (issue #34 fixed the template-argument face in PR #35):
-  a `const typename pack<T,V>::type &` parameter is loaded with the *natural*
-  vector alignment once the call is not inlined -- the typedef's relaxed
-  alignment does not survive on the referent -- and faults on a buffer or stack
-  local that is only `T`-aligned. The `JB = 4` block helper of `sytrfnp` was
-  first written that way (the pivot `d` passed by reference from the caller's
-  local) and segfaulted on a `movapd` under clang in the plain Release
-  configuration CI uses, while the same source passed every test under gcc.
-  Passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`).
-  Instead give the helper the view and the indices and let it load what it
-  needs (`sytrfnp_update_block`, which `potrf`'s panel calls too, does exactly that), or
-  pass the scalar the pack was broadcast from. The same goes for results:
-  `geqrf_reflector` handed `tau` back through a pack reference until it grew
-  the scaling check and stopped inlining, and then faulted the same way; it
-  now writes `tau[kk]` and the caller reads it from there. The tiny lane-wise helpers
-  (`vsqrt`, `broadcast`, `trsm_dot_block`'s `va`) get away with references only
-  because they always inline.
+- **A pack reference must not cross a call.** The second face of the same
+  clang behavior (issue #34 fixed the template-argument face in PR #35): a
+  `typename pack<T,V>::type &` parameter -- or return value -- carries the
+  *natural* vector alignment once the call is not inlined; the typedef's
+  relaxed alignment does not reach it. The callee then moves the pack with
+  aligned instructions and faults on a buffer or stack local that is only
+  `T`-aligned. Nothing inside the callee can undo it (not a cast, not
+  `memcpy`: the alignment is an attribute of the parameter itself), and
+  passing by value is no escape (`-Wpsabi`, see `cbk_common.hpp`). It bit
+  three times: `sytrfnp`'s `JB = 4` block helper (the pivot by reference,
+  segfaulting under clang in plain Release while gcc passed every test),
+  `geqrf_reflector` (`tau` returned through a reference, once the function
+  grew and stopped inlining), and then every small helper at once under the
+  sanitizers and `-fno-inline-functions`, where the optimizer no longer
+  inlined what the code had relied on it to. So it is now a rule with two
+  legal forms, not a judgment about what will inline:
+  - a function with a pack (or mask) reference parameter or return is
+    `CBK_ALWAYS_INLINE` (`vsqrt`, `broadcast`, `vselect`, `larfg_pack`,
+    `trsm_dot_block`, ..., and `BatchView::operator()`); inlined, the
+    parameter is gone and each access keeps the alignment of the object it
+    names;
+  - a function too large for that takes a **pointer** to the pack (clang
+    does honor the typedef on a pointee: `larf`, `larf_block`), the scalar it
+    was broadcast from, or the view and the indices (`sytrfnp_update_block`,
+    `geqrf_reflector_scaled`).
+
+  Hand a helper a pointer to a *local copy*, not into a compact buffer: a
+  pointer into `tau` may alias the stores to `A` (the pack is `may_alias`),
+  and `larf` reloading it through the trailing update measured markedly
+  slower under gcc. CI's `no-inline`, ASan and UBSan rows are what catch a
+  violation; run one of them locally after adding a helper:
+
+  ```sh
+  CXX=clang++ cmake -S . -B build-noinline -DBLA_VENDOR=OpenBLAS -DCMAKE_CXX_FLAGS="-O2 -march=native -fno-inline-functions" && cmake --build build-noinline && ctest --test-dir build-noinline
+  ```
 - **clang splits 512-bit packs in half unless told otherwise.** On x86, clang
   (icpx included) legalizes vector operations to its *preferred* width, which
   its tuning for AVX-512 CPUs sets to 256 bits: a V=8 double pack becomes two
@@ -186,8 +203,15 @@ workspace contract, or the benchmarks' threading.
   Check codegen with `objdump -d libcbk.a | grep -c zmm` (zero means split).
 - **Build and test with both gcc and clang before pushing.** CI runs both, and
   the packs' alignment is exactly the kind of contract only one of them
-  enforces: both alignment faults so far (issue #34 and the one above) were
-  invisible to gcc. The default (portable) tree needs only the compiler and a
+  enforces: every alignment fault so far (issue #34 and the ones above) was
+  invisible to gcc. Beyond the plain Release matrix, CI's `variants` job
+  (`.github/workflows/ci.yml`) builds Debug, AVX2, AVX-512 (when the runner
+  has it), `-fno-inline-functions`, ASan and UBSan under both compilers; the
+  clang rows need `libomp-dev` (and `libclang-rt-dev` for the sanitizers),
+  and every CI configure passes `-DCBK_REQUIRE_OPENMP=ON` so a missing
+  runtime cannot quietly turn the threaded loop serial. One sanitizer per
+  build: gcc's ASan and UBSan together misplace a 64-byte local on ASan's
+  fake stack, which is the toolchain's fault, not a finding. The default (portable) tree needs only the compiler and a
   LAPACKE stack for the tests (CI runs OpenBLAS and Netlib under both
   compilers, and Accelerate on macOS through `.github/workflows/macos.yml`):
 
@@ -281,6 +305,11 @@ workspace contract, or the benchmarks' threading.
   `ormqr` in every layout / side / trans against the explicit Q of `orgqr`
   (dqrt03).
   The MKL suites still carry their own relative gates.
+  `test_batch_compact.cpp` gates what belongs to the batch rather than to a
+  routine: a matrix a routine cannot handle stays in its lane (Inf/NaN there,
+  every other matrix bit-identical, return 0), and results are bitwise
+  independent of the thread count and of a caller's outer parallel loop. Add
+  a new routine to its list of operations.
 - **Argument checking.** The MKL-style API (`cbk_*`) skips validation like
   MKL's own compact routines (`info` is a scalar, `0` on success). The portable C
   API (`cbk.h`) validates LAPACK-style, returning `-j` for a bad j-th

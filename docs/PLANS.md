@@ -33,8 +33,6 @@ listed in `examples.md`.
   generators planned below would close it.
 - **Open:** the one-column tail of `larf` (all of `nrhs < 4`) reduces `v^T c`
   into a single accumulator and runs at FMA latency; split it into several.
-  `larf_block` takes `tau` by reference to a pack, which is safe only while it
-  inlines (`.claude/CLAUDE.md`); pass the pointer and index instead.
 
 ## orgqr
 
@@ -109,6 +107,14 @@ listed in `examples.md`.
   identity's one in its padded slots, which the caller clears.
 
 ## Project-wide
+
+- **Done: the pack-reference hazard is closed by construction.** Every
+  function with a pack reference parameter (and `BatchView::operator()`,
+  which returns one) is `CBK_ALWAYS_INLINE`; `larf` and `larf_block` take
+  `tau` by pointer. Before, correctness under clang rested on the optimizer
+  choosing to inline them, and failed under the sanitizers and
+  `-fno-inline-functions`. CI's `variants` job runs both, with Debug, AVX2
+  and AVX-512 builds, under gcc and clang.
 
 - **Done: test against a real BLAS/LAPACK (issue #27).** The suites validate
   against LAPACKE + CBLAS (`tests/test_lapack_util.hpp`): the `ref_*`

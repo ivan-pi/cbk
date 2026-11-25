@@ -20,6 +20,19 @@ release may change the API.
   `?get_size_compact` returns bytes as a `size_t`, so a batch past 2 GB is
   sized correctly where MKL's `MKL_INT` result wraps under LP64.
 
+- `CBK_REQUIRE_OPENMP` (CMake, default `OFF`): fail the configure instead of
+  silently building single-threaded when no OpenMP runtime is found. The
+  configure now prints which threading it chose.
+- Tests: `test_batch_compact`, the batch-level contracts -- a matrix a routine
+  cannot handle (non-SPD, zero pivot, NaN, rank-deficient) gets Inf/NaN in its
+  own result and leaves every other matrix bit-identical; results do not
+  depend on the thread count or on a caller's outer parallel loop, nested or
+  not.
+- CI: Debug, AVX2 (`x86-64-v3`), AVX-512 (`x86-64-v4`, where the runner has
+  it), `-fno-inline-functions`, ASan and UBSan builds under gcc and clang;
+  the clang rows install `libomp-dev` and every row requires OpenMP, so the
+  threaded path is tested under both compilers.
+
 ### Changed
 
 - **Breaking:** `?ormqr_compact` and `cbk_?ormqr_compact` take `na`, the
@@ -50,6 +63,13 @@ release may change the API.
   magnitude take the same path as before and factor to the same bits.
 - A batch within `V` of `INT_MAX` matrices no longer overflows the group
   count, which made every routine return 0 without computing anything.
+- Under clang, the kernels faulted on an aligned vector move whenever the
+  compiler did not inline their small pack helpers: with the sanitizers, with
+  `-fno-inline-functions`, or at a low optimization level. Clang gives a
+  reference parameter (or return) of the pack type its natural vector
+  alignment, which a compact buffer or a local need not have. The helpers are
+  now force-inlined, and the larger ones take a pointer.
+- `cbk.h` gave the threading gate as about `2e5` flops; it is `5e4`.
 
 ## [0.2.0] - 2026-09-15
 

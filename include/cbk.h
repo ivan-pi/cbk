@@ -52,7 +52,7 @@
  * Threading: built with OpenMP (the default, -DCBK_WITH_OPENMP=ON), each routine
  * runs its loop over groups of V matrices as a static-schedule parallel loop on
  * a team of min(ngroups, omp_get_max_threads()) threads, active only when the
- * call has at least two groups and enough work (about 2e5 flops, the measured
+ * call has at least two groups and enough work (about 5e4 flops, the measured
  * fork/join break-even; -DCBK_OMP_MIN_FLOPS overrides). The thread count is the
  * one OpenMP reports at the current nesting level, so calling these routines
  * from your own parallel loop leaves the inner loop serial (no competing pools)

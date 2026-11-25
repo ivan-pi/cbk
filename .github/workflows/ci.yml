@@ -27,8 +27,12 @@ jobs:
         stack: [MKL, OpenBLAS, Generic]
         interface: [lp64]
         include:
+          # clang needs its own OpenMP runtime: without libomp-dev the
+          # configure would fall back to a serial library and the clang rows
+          # would never run the threaded group loop (CBK_REQUIRE_OPENMP below
+          # makes that fallback an error).
           - { cc: gcc,   cxx: g++ }
-          - { cc: clang, cxx: clang++ }
+          - { cc: clang, cxx: clang++, extra: libomp-dev }
           - { stack: MKL,      packages: libmkl-dev }
           - { stack: OpenBLAS, packages: libopenblas-dev liblapacke-dev }
           - { stack: Generic,  packages: liblapacke-dev liblapack-dev libblas-dev }
@@ -45,7 +49,7 @@ jobs:
       - name: Install ${{ matrix.stack }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }}
+          sudo apt-get install -y --no-install-recommends ${{ matrix.packages }} ${{ matrix.extra }}
 
       - name: Configure
         run: >
@@ -54,9 +58,96 @@ jobs:
           -DCBK_WITH_MKL=${{ matrix.stack == 'MKL' && 'ON' || 'OFF' }}
           -DBLA_VENDOR=${{ matrix.stack }}
           -DMKLCompact_INTERFACE=${{ matrix.interface }}
+          -DCBK_REQUIRE_OPENMP=ON
 
       - name: Build
         run: cmake --build build -j
 
       - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The same suites under the configurations the matrix above does not reach.
+  # It builds plain Release for the baseline ISA (SSE2), where a V = 4 or 8
+  # pack is several registers: the wide-vector code paths, the Debug-only
+  # assertions of the views, and whatever only shows when inlining is
+  # curtailed were never run in CI. Every alignment fault this project has
+  # had lived in exactly those gaps. OpenBLAS throughout: the configurations
+  # vary the compiler's side, not the reference's.
+  variants:
+    name: ${{ matrix.cxx }} / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+        name: [Debug, AVX2, AVX-512, no-inline, ASan, UBSan]
+        include:
+          # Debug: assert() live (MatrixView's bounds, the kernels' contracts),
+          # and nothing inlined that is not forced to be.
+          - { name: Debug,     type: Debug,   flags: "" }
+          # x86-64-v3 is AVX2 + FMA (every hosted runner has it); x86-64-v4
+          # is AVX-512, which a runner may lack: that row checks the CPU and
+          # skips itself with a notice instead of dying on SIGILL.
+          - { name: AVX2,      type: Release, flags: "-O3 -march=x86-64-v3" }
+          - { name: AVX-512,   type: Release, flags: "-O3 -march=x86-64-v4", needs_cpu: avx512f }
+          # The helpers that take a pack by reference must be inlined to be
+          # correct under clang (src/cbk_common.hpp); this takes the
+          # optimizer's discretion away, so only the forced ones are.
+          - { name: no-inline, type: Release, flags: "-O2 -march=x86-64-v3 -fno-inline-functions" }
+          # One sanitizer per row: gcc's ASan and UBSan together misplace a
+          # 64-byte local on ASan's fake stack (a toolchain artifact, not a
+          # finding).
+          - { name: ASan,      type: Debug,   flags: "-O1 -march=x86-64-v3 -fsanitize=address -fno-omit-frame-pointer" }
+          - { name: UBSan,     type: Debug,   flags: "-O1 -march=x86-64-v3 -fsanitize=undefined -fno-sanitize-recover=all" }
+          - { cxx: g++,     cc: gcc }
+          - { cxx: clang++, cc: clang, extra: libomp-dev libclang-rt-dev }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the CPU
+        id: cpu
+        run: |
+          need="${{ matrix.needs_cpu }}"
+          if [ -z "$need" ] || grep -q -w "$need" /proc/cpuinfo; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::this runner's CPU has no $need; ${{ matrix.name }} was not tested in this run"
+          fi
+
+      - name: Install OpenBLAS
+        if: steps.cpu.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libopenblas-dev liblapacke-dev ${{ matrix.extra }}
+
+      - name: Configure
+        if: steps.cpu.outputs.run == 'true'
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.type }}
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DBLA_VENDOR=OpenBLAS
+          -DCBK_REQUIRE_OPENMP=ON
+
+      - name: Build
+        if: steps.cpu.outputs.run == 'true'
+        run: cmake --build build -j
+
+      # A 512-bit pack must compile to zmm code: clang splits it into two ymm
+      # halves unless the kernels' min_vector_width(512) takes effect
+      # (CBK_KERNEL_BEGIN, src/cbk_common.hpp), which costs throughput and
+      # fails no test.
+      - name: Check the vector width
+        if: steps.cpu.outputs.run == 'true' && matrix.name == 'AVX-512'
+        run: |
+          n=$(objdump -d build/libcbk.a | grep -c zmm || true)
+          echo "zmm instructions in libcbk.a: $n"
+          test "$n" -gt 0
+
+      - name: Test
+        if: steps.cpu.outputs.run == 'true'
         run: ctest --test-dir build --output-on-failure

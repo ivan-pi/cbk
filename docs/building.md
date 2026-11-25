@@ -153,6 +153,7 @@ CI builds against a fresh install for every MKL / static / shared combination
 |--------|---------|--------|
 | `CBK_WITH_MKL` | `OFF` | Build the MKL-style API, the MKL-backed tests, the example and the benchmarks; requires Intel MKL. |
 | `CBK_WITH_OPENMP` | `ON` | Thread the loop over groups with OpenMP; `OFF` gives single-threaded routines. See [threading.md](threading.md). |
+| `CBK_REQUIRE_OPENMP` | `OFF` | With `CBK_WITH_OPENMP=ON`, fail the configure when the compiler has no OpenMP runtime instead of building single-threaded (the configure prints which it chose). CI sets it; clang needs `libomp-dev`. |
 | `CBK_BUILD_TESTS` | `ON` | Build the tests and register them with CTest; needs a LAPACKE + CBLAS stack. |
 | `BLA_VENDOR` | -- | CMake's own: the LAPACK the tests validate against (`OpenBLAS`, `Generic` for Netlib, `Apple`); ignored with `CBK_WITH_MKL=ON`, where it is MKL's. |
 | `BUILD_SHARED_LIBS` | `OFF` | CMake's own switch: build `libcbk` shared instead of static. |
